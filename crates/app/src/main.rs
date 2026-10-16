@@ -15,6 +15,7 @@ mod herdr;
 mod logging;
 mod overlay;
 mod placeholder;
+mod prompt;
 mod sidebar;
 mod state;
 mod terminal_area;

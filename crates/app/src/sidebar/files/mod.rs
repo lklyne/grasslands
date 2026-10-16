@@ -12,14 +12,11 @@ mod watch;
 #[cfg(test)]
 mod tests;
 
-use std::cell::Cell;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::time::Duration;
 
 use gpui_kit::component::button::{Button, ButtonVariants as _};
-use gpui_kit::component::dialog::{DialogAction, DialogClose, DialogFooter};
-use gpui_kit::component::input::{Input, InputState};
 use gpui_kit::component::list::ListItem;
 use gpui_kit::component::menu::{PopupMenu, PopupMenuItem};
 use gpui_kit::component::notification::Notification;
@@ -40,8 +37,6 @@ const INDENT: f32 = 14.;
 
 /// A deferred operation on the tree, run from a menu item or prompt.
 type TreeOp = Rc<dyn Fn(&mut FileTree, &mut Window, &mut Context<FileTree>)>;
-/// Receives a submitted prompt value.
-type Submit = Rc<dyn Fn(&str, &mut Window, &mut App)>;
 
 pub fn init(_cx: &mut App) {}
 
@@ -316,8 +311,7 @@ impl FileTree {
         }
     }
 
-    /// Asks for a name; `submit` runs on OK (labelled `ok_label`) or Enter (the single-line input passes
-    /// Enter on to the dialog, whose `Confirm` runs `on_ok`).
+    /// Asks for a name (see `crate::prompt`); `submit` runs on OK or Enter.
     fn prompt(
         &mut self,
         title: &'static str,
@@ -327,35 +321,17 @@ impl FileTree {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let input = cx.new(|cx| InputState::new(window, cx).default_value(initial.to_owned()));
         let this = cx.entity().downgrade();
-        let submit: Submit = Rc::new(move |value, window, cx| {
-            let _ = this.update(cx, |this, cx| submit(this, value, window, cx));
-        });
-        let first_build = Cell::new(true);
-        window.open_dialog(cx, move |dialog, window, cx| {
-            if first_build.replace(false) {
-                input.focus_handle(cx).focus(window, cx);
-            }
-            let (input_ok, submit) = (input.clone(), submit.clone());
-            dialog
-                .title(title)
-                .w(px(420.))
-                .child(Input::new(&input))
-                .footer(
-                    DialogFooter::new()
-                        .child(DialogClose::new().trigger(|button| button.label("Cancel")))
-                        .child(
-                            DialogAction::new()
-                                .child(Button::new("prompt-ok").primary().label(ok_label)),
-                        ),
-                )
-                .on_ok(move |_, window, cx| {
-                    let value = input_ok.read(cx).value().to_string();
-                    submit(&value, window, cx);
-                    true
-                })
-        });
+        crate::prompt::ask_name(
+            title,
+            ok_label,
+            initial,
+            move |value, window, cx| {
+                let _ = this.update(cx, |this, cx| submit(this, value, window, cx));
+            },
+            window,
+            cx,
+        );
     }
 
     fn context_menu(this: &WeakEntity<Self>, entry: &TreeEntry, menu: PopupMenu) -> PopupMenu {
