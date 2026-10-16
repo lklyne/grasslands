@@ -60,7 +60,14 @@ pub fn ask_name(
         });
     };
     match crate::chrome::get(window, cx) {
-        Some(chrome) => chrome.update(cx, |chrome, cx| chrome.floating(cx, open)),
+        // An open context menu closes, as for `Chrome::confirm`, so the
+        // prompt doesn't open on top of it. Both happen on the next tick;
+        // queueing the prompt first keeps the overlay modal throughout, so
+        // capture and key status don't flick back to the main window between.
+        Some(chrome) => chrome.update(cx, |chrome, cx| {
+            chrome.floating(cx, open);
+            chrome.close_context_menu(window, cx);
+        }),
         None => open(window, cx),
     }
 }

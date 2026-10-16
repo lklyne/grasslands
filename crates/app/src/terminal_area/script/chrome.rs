@@ -259,7 +259,7 @@ impl Run {
         Self::settle(cx).await;
         self.shoot_with_overlay(cx, "toast-over-terminal");
 
-        self.name_prompt(cx).await;
+        self.name_prompt(cx, &workspace_id).await;
         self.rename_dialog(cx, &workspace_id).await;
         self.palette(cx).await;
 
@@ -437,8 +437,28 @@ impl Run {
 
     /// The shared name prompt (`crate::prompt`): type into it, Escape it
     /// (nothing submitted), then type again and submit with Enter.
-    async fn name_prompt(&mut self, cx: &mut Cx) {
+    async fn name_prompt(&mut self, cx: &mut Cx, workspace_id: &str) {
         let before = self.focused(cx);
+        // Opened from an open context menu (a sidebar menu, then a click on
+        // a "New Folder" button), the prompt replaces the menu.
+        let target = MenuTarget::Workspace {
+            workspace_id: workspace_id.to_owned(),
+        };
+        cx.update(|window, cx| {
+            if let Some(chrome) = crate::chrome::get(window, cx) {
+                chrome.update(cx, |chrome, cx| {
+                    let at = point(px(320.), px(200.));
+                    chrome.context_menu(target, at, Vec::new(), window, cx);
+                });
+            }
+        })
+        .ok();
+        let menu = self.until_chrome(cx, |menu, _| menu == Some(true)).await;
+        self.check(menu, "a workspace menu opens before the prompt");
+        self.check(
+            self.overlay_capturing(cx),
+            "the overlay's NSWindow takes clicks under a menu",
+        );
         let submitted: Rc<RefCell<Vec<String>>> = Rc::default();
         let open = |cx: &mut Cx, submitted: &Rc<RefCell<Vec<String>>>| {
             let submitted = submitted.clone();
@@ -460,6 +480,16 @@ impl Run {
             .until_overlay(cx, |window, cx| window.has_active_dialog(cx))
             .await;
         self.check(shown, "the name prompt opens in the overlay");
+        let replaced = self.until_chrome(cx, |menu, _| menu.is_none()).await;
+        self.check(replaced, "opening the prompt closes the open menu");
+        Self::sleep(cx, 300).await;
+        let still_modal = self
+            .until_overlay(cx, |window, cx| window.has_active_dialog(cx))
+            .await;
+        self.check(
+            still_modal && self.overlay_capturing(cx),
+            "with the menu gone the prompt keeps the overlay's NSWindow taking clicks",
+        );
         self.check(
             self.keys_go_to_overlay(cx),
             "keys go to the overlay while the prompt is open",

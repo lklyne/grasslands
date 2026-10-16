@@ -386,8 +386,10 @@ impl Chrome {
         });
     }
 
-    /// Closes the open context menu. `window` is the main window.
-    fn close_context_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    /// Closes the open context menu, if any. `window` is the main window.
+    /// Anything opening a dialog in the overlay calls this first, so layers
+    /// don't pile up.
+    pub fn close_context_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(open) = self.open_menu.take() else {
             return;
         };
