@@ -2,3 +2,4 @@ target/
 .worktrees/
 *.png
 .DS_Store
+!vendor/**/*.png
