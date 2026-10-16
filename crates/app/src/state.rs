@@ -34,6 +34,11 @@ pub enum AppEvent {
     Herdr(Arc<herdr::Event>),
     /// A known agent's status changed between two caches (chrome toasts it).
     AgentStatusChanged(StatusChange),
+    /// The file tree renamed or moved a file or folder; open editor tabs at or
+    /// under `from` follow it to `to`.
+    FileMoved { from: PathBuf, to: PathBuf },
+    /// The file tree moved a file or folder to the Trash.
+    FileTrashed(PathBuf),
 }
 
 pub struct AppState {
@@ -139,6 +144,16 @@ impl AppState {
 
     pub fn active_worktree(&self) -> Option<&PathBuf> {
         self.active_worktree.as_ref()
+    }
+
+    /// Announces a rename done in the app (see `AppEvent::FileMoved`).
+    pub fn file_moved(&mut self, from: PathBuf, to: PathBuf, cx: &mut Context<Self>) {
+        cx.emit(AppEvent::FileMoved { from, to });
+    }
+
+    /// Announces a trash done in the app (see `AppEvent::FileTrashed`).
+    pub fn file_trashed(&mut self, path: PathBuf, cx: &mut Context<Self>) {
+        cx.emit(AppEvent::FileTrashed(path));
     }
 
     pub fn set_active_worktree(&mut self, root: Option<PathBuf>, cx: &mut Context<Self>) {

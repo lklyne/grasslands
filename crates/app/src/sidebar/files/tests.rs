@@ -4,6 +4,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use gpui_kit::component::dialog::{Cancel, Confirm};
 use gpui_kit::component::tree::TreeEvent;
 use gpui_kit::{
     AnyWindowHandle, AppContext as _, Bounds, Entity, Point, TestAppContext, WindowBounds,
@@ -213,6 +214,7 @@ fn enter_in_new_file_prompt_should_create_file(cx: &mut TestAppContext) {
     f.with_window(cx, |files, window, cx| {
         files.prompt(
             "New File",
+            "Create",
             "",
             move |files, name, window, cx| files.create(root.clone(), name, false, window, cx),
             window,
@@ -223,4 +225,41 @@ fn enter_in_new_file_prompt_should_create_file(cx: &mut TestAppContext) {
     cx.simulate_keystrokes(f.window, "enter");
     cx.run_until_parked();
     assert!(f.dir.join("typed.txt").is_file());
+}
+
+impl Fixture {
+    /// Opens the New File prompt in the repo root and types `name`.
+    fn new_file_prompt(&self, cx: &mut TestAppContext, name: &str) {
+        let root = self.dir.clone();
+        self.with_window(cx, |files, window, cx| {
+            files.prompt(
+                "New File",
+                "Create",
+                "",
+                move |files, name, window, cx| files.create(root.clone(), name, false, window, cx),
+                window,
+                cx,
+            );
+        });
+        cx.simulate_input(self.window, name);
+    }
+}
+
+/// The footer's OK button dispatches the dialog's `Confirm`, like Enter.
+#[gpui::test]
+fn ok_button_action_in_prompt_should_create_file(cx: &mut TestAppContext) {
+    let f = fixture(cx, "prompt-ok");
+    f.new_file_prompt(cx, "ok.txt");
+    cx.dispatch_action(f.window, Confirm { secondary: false });
+    cx.run_until_parked();
+    assert!(f.dir.join("ok.txt").is_file());
+}
+
+#[gpui::test]
+fn cancel_in_prompt_should_create_nothing(cx: &mut TestAppContext) {
+    let f = fixture(cx, "prompt-cancel");
+    f.new_file_prompt(cx, "no.txt");
+    cx.dispatch_action(f.window, Cancel);
+    cx.run_until_parked();
+    assert!(!f.dir.join("no.txt").exists());
 }

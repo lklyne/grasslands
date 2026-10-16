@@ -16,10 +16,15 @@
 - Live updates: one recursive notify watcher on the root (FSEvents). Events are debounced 75 ms, mapped to the loaded folders they touch (a path's own listing and its parent's; a changed `.gitignore` re-lists everything below it; anything under `.git` is ignored), and only those are re-listed.
 - Click a file → `OpenFile`. Context menu: New File, New Folder, Rename, Move to Trash, Reveal in Finder (`open -R`), Copy Path. The header has New File, New Folder, Refresh.
 - Delete moves to the Trash (`trash` crate) instead of unlinking, so it doesn't need a confirmation.
-- Names come from a Kit dialog with one input; Enter submits (the single-line input propagates Enter to the dialog's `Confirm`, which runs `on_ok`; an extra `PressEnter` subscription would submit twice and re-enter the view). Escape or × cancels.
+- Names come from a Kit dialog with one input and a `DialogFooter` of Cancel (`DialogClose`) and Create/Rename (`DialogAction`). OK and Enter both reach the dialog's `Confirm`, which runs `on_ok` (the single-line input propagates Enter; an extra `PressEnter` subscription would submit twice and re-enter the view). Cancel, Escape or × cancel.
 - Actions dispatched from inside a dialog don't reach `Workspace` (dialogs render in the Kit's root layer), so New File defers `OpenFile` until the dialog has closed and dispatches it from the tree's focus handle.
+
+## Editor follows the tree
+
+- Rename in the tree emits `AppEvent::FileMoved { from, to }`; the editor re-points every tab at or under `from` (a file or a whole folder) and moves its folder watch. Trash emits `AppEvent::FileTrashed(path)`: clean tabs at or under it close, tabs with unsaved edits stay open marked deleted (saving recreates the file).
+- Renames on disk (an agent's `mv`) are caught by the editor's watcher: when an open file vanishes, the editor looks for the same file (device + inode) among the event's paths and in the old folder, and re-points the tab. Not found → the existing rule: the tab stays, marked deleted.
 
 ## Known gaps
 
-- Renaming or trashing a file that is open in the editor doesn't tell the editor; its tab keeps the old path until closed.
-- The name dialog has no visible OK button (the Kit renders a footer only when one is set); Enter is the way to submit.
+- A rename that changes the extension keeps the old syntax highlighting until the tab is reopened (`EditorState` takes its language only at construction).
+- A file moved on disk into a folder the editor isn't watching, or a folder renamed on disk, isn't followed; the tab is marked deleted. Renames done from the tree are always followed.

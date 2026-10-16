@@ -80,11 +80,14 @@ pub struct Editor {
 
 impl Editor {
     pub fn new(state: Entity<AppState>, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let subscription = cx.subscribe(&state, |this, _, event, cx| {
-            if let AppEvent::ActiveWorktreeChanged(root) = event {
+        let subscription = cx.subscribe(&state, |this, _, event, cx| match event {
+            AppEvent::ActiveWorktreeChanged(root) => {
                 this.worktree.clone_from(root);
                 cx.notify();
             }
+            AppEvent::FileMoved { from, to } => this.follow_move(from, to, cx),
+            AppEvent::FileTrashed(path) => this.follow_trash(path, cx),
+            _ => {}
         });
         let (sender, receiver) = async_channel::unbounded::<Vec<PathBuf>>();
         // GPUI's test scheduler rejects wakeups from the watcher's thread;
@@ -207,21 +210,83 @@ impl Editor {
     }
 
     fn on_disk_change(&mut self, paths: &[PathBuf], window: &mut Window, cx: &mut Context<Self>) {
+        let mut moved = Vec::new();
         for buffer in self
             .groups
             .values_mut()
             .flat_map(|group| group.buffers.iter_mut())
             .filter(|buffer| paths.contains(&buffer.path))
         {
+            buffer.refresh_file_id();
             match buffer.classify(std::fs::read_to_string(&buffer.path)) {
                 Ok(DiskChange::Unchanged) => {}
                 Ok(DiskChange::Reload(text)) => buffer.take(text, window, cx),
                 Ok(DiskChange::Conflict(theirs)) => {
                     buffer.prompt = Some(Prompt::Conflict { theirs })
                 }
-                Ok(DiskChange::Deleted) => buffer.mark_deleted(),
+                Ok(DiskChange::Deleted) => match buffer.find_moved(paths) {
+                    Some(to) => moved.push((buffer.path.clone(), to)),
+                    None => buffer.mark_deleted(),
+                },
                 Err(error) => eprintln!("editor: cannot reload {}: {error}", buffer.path.display()),
             }
+        }
+        for (from, to) in moved {
+            self.follow_move(&from, &to, cx);
+        }
+        cx.notify();
+    }
+
+    /// Points tabs at or under `from` (a file or folder) at their new place.
+    fn follow_move(&mut self, from: &Path, to: &Path, cx: &mut Context<Self>) {
+        let watcher = &mut self.watcher;
+        for buffer in self
+            .groups
+            .values_mut()
+            .flat_map(|group| group.buffers.iter_mut())
+        {
+            let Ok(rest) = buffer.path.strip_prefix(from) else {
+                continue;
+            };
+            // `join("")` would add a trailing slash.
+            let new = if rest.as_os_str().is_empty() {
+                to.to_path_buf()
+            } else {
+                to.join(rest)
+            };
+            if let Some(watcher) = watcher {
+                watcher.remove(&buffer.path);
+                watcher.add(&new);
+            }
+            buffer.path = new;
+            buffer.refresh_file_id();
+        }
+        cx.notify();
+    }
+
+    /// The user trashed `path` (a file or folder) from the tree: clean tabs at
+    /// or under it close; tabs with unsaved edits stay, marked deleted.
+    fn follow_trash(&mut self, path: &Path, cx: &mut Context<Self>) {
+        for group in self.groups.values_mut() {
+            let active = group.active().map(|buffer| buffer.path.clone());
+            let watcher = &mut self.watcher;
+            group.buffers.retain_mut(|buffer| {
+                if !buffer.path.starts_with(path) {
+                    return true;
+                }
+                if buffer.is_dirty() {
+                    buffer.mark_deleted();
+                    return true;
+                }
+                if let Some(watcher) = watcher {
+                    watcher.remove(&buffer.path);
+                }
+                false
+            });
+            group.active = active
+                .and_then(|active| group.buffers.iter().position(|b| b.path == active))
+                .unwrap_or(group.active)
+                .min(group.buffers.len().saturating_sub(1));
         }
         cx.notify();
     }

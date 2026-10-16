@@ -284,6 +284,115 @@ fn switching_worktree_swaps_tab_sets(cx: &mut TestAppContext) {
     assert_eq!(f.tab_titles(cx), ["a.rs"]);
 }
 
+impl Fixture {
+    fn moved_in_tree(&self, cx: &mut TestAppContext, from: &Path, to: &Path) {
+        std::fs::rename(from, to).unwrap();
+        let (from, to) = (from.to_path_buf(), to.to_path_buf());
+        self.state
+            .update(cx, |state, cx| state.file_moved(from, to, cx));
+        cx.run_until_parked();
+    }
+
+    fn trashed_in_tree(&self, cx: &mut TestAppContext, path: &Path) {
+        // The real tree moves it to the Trash; for the editor only the event matters.
+        std::fs::remove_file(path).unwrap();
+        let path = path.to_path_buf();
+        self.state
+            .update(cx, |state, cx| state.file_trashed(path, cx));
+        cx.run_until_parked();
+    }
+}
+
+#[gpui::test]
+fn rename_in_tree_retargets_the_tab(cx: &mut TestAppContext) {
+    let f = fixture(cx, "treerename");
+    let a = f.file("a.rs", "a\n");
+    f.open(cx, &a);
+    f.moved_in_tree(cx, &a, &f.dir.join("b.rs"));
+    assert_eq!(f.tab_titles(cx), ["b.rs"]);
+}
+
+#[gpui::test]
+fn save_after_rename_writes_the_new_path(cx: &mut TestAppContext) {
+    let f = fixture(cx, "renamesave");
+    let a = f.file("a.rs", "a\n");
+    f.open(cx, &a);
+    let b = f.dir.join("b.rs");
+    f.moved_in_tree(cx, &a, &b);
+    f.type_text(cx, "x");
+    f.press(cx, "cmd-s");
+    assert_eq!(
+        (a.exists(), std::fs::read_to_string(&b).unwrap()),
+        (false, "xa\n".to_owned())
+    );
+}
+
+#[gpui::test]
+fn folder_rename_in_tree_retargets_tabs_inside_it(cx: &mut TestAppContext) {
+    let f = fixture(cx, "folderrename");
+    std::fs::create_dir_all(f.dir.join("old")).unwrap();
+    let a = f.file("old/a.rs", "a");
+    f.open(cx, &a);
+    f.moved_in_tree(cx, &f.dir.join("old"), &f.dir.join("new"));
+    f.type_text(cx, "y");
+    f.press(cx, "cmd-s");
+    assert!(
+        std::fs::read_to_string(f.dir.join("new/a.rs"))
+            .unwrap()
+            .contains('y')
+    );
+}
+
+#[gpui::test]
+fn rename_on_disk_retargets_the_tab(cx: &mut TestAppContext) {
+    let f = fixture(cx, "diskrename");
+    let a = f.file("a.rs", "a\n");
+    f.open(cx, &a);
+    std::fs::rename(&a, f.dir.join("c.rs")).unwrap();
+    f.disk_changed(cx, &a);
+    assert_eq!(
+        (f.tab_titles(cx), f.dirty(cx)),
+        (vec!["c.rs".to_owned()], false)
+    );
+}
+
+#[gpui::test]
+fn delete_on_disk_still_keeps_the_tab_dirty(cx: &mut TestAppContext) {
+    let f = fixture(cx, "diskdelete");
+    let a = f.file("a.rs", "a\n");
+    f.open(cx, &a);
+    std::fs::remove_file(&a).unwrap();
+    f.disk_changed(cx, &a);
+    assert_eq!(
+        (f.tab_titles(cx), f.dirty(cx)),
+        (vec!["a.rs".to_owned()], true)
+    );
+}
+
+#[gpui::test]
+fn trash_in_tree_closes_a_clean_tab(cx: &mut TestAppContext) {
+    let f = fixture(cx, "trashclean");
+    let a = f.file("a.rs", "a\n");
+    let b = f.file("b.rs", "b\n");
+    f.open(cx, &a);
+    f.open(cx, &b);
+    f.trashed_in_tree(cx, &a);
+    assert_eq!(f.tab_titles(cx), ["b.rs"]);
+}
+
+#[gpui::test]
+fn trash_in_tree_keeps_a_dirty_tab(cx: &mut TestAppContext) {
+    let f = fixture(cx, "trashdirty");
+    let a = f.file("a.rs", "a\n");
+    f.open(cx, &a);
+    f.type_text(cx, "unsaved");
+    f.trashed_in_tree(cx, &a);
+    assert_eq!(
+        (f.tab_titles(cx), f.dirty(cx)),
+        (vec!["a.rs".to_owned()], true)
+    );
+}
+
 #[test]
 fn watcher_reports_a_write_to_a_watched_file() {
     let dir = temp_dir("watcher");

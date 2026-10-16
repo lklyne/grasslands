@@ -1,6 +1,7 @@
 //! One open file: its editor state, what was last read from or written to
 //! disk, and any question pending for the user.
 
+use std::os::unix::fs::MetadataExt as _;
 use std::path::{Path, PathBuf};
 
 use gpui_kit::component::input::EditorState;
@@ -39,7 +40,15 @@ pub struct Buffer {
     saved: Option<String>,
     dirty: bool,
     pub prompt: Option<Prompt>,
+    /// Device and inode of the file, to recognise it after a move on disk.
+    file_id: Option<FileId>,
     _changes: Subscription,
+}
+
+type FileId = (u64, u64);
+
+fn file_id(path: &Path) -> Option<FileId> {
+    std::fs::metadata(path).ok().map(|m| (m.dev(), m.ino()))
 }
 
 impl Buffer {
@@ -53,6 +62,7 @@ impl Buffer {
     ) -> Self {
         state.update(cx, |state, cx| state.set_value(text.clone(), window, cx));
         Self {
+            file_id: file_id(&path),
             path,
             state,
             saved: Some(text),
@@ -80,6 +90,7 @@ impl Buffer {
     pub fn save(&mut self, cx: &App) -> std::io::Result<()> {
         let text = self.state.read(cx).value().to_string();
         std::fs::write(&self.path, &text)?;
+        self.refresh_file_id();
         self.saved = Some(text);
         self.dirty = false;
         if matches!(self.prompt, Some(Prompt::Conflict { .. })) {
@@ -103,6 +114,34 @@ impl Buffer {
         } else {
             DiskChange::Reload(text)
         })
+    }
+
+    /// Re-reads the file's identity; kept when the file is gone, so a later
+    /// `find_moved` can still recognise it.
+    pub fn refresh_file_id(&mut self) {
+        if let Some(id) = file_id(&self.path) {
+            self.file_id = Some(id);
+        }
+    }
+
+    /// Where the file went, if it vanished from `path` because it was moved:
+    /// a path among `hints` (the watcher's batch) or in its old folder that is
+    /// the same file (same inode).
+    pub fn find_moved(&self, hints: &[PathBuf]) -> Option<PathBuf> {
+        let id = self.file_id?;
+        let siblings = self
+            .path
+            .parent()
+            .and_then(|dir| std::fs::read_dir(dir).ok())
+            .into_iter()
+            .flatten()
+            .filter_map(Result::ok)
+            .map(|entry| entry.path());
+        hints
+            .iter()
+            .cloned()
+            .chain(siblings)
+            .find(|path| *path != self.path && file_id(path) == Some(id))
     }
 
     pub fn mark_deleted(&mut self) {

@@ -18,6 +18,7 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use gpui_kit::component::button::{Button, ButtonVariants as _};
+use gpui_kit::component::dialog::{DialogAction, DialogClose, DialogFooter};
 use gpui_kit::component::input::{Input, InputState};
 use gpui_kit::component::list::ListItem;
 use gpui_kit::component::menu::{PopupMenu, PopupMenuItem};
@@ -278,6 +279,9 @@ impl FileTree {
                 cx,
             );
         }
+        let from = path.to_path_buf();
+        self.state
+            .update(cx, |state, cx| state.file_moved(from, target, cx));
         self.load(
             path.parent().map(Path::to_path_buf).into_iter().collect(),
             cx,
@@ -293,6 +297,9 @@ impl FileTree {
                 cx,
             );
         }
+        let trashed = path.to_path_buf();
+        self.state
+            .update(cx, |state, cx| state.file_trashed(trashed, cx));
         self.load(
             path.parent().map(Path::to_path_buf).into_iter().collect(),
             cx,
@@ -309,11 +316,12 @@ impl FileTree {
         }
     }
 
-    /// Asks for a name; `submit` runs on Enter (the single-line input passes
+    /// Asks for a name; `submit` runs on OK (labelled `ok_label`) or Enter (the single-line input passes
     /// Enter on to the dialog, whose `Confirm` runs `on_ok`).
     fn prompt(
         &mut self,
         title: &'static str,
+        ok_label: &'static str,
         initial: &str,
         submit: impl Fn(&mut Self, &str, &mut Window, &mut Context<Self>) + 'static,
         window: &mut Window,
@@ -334,6 +342,14 @@ impl FileTree {
                 .title(title)
                 .w(px(420.))
                 .child(Input::new(&input))
+                .footer(
+                    DialogFooter::new()
+                        .child(DialogClose::new().trigger(|button| button.label("Cancel")))
+                        .child(
+                            DialogAction::new()
+                                .child(Button::new("prompt-ok").primary().label(ok_label)),
+                        ),
+                )
                 .on_ok(move |_, window, cx| {
                     let value = input_ok.read(cx).value().to_string();
                     submit(&value, window, cx);
@@ -370,6 +386,7 @@ impl FileTree {
                     let title = if folder { "New Folder" } else { "New File" };
                     this.prompt(
                         title,
+                        "Create",
                         "",
                         move |this, name, window, cx| {
                             this.create(dir.clone(), name, folder, window, cx)
@@ -386,6 +403,7 @@ impl FileTree {
                 move |this: &mut Self, window: &mut Window, cx: &mut Context<Self>| {
                     let path = path.clone();
                     this.prompt(
+                        "Rename",
                         "Rename",
                         &name,
                         move |this, name, window, cx| this.rename(&path, name, window, cx),
@@ -435,6 +453,7 @@ impl FileTree {
                 let title = if folder { "New Folder" } else { "New File" };
                 this.prompt(
                     title,
+                    "Create",
                     "",
                     move |this, name, window, cx| {
                         this.create(root.clone(), name, folder, window, cx)

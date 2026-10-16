@@ -24,6 +24,9 @@ Date: 2026-10-15. Status: accepted (app-shell, Part 2).
   re-read: same as last seen (including our own save) → ignore; clean buffer →
   reload, keeping the cursor; dirty buffer → ask. Deleted → the buffer stays
   open and becomes dirty; saving recreates it.
+  A file that vanished because it was moved (same inode among the event's
+  paths or in its old folder) is followed instead. Renames and trashes from
+  the file tree arrive as `AppEvent::FileMoved` / `FileTrashed` (see 0007).
 - **Questions are an inline bar, not a dialog.** "Keep mine / Take theirs"
   and "Save / Don't save / Cancel" on closing a dirty tab render as a bar
   above the editor. A modal would be covered by Ghostty's native views (see
