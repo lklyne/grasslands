@@ -14,7 +14,6 @@ mod editor;
 mod herdr;
 mod logging;
 mod overlay;
-mod placeholder;
 mod prompt;
 mod sidebar;
 mod state;
@@ -45,6 +44,7 @@ fn main() {
             terminal_area::init(cx);
             sidebar::init(cx);
             chrome::init(cx);
+            workspace::init(cx);
             if let Err(error) = open_main_window(cx) {
                 tracing::error!("could not open the window: {error:#}");
                 cx.quit();
@@ -56,11 +56,7 @@ fn open_main_window(cx: &mut App) -> anyhow::Result<()> {
     let state = cx.new(|cx| AppState::new(herdr::Config::from_env(), cx));
     let options = WindowOptions {
         window_bounds: Some(WindowBounds::centered(size(px(1400.), px(900.)), cx)),
-        titlebar: Some(TitlebarOptions {
-            title: Some("rusted-tools".into()),
-            ..TitlebarOptions::default()
-        }),
-        ..WindowOptions::default()
+        ..workspace::window_options()
     };
     let (window, _) = gpui_kit::open_window(options, cx, |window, cx| {
         theme::sync_with_system(window, cx);

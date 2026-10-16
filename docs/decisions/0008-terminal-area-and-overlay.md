@@ -23,6 +23,9 @@ Background and spike results are in 0001.
   render computes the set of terminals in the active tab's layout and calls
   `Terminals::show_only`, which hides everything else explicitly. A native view
   that drops out of the layout would otherwise stay on screen at its last frame.
+- **Hidden behind a file tab.** `TerminalArea::set_visible(false)` hides
+  every view and keeps them hidden until `set_visible(true)`; the workspace
+  calls it when a titlebar file tab is selected (0002).
 - **The attach command** is `$bin [--session S] terminal attach <id> --takeover`,
   built from `AppState::herdr_config`. With no config (the socket guard refused
   the endpoint), nothing is spawned.
@@ -118,7 +121,7 @@ overlay.update(cx, |o, cx| o.remove_layer(id, cx));
   something it drew that occludes. GPUI Kit's toasts, menus and dialogs all do;
   give your own views `.occlude()`. It works by checking the overlay's bottom
   hitbox with `Hitbox::is_hovered_at`, on every pointer move (forwarded from the
-  main window by the terminal area) and after every overlay frame.
+  main window by `Workspace`) and after every overlay frame.
 - **Modal.** While a `Capture::Modal` layer, a Kit dialog or a Kit sheet is
   open, the overlay takes every click and becomes the key window, so menus and
   the palette get the keyboard. Key status goes back to the main window when
@@ -207,6 +210,16 @@ What the 54 checks cover:
 - the overlay following main-window resizes;
 - theme reload;
 - a dev-server restart.
+
+## Verifying: `RT_SCRIPT=titlebar`
+
+Same harness (`terminal_area/script/titlebar.rs`): opens files, clicks the
+titlebar tabs and close buttons with GPUI mouse events at their drawn bounds,
+presses ctrl-tab, ctrl-shift-tab, cmd-shift-[ and cmd-1, and checks that no
+native view is shown on a file tab, that views are back on their slots on the
+herdr tab, that a blocked agent raises a toast on a file tab, that a dirty
+tab asks before closing, and that closing the last file selects herdr.
+Screenshots both themes.
 
 ## Known gaps
 

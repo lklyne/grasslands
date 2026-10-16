@@ -11,12 +11,18 @@ Date: 2026-10-15. Status: accepted (app-shell, Part 2).
   a new dependency needs cc >= 1.3, either drop SQL highlighting (enable the
   grammars one by one) or wait for a sequel release without the pin. A test
   checks every extension we map has a compiled grammar.
+- **Tabs live in the titlebar** (see 0002, Window layout). The editor exposes
+  `tabs()` (path, title, dirty), `active_index()`, `activate`,
+  `request_close` and `focus_active`, and emits `EditorEvent::Activated`; it
+  draws no tab strip and no empty state. The conflict and close-confirmation
+  bars still render above the editor.
 - **Tab titles.** The file name, plus the fewest parent folders that make it
   unique within the tab group (`one/mod.rs`, `two/mod.rs`).
 - **Groups.** Tabs are grouped by the active worktree root (`AppState`'s
   `ActiveWorktreeChanged`). `OpenFile` opens into the active worktree's group,
-  even if the file lies outside it. Switching worktrees swaps the tab bar; it
-  does not take focus from the terminal that caused the switch.
+  even if the file lies outside it. Switching worktrees swaps the titlebar's
+  file tabs (herdr is selected if the new group is empty); it does not take
+  focus from the terminal that caused the switch.
 - **Dirty.** A buffer is dirty when its text differs from what was last read
   from or written to disk, so undoing back to the saved text clears the dot.
 - **External changes.** `notify` watches the *folders* of open files
@@ -32,9 +38,9 @@ Date: 2026-10-15. Status: accepted (app-shell, Part 2).
   above the editor. A modal would be covered by Ghostty's native views (see
   0002, Overlays) and would block work in other panes for a per-file question.
   "Keep mine" leaves the buffer dirty; the next save overwrites the file.
-- **Keys** (context `Editor`): `cmd-s` save, `cmd-w` close tab,
-  `ctrl-tab`/`cmd-shift-]` next, `ctrl-shift-tab`/`cmd-shift-[` previous.
-- **CLI.** Paths given as arguments to the app open in the editor at start.
+- **Keys** (context `Editor`): `cmd-s` save, `cmd-w` close tab. Cycling moved
+  to the `Workspace` context (0002).
+- **CLI.** Paths given as arguments to the app open as file tabs at start.
 - **Tests.** `editor/tests.rs` drives a headless window through real key
   bindings and text input. It uses `gpui-pre`'s `test-support` directly:
   gpui-kit's `test-support` names gpui-fast weakly, Cargo still resolves it,

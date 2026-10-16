@@ -25,6 +25,7 @@ use gpui_kit::*;
 use serde_json::json;
 
 mod chrome;
+mod titlebar;
 
 use super::{ClosePane, NewTab, SplitDown, SplitRight, TerminalArea};
 use crate::herdr::{SplitDirection, SplitTree};
@@ -35,7 +36,7 @@ pub fn requested() -> Option<String> {
 }
 
 pub fn start(scenario: String, area: Entity<TerminalArea>, window: &mut Window, cx: &mut App) {
-    if scenario != "terminals" && scenario != "chrome" {
+    if !["terminals", "chrome", "titlebar"].contains(&scenario.as_str()) {
         eprintln!("script: unknown scenario {scenario:?}");
         return;
     }
@@ -46,10 +47,10 @@ pub fn start(scenario: String, area: Entity<TerminalArea>, window: &mut Window, 
                 failures: 0,
                 shot: 0,
             };
-            let result = if scenario == "chrome" {
-                run.chrome(cx).await
-            } else {
-                run.terminals(cx).await
+            let result = match scenario.as_str() {
+                "chrome" => run.chrome(cx).await,
+                "titlebar" => run.titlebar(cx).await,
+                _ => run.terminals(cx).await,
             };
             if let Err(error) = result {
                 run.fail(&format!("script stopped: {error:#}"));

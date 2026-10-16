@@ -193,6 +193,9 @@ pub struct TerminalArea {
     attached: HashSet<String>,
     /// Panes already told to forward right-clicks to their program.
     right_click_set: HashSet<String>,
+    /// False while the window shows something else in its place (a file
+    /// tab); every native view is hidden then.
+    visible: bool,
     _subscriptions: Vec<Subscription>,
     _liveness: Task<()>,
 }
@@ -223,6 +226,7 @@ impl TerminalArea {
             drawn: Rc::default(),
             attached: HashSet::new(),
             right_click_set: HashSet::new(),
+            visible: true,
             _subscriptions: subscriptions,
             _liveness: Self::watch_liveness(cx),
         };
@@ -397,6 +401,30 @@ impl TerminalArea {
                     .is_some_and(|p| p.tab_id == tab.info.tab_id)
             })
             .or_else(|| tab.focused_pane_id.clone())
+    }
+
+    /// Shows or hides the terminal area. Ghostty views are native views over
+    /// GPUI, so leaving the area out of the element tree would leave them on
+    /// screen at their last frames: hiding hides every view, and showing
+    /// places them again on the next frame and focuses herdr's focused pane.
+    pub fn set_visible(&mut self, visible: bool, window: &mut Window, cx: &mut Context<Self>) {
+        if self.visible == visible {
+            return;
+        }
+        self.visible = visible;
+        if visible {
+            match self.target_pane(cx) {
+                Some(pane_id) => self.focus_terminal(&pane_id, window, cx),
+                None => window.focus(&self.focus, cx),
+            }
+        } else {
+            self.terminals.hide_all(cx);
+        }
+        cx.notify();
+    }
+
+    pub fn is_visible(&self) -> bool {
+        self.visible
     }
 
     /// Ask herdr to focus `pane_id`, and move keyboard focus to its terminal
@@ -1256,7 +1284,11 @@ impl Render for TerminalArea {
             },
         };
 
-        let visible: HashSet<&str> = frame.visible.iter().map(String::as_str).collect();
+        let visible: HashSet<&str> = if self.visible {
+            frame.visible.iter().map(String::as_str).collect()
+        } else {
+            HashSet::new()
+        };
         self.terminals.show_only(&visible, cx);
 
         if self.pane_drag.is_some() && !cx.has_active_drag() {
@@ -1326,18 +1358,16 @@ impl Render for TerminalArea {
             .child(self.render_tab_bar(&snapshot, cx))
             .child(div().flex_1().min_h_0().p(GAP).child(body))
             .child(
-                // Window-wide pointer tracking: divider drags, and telling the
-                // overlay where the pointer is (it can't see it while it lets
-                // clicks through).
+                // Window-wide pointer tracking for divider and pane drags.
+                // (The workspace tells the overlay where the pointer is.)
                 canvas(
                     |_, _, _| {},
                     move |_, _, window, _| {
                         let on_move = this.clone();
-                        window.on_mouse_event(move |event: &MouseMoveEvent, phase, window, cx| {
+                        window.on_mouse_event(move |event: &MouseMoveEvent, phase, _, cx| {
                             if phase != DispatchPhase::Bubble {
                                 return;
                             }
-                            overlay::track_pointer(event.position, window, cx);
                             on_move
                                 .update(cx, |this, cx| {
                                     if this.drag.is_some() {

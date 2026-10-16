@@ -263,7 +263,12 @@ impl Run {
         Ok(())
     }
 
-    async fn report_agent(&self, cx: &mut Cx, pane_id: &str, status: &str) -> anyhow::Result<()> {
+    pub(super) async fn report_agent(
+        &self,
+        cx: &mut Cx,
+        pane_id: &str,
+        status: &str,
+    ) -> anyhow::Result<()> {
         let params = json!({
             "pane_id": pane_id,
             "source": "chrome-script",
@@ -615,7 +620,7 @@ impl Run {
     }
 
     /// Polls a check run inside the overlay window.
-    async fn until_overlay(
+    pub(super) async fn until_overlay(
         &self,
         cx: &mut Cx,
         mut test: impl FnMut(&mut Window, &mut App) -> bool,
