@@ -15,13 +15,18 @@ pub const TIMEOUT: Duration = Duration::from_secs(10);
 /// isolated dev session. Guards against ever touching the user's live herdr.
 pub fn dev_endpoint() -> Option<Endpoint> {
     let endpoint = Endpoint::from_env();
-    let isolated = endpoint.session.as_deref().is_some_and(|s| s.starts_with("dev-"))
+    let isolated = endpoint
+        .session
+        .as_deref()
+        .is_some_and(|s| s.starts_with("dev-"))
         && endpoint
             .socket_path
             .to_string_lossy()
             .contains("rusted-tools-herdr");
     if !isolated {
-        eprintln!("skipping: run through scripts/dev-run so herdr points at an isolated dev-* session");
+        eprintln!(
+            "skipping: run through scripts/dev-run so herdr points at an isolated dev-* session"
+        );
         return None;
     }
     Some(endpoint)

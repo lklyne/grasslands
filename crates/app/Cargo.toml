@@ -35,6 +35,10 @@ gpui-kit = { version = "0.7.3", features = [
 anyhow = "1.0.104"
 notify = "8.2.0"
 async-channel = "2.5.0"
+herdr-client = { path = "../herdr-client" }
+git2 = "0.21.0"
+ignore = "0.4.33"
+log = "0.4.34"
 
 [dev-dependencies]
 # GPUI's own test support, not gpui-kit's: the Kit's `test-support` names
