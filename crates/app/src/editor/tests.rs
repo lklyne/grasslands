@@ -141,7 +141,7 @@ impl Fixture {
             self.editor
                 .read(cx)
                 .group()
-                .map(|g| g.buffers.iter().map(|b| b.title().to_string()).collect())
+                .map(|g| g.titles())
                 .unwrap_or_default()
         })
     }
@@ -170,6 +170,18 @@ fn opening_twice_reuses_the_tab(cx: &mut TestAppContext) {
     f.open(cx, &b);
     f.open(cx, &a);
     assert_eq!(f.tab_titles(cx), ["a.rs", "b.toml"]);
+}
+
+#[gpui::test]
+fn same_name_tabs_show_their_folders(cx: &mut TestAppContext) {
+    let f = fixture(cx, "samename");
+    std::fs::create_dir_all(f.dir.join("one")).unwrap();
+    std::fs::create_dir_all(f.dir.join("two")).unwrap();
+    let a = f.file("one/mod.rs", "a");
+    let b = f.file("two/mod.rs", "b");
+    f.open(cx, &a);
+    f.open(cx, &b);
+    assert_eq!(f.tab_titles(cx), ["one/mod.rs", "two/mod.rs"]);
 }
 
 #[gpui::test]

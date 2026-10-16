@@ -67,16 +67,6 @@ impl Buffer {
         cx.new(|cx| EditorState::new(window, cx).language(language))
     }
 
-    pub fn title(&self) -> SharedString {
-        self.path
-            .file_name()
-            .map_or_else(
-                || self.path.display().to_string(),
-                |name| name.to_string_lossy().into_owned(),
-            )
-            .into()
-    }
-
     pub fn is_dirty(&self) -> bool {
         self.dirty
     }

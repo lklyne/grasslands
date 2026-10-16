@@ -4,11 +4,15 @@ Date: 2026-10-15. Status: accepted (app-shell, Part 2).
 
 - **Component.** GPUI Kit's `EditorState`/`Editor` (code-editor mode). The
   language comes from the file name (`editor/language.rs`).
-- **Grammars.** gpui-kit's tree-sitter grammars are enabled one by one, not
-  through `tree-sitter-languages`: that bundle includes SQL, whose
-  `tree-sitter-sequel` pins `cc ~1.2` against gpui's `cc 1.8`. No SQL,
-  Astro, ERB, EJS, Elixir, GraphQL, PHP, Proto, Scala or Svelte highlighting
-  for now.
+- **Grammars.** All of gpui-kit's grammars (`tree-sitter-languages`). Its SQL
+  grammar, `tree-sitter-sequel`, pins `cc ~1.2.1` in every release up to
+  0.3.11, while a fresh resolve picks cc 1.8 for gpui's `embed-resource`
+  (`^1.2`). Cargo.lock therefore holds cc at 1.2.67, which satisfies both. If
+  a new dependency needs cc >= 1.3, either drop SQL highlighting (enable the
+  grammars one by one) or wait for a sequel release without the pin. A test
+  checks every extension we map has a compiled grammar.
+- **Tab titles.** The file name, plus the fewest parent folders that make it
+  unique within the tab group (`one/mod.rs`, `two/mod.rs`).
 - **Groups.** Tabs are grouped by the active worktree root (`AppState`'s
   `ActiveWorktreeChanged`). `OpenFile` opens into the active worktree's group,
   even if the file lies outside it. Switching worktrees swaps the tab bar; it
