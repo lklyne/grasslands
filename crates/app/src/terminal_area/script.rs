@@ -181,14 +181,9 @@ impl Run {
         if let Some(overlay) = overlay {
             command.arg(overlay.to_string());
         }
-        match command.output() {
-            Ok(out) if out.status.success() && path.exists() => {
-                eprintln!("shot {}", path.display());
-            }
-            Ok(out) => eprintln!(
-                "shot {name} skipped: {}",
-                String::from_utf8_lossy(&out.stderr).trim()
-            ),
+        match capture(command, Duration::from_secs(20)) {
+            Ok(()) if path.exists() => eprintln!("shot {}", path.display()),
+            Ok(()) => eprintln!("shot {name} skipped: no file written"),
             Err(error) => eprintln!("shot {name} skipped: {error}"),
         }
     }
@@ -252,27 +247,18 @@ impl Run {
         }
     }
 
+    /// Dispatches `action` where the keyboard is: the overlay while
+    /// something modal is open there, else the main window.
     fn dispatch(&self, cx: &mut Cx, action: Box<dyn Action>) {
-        cx.update(|window, cx| window.dispatch_action(action, cx))
+        cx.update(|window, cx| overlay::dispatch_action(action, window, cx))
             .ok();
     }
 
+    /// Types `text` one key press at a time, where the keyboard is.
     fn type_text(&self, cx: &mut Cx, text: &str) {
         cx.update(|window, cx| {
-            for ch in text.chars() {
-                let (key, key_char) = match ch {
-                    ' ' => ("space".to_owned(), Some(" ".to_owned())),
-                    '\n' => ("enter".to_owned(), None),
-                    ch => (ch.to_string(), Some(ch.to_string())),
-                };
-                window.dispatch_keystroke(
-                    Keystroke {
-                        modifiers: Modifiers::default(),
-                        key,
-                        key_char,
-                    },
-                    cx,
-                );
+            for keystroke in overlay::keystrokes(text) {
+                overlay::dispatch_keystroke(keystroke, window, cx);
             }
         })
         .ok();
@@ -713,6 +699,46 @@ impl Run {
         let closed = task.await;
         self.check(closed.is_ok(), "closed the script workspace");
         Ok(())
+    }
+}
+
+/// Runs the capture helper, giving up after `timeout`: ScreenCaptureKit can
+/// hang (seen with several captures queued machine-wide), and the script
+/// must not stall on a screenshot.
+fn capture(mut command: std::process::Command, timeout: Duration) -> Result<(), String> {
+    use std::os::unix::process::CommandExt as _;
+    let mut child = command
+        // Its own process group: `swift` runs the script in a child
+        // `swift-frontend`, which a timeout must stop too.
+        .process_group(0)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|error| error.to_string())?;
+    let start = Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) if status.success() => return Ok(()),
+            Ok(Some(_)) => {
+                let mut stderr = String::new();
+                if let Some(mut pipe) = child.stderr.take() {
+                    std::io::Read::read_to_string(&mut pipe, &mut stderr).ok();
+                }
+                return Err(stderr.trim().to_owned());
+            }
+            Ok(None) if start.elapsed() > timeout => {
+                // Our own child's group, nothing else.
+                std::process::Command::new("kill")
+                    .arg("-KILL")
+                    .arg(format!("-{}", child.id()))
+                    .status()
+                    .ok();
+                child.wait().ok();
+                return Err(format!("capture timed out after {timeout:?}"));
+            }
+            Ok(None) => std::thread::sleep(Duration::from_millis(50)),
+            Err(error) => return Err(error.to_string()),
+        }
     }
 }
 

@@ -1,22 +1,31 @@
 //! `RT_SCRIPT=chrome`: chrome's floating UI over real terminals. Right-clicks
 //! on a pane header and on a tab (GPUI mouse events, as the app gets them),
-//! the terminal area's close confirmation, an agent toast and the palette,
-//! each checked to be in the overlay window and screenshotted with it.
+//! the terminal area's close confirmation, an agent toast, the name prompt,
+//! the rename dialog and the palette, each checked to be in the overlay
+//! window and screenshotted with it.
+//!
+//! They are driven by key presses (`overlay::dispatch_keystroke`, which sends
+//! them to the window AppKit would make key: the overlay while something
+//! modal is open there): Escape, Enter, arrows through the menu and palette,
+//! typing into the prompts. After each one closes, keyboard focus must be
+//! back on the terminal that had it.
 //!
 //! ```sh
 //! RT_SCRIPT=chrome scripts/dev-run cargo run -p app
 //! ```
 
+use std::cell::RefCell;
 use std::path::PathBuf;
+use std::rc::Rc;
 use std::time::{Duration, Instant};
 
-use gpui_kit::base::actions::{Cancel, Confirm};
 use gpui_kit::component::WindowExt as _;
 use gpui_kit::*;
 use serde_json::json;
 
 use super::{Cx, Run};
 use crate::actions::CommandPalette;
+use crate::chrome::{MenuCommand, MenuTarget};
 use crate::herdr::{SplitDirection, SplitTree};
 use crate::overlay;
 use crate::terminal_area::{HEADER_HEIGHT, TerminalArea};
@@ -94,11 +103,27 @@ impl Run {
         Self::sleep(cx, 800).await;
         Self::settle(cx).await;
 
-        // Right-click the first pane's header: the pane menu, in the overlay.
-        let body = self.read(cx, |area, _| area.drawn.borrow().panes.get(&first).copied())?;
-        let Some(body) = body else {
-            anyhow::bail!("first pane not drawn");
+        // Type into the second terminal, as a person would before opening
+        // anything: it has the keyboard, and must get it back each time.
+        let bodies = self.read(cx, |area, _| {
+            let drawn = area.drawn.borrow();
+            (
+                drawn.panes.get(&first).copied(),
+                drawn.panes.get(&second).copied(),
+            )
+        })?;
+        let (Some(body), Some(second_body)) = bodies else {
+            anyhow::bail!("panes not drawn");
         };
+        self.click(cx, second_body.center()).await;
+        let in_terminal = self
+            .until(cx, Duration::from_secs(3), |area, window, cx| {
+                area.terminals.focused(window, cx).is_some()
+            })
+            .await;
+        self.check(in_terminal, "clicking a pane gives its terminal the keyboard");
+
+        // Right-click the first pane's header: the pane menu, in the overlay.
         let header = point(body.origin.x + px(60.), body.origin.y - HEADER_HEIGHT / 2.);
         self.right_click(cx, header);
         let open = self.until_chrome(cx, |menu, _| menu == Some(true)).await;
@@ -106,14 +131,24 @@ impl Run {
             open,
             "right-click on a pane header opens the pane menu in the overlay",
         );
+        // The main window keeps its focus (a terminal) while the menu, in
+        // the overlay, has the keyboard; it must be the same after.
+        let typing = self.focused(cx);
+        let area = self.area.clone();
+        let on_terminal = cx
+            .update(|window, cx| area.read(cx).terminals.focused(window, cx).is_some())
+            .unwrap_or(false);
+        self.check(on_terminal, "a terminal keeps main-window focus under the menu");
         let modal = self.overlay_capturing(cx);
         self.check(
             modal,
             "the open menu makes the overlay take clicks and keys",
         );
+        self.check(self.keys_go_to_overlay(cx), "keys go to the overlay while the menu is open");
+        self.key_window(cx, true, "the open menu").await;
         Self::settle(cx).await;
         self.shoot_with_overlay(cx, "pane-menu-over-terminal");
-        self.overlay_action(cx, Box::new(Cancel));
+        self.key(cx, "escape");
         let closed = self.until_chrome(cx, |menu, _| menu.is_none()).await;
         self.check(closed, "Escape closes the menu");
         Self::sleep(cx, 300).await;
@@ -122,6 +157,8 @@ impl Run {
             released,
             "with the menu closed the overlay lets clicks through",
         );
+        self.key_window(cx, false, "the menu closed").await;
+        self.focus_back(cx, &typing, "the menu").await;
 
         // Right-click the tab: the tab menu.
         let tab = self.read(cx, |area, _| area.drawn.borrow().tabs.get(&tab_id).copied())?;
@@ -134,12 +171,37 @@ impl Run {
             );
             Self::settle(cx).await;
             self.shoot_with_overlay(cx, "tab-menu");
-            self.overlay_action(cx, Box::new(Cancel));
+            self.key(cx, "escape");
             let closed = self.until_chrome(cx, |menu, _| menu.is_none()).await;
             self.check(closed, "Escape closes the tab menu");
+            self.focus_back(cx, &typing, "the tab menu").await;
         } else {
             self.check(false, "tab drawn");
         }
+
+        // Arrows through the second pane's menu: down, down is Split Right.
+        let second_header = point(
+            second_body.origin.x + px(60.),
+            second_body.origin.y - HEADER_HEIGHT / 2.,
+        );
+        self.right_click(cx, second_header);
+        let open = self.until_chrome(cx, |menu, _| menu == Some(true)).await;
+        self.check(open, "the second pane's menu opens");
+        self.key(cx, "down");
+        Self::settle(cx).await;
+        self.key(cx, "down");
+        Self::settle(cx).await;
+        self.shoot_with_overlay(cx, "pane-menu-arrowed");
+        self.key(cx, "enter");
+        let split = self
+            .until(cx, Duration::from_secs(5), |area, _, _| {
+                area.drawn.borrow().panes.len() == 3
+            })
+            .await;
+        self.check(split, "down, down, Enter in the pane menu runs Split Right");
+        let closed = self.until_chrome(cx, |menu, _| menu.is_none()).await;
+        self.check(closed, "picking a menu item closes the menu");
+        self.focus_in_terminals(cx, "the arrowed menu").await;
 
         // The terminal area's close confirmation is chrome's, in the overlay.
         cx.update(|window, cx| {
@@ -156,14 +218,21 @@ impl Run {
             "closing a pane with a running agent asks in the overlay",
         );
         Self::settle(cx).await;
+        self.key_window(cx, true, "the confirmation").await;
         self.shoot_with_overlay(cx, "close-confirm-over-terminal");
-        self.overlay_action(cx, Box::new(Confirm { secondary: false }));
+        self.key(cx, "enter");
         let gone = self
             .until(cx, Duration::from_secs(5), |area, _, cx| {
                 area.snapshot(cx).pane(&first).is_none()
             })
             .await;
-        self.check(gone, "confirming closes the pane in herdr");
+        self.check(gone, "Enter confirms: the pane is closed in herdr");
+        let shut = self
+            .until_overlay(cx, |window, cx| !window.has_active_dialog(cx))
+            .await;
+        self.check(shut, "Enter closes the confirmation");
+        self.key_window(cx, false, "the confirmation closed").await;
+        self.focus_in_terminals(cx, "the confirmation").await;
 
         // An agent turning blocked raises a toast in the overlay.
         self.report_agent(cx, &second, "working").await?;
@@ -181,19 +250,9 @@ impl Run {
         Self::settle(cx).await;
         self.shoot_with_overlay(cx, "toast-over-terminal");
 
-        // The palette opens in the overlay.
-        self.dispatch(cx, Box::new(CommandPalette));
-        let palette = self
-            .until_overlay(cx, |window, cx| window.has_active_dialog(cx))
-            .await;
-        self.check(palette, "the command palette opens in the overlay");
-        Self::settle(cx).await;
-        self.shoot_with_overlay(cx, "palette-over-terminal");
-        self.overlay_action(cx, Box::new(Cancel));
-        let shut = self
-            .until_overlay(cx, |window, cx| !window.has_active_dialog(cx))
-            .await;
-        self.check(shut, "Escape closes the palette");
+        self.name_prompt(cx).await;
+        self.rename_dialog(cx, &workspace_id).await;
+        self.palette(cx).await;
 
         let task = self.read(cx, |area, cx| {
             area.state
@@ -261,13 +320,273 @@ impl Run {
             .unwrap_or(false)
     }
 
-    /// Dispatches `action` in the overlay window (where the menu or dialog
-    /// has the keyboard), like a key press there.
-    fn overlay_action(&self, cx: &mut Cx, action: Box<dyn Action>) {
-        if let Some(handle) = Self::overlay_handle(cx) {
-            cx.update_window(handle, |_, window, cx| window.dispatch_action(action, cx))
-                .ok();
+    /// One key press, sent where the keyboard is (the overlay while
+    /// something modal is open there), never through the OS.
+    fn key(&self, cx: &mut Cx, key: &str) {
+        let Ok(keystroke) = Keystroke::parse(key) else {
+            eprintln!("script: bad keystroke {key:?}");
+            return;
+        };
+        cx.update(|window, cx| overlay::dispatch_keystroke(keystroke, window, cx))
+            .ok();
+    }
+
+    fn keys(&self, cx: &mut Cx, text: &str) {
+        cx.update(|window, cx| {
+            for keystroke in overlay::keystrokes(text) {
+                overlay::dispatch_keystroke(keystroke, window, cx);
+            }
+        })
+        .ok();
+    }
+
+    fn keys_go_to_overlay(&self, cx: &mut Cx) -> bool {
+        let overlay = Self::overlay_handle(cx);
+        overlay.is_some()
+            && cx.update(|window, cx| Some(overlay::key_target(window, cx))).ok().flatten()
+                == overlay
+    }
+
+    /// The main window's keyboard focus.
+    fn focused(&self, cx: &mut Cx) -> Option<FocusHandle> {
+        cx.update(|window, cx| window.focused(cx)).ok().flatten()
+    }
+
+    /// After a menu or dialog closes: the main window's focus is what it was
+    /// before (`before`), so typing goes on in the same terminal.
+    async fn focus_back(&mut self, cx: &mut Cx, before: &Option<FocusHandle>, what: &str) {
+        Self::settle(cx).await;
+        let now = self.focused(cx);
+        let keys_home = cx
+            .update(|window, cx| overlay::key_target(window, cx) == window.window_handle())
+            .unwrap_or(false);
+        self.check(
+            before.is_some() && now == *before && keys_home,
+            &format!("after {what} the keyboard is back on the terminal that had it"),
+        );
+    }
+
+    /// After something that changed herdr's focus (a split, a close): the
+    /// keyboard is on some terminal again, and keys go to the main window.
+    async fn focus_in_terminals(&mut self, cx: &mut Cx, what: &str) {
+        let back = self
+            .until(cx, Duration::from_secs(3), |area, window, cx| {
+                area.terminals.focused(window, cx).is_some()
+            })
+            .await;
+        let keys_home = cx
+            .update(|window, cx| overlay::key_target(window, cx) == window.window_handle())
+            .unwrap_or(false);
+        self.check(
+            back && keys_home,
+            &format!("after {what} the keyboard is on a terminal again"),
+        );
+    }
+
+    /// AppKit key status: the overlay is the key window while something
+    /// modal is open (`overlay_key`), the main window otherwise. A window can
+    /// only be key while the app is active, so this is skipped while a person
+    /// is using another app.
+    async fn key_window(&mut self, cx: &mut Cx, overlay_key: bool, what: &str) {
+        if !overlay::app_is_active() {
+            eprintln!("skip key-window check ({what}): the app is not frontmost");
+            return;
         }
+        let start = Instant::now();
+        let mut state = (false, false);
+        while start.elapsed() < Duration::from_secs(2) {
+            Self::settle(cx).await;
+            let main = cx
+                .update(|window, _| window.is_window_active())
+                .unwrap_or(false);
+            let over = Self::overlay_handle(cx).is_some_and(|handle| {
+                cx.update_window(handle, |_, window, _| window.is_window_active())
+                    .unwrap_or(false)
+            });
+            state = (main, over);
+            if state == (!overlay_key, overlay_key) {
+                break;
+            }
+        }
+        let (main, over) = state;
+        self.check(
+            over == overlay_key && main == !overlay_key,
+            &format!(
+                "with {what} the {} window is key (main={main}, overlay={over})",
+                if overlay_key { "overlay" } else { "main" }
+            ),
+        );
+    }
+
+    /// The shared name prompt (`crate::prompt`): type into it, Escape it
+    /// (nothing submitted), then type again and submit with Enter.
+    async fn name_prompt(&mut self, cx: &mut Cx) {
+        let before = self.focused(cx);
+        let submitted: Rc<RefCell<Vec<String>>> = Rc::default();
+        let open = |cx: &mut Cx, submitted: &Rc<RefCell<Vec<String>>>| {
+            let submitted = submitted.clone();
+            cx.update(|window, cx| {
+                crate::prompt::ask_name(
+                    "Script Name",
+                    "Create",
+                    "",
+                    move |name, _, _| submitted.borrow_mut().push(name.to_owned()),
+                    window,
+                    cx,
+                );
+            })
+            .ok();
+        };
+
+        open(cx, &submitted);
+        let shown = self
+            .until_overlay(cx, |window, cx| window.has_active_dialog(cx))
+            .await;
+        self.check(shown, "the name prompt opens in the overlay");
+        self.check(self.keys_go_to_overlay(cx), "keys go to the overlay while the prompt is open");
+        self.key_window(cx, true, "the name prompt").await;
+        self.keys(cx, "Escaped");
+        Self::settle(cx).await;
+        self.shoot_with_overlay(cx, "name-prompt-typed");
+        self.key(cx, "escape");
+        let shut = self
+            .until_overlay(cx, |window, cx| !window.has_active_dialog(cx))
+            .await;
+        self.check(shut, "Escape closes the name prompt");
+        Self::sleep(cx, 300).await;
+        self.check(
+            submitted.borrow().is_empty(),
+            "Escape submits nothing",
+        );
+        self.key_window(cx, false, "the name prompt closed").await;
+        self.focus_back(cx, &before, "the name prompt (Escape)").await;
+
+        open(cx, &submitted);
+        let shown = self
+            .until_overlay(cx, |window, cx| window.has_active_dialog(cx))
+            .await;
+        self.check(shown, "the name prompt opens again");
+        self.keys(cx, "typed name");
+        Self::settle(cx).await;
+        self.key(cx, "enter");
+        let shut = self
+            .until_overlay(cx, |window, cx| !window.has_active_dialog(cx))
+            .await;
+        self.check(shut, "Enter closes the name prompt");
+        Self::sleep(cx, 300).await;
+        let got = submitted.borrow().clone();
+        self.check(
+            got == ["typed name"],
+            &format!("Enter submits what was typed (got {got:?})"),
+        );
+        self.focus_back(cx, &before, "the name prompt (Enter)").await;
+    }
+
+    /// The chrome's rename dialog: select all, type a new name, Enter; herdr
+    /// has the new label.
+    async fn rename_dialog(&mut self, cx: &mut Cx, workspace_id: &str) {
+        let before = self.focused(cx);
+        let target = MenuTarget::Workspace {
+            workspace_id: workspace_id.to_owned(),
+        };
+        cx.update(|window, cx| {
+            if let Some(chrome) = crate::chrome::get(window, cx) {
+                chrome.update(cx, |chrome, cx| {
+                    chrome.run_menu_command(MenuCommand::Rename(target), window, cx);
+                });
+            }
+        })
+        .ok();
+        let shown = self
+            .until_overlay(cx, |window, cx| window.has_active_dialog(cx))
+            .await;
+        self.check(shown, "the rename dialog opens in the overlay");
+        self.key(cx, "cmd-a");
+        self.keys(cx, "renamed by keys");
+        Self::settle(cx).await;
+        self.shoot_with_overlay(cx, "rename-typed");
+        self.key(cx, "enter");
+        let renamed = self
+            .until(cx, Duration::from_secs(5), |area, _, cx| {
+                area.snapshot(cx)
+                    .workspace(workspace_id)
+                    .is_some_and(|w| w.info.label == "renamed by keys")
+            })
+            .await;
+        self.check(renamed, "typing and Enter in the rename dialog renames in herdr");
+        let shut = self
+            .until_overlay(cx, |window, cx| !window.has_active_dialog(cx))
+            .await;
+        self.check(shut, "Enter closes the rename dialog");
+        self.focus_back(cx, &before, "the rename dialog").await;
+    }
+
+    /// The palette: type a query, arrow down, Enter runs the selected entry.
+    async fn palette(&mut self, cx: &mut Cx) {
+        let panes = self
+            .read(cx, |area, _| area.drawn.borrow().panes.len())
+            .unwrap_or(0);
+        cx.update(|window, cx| overlay::dispatch_action(Box::new(CommandPalette), window, cx))
+            .ok();
+        let shown = self
+            .until_overlay(cx, |window, cx| window.has_active_dialog(cx))
+            .await;
+        self.check(shown, "the command palette opens in the overlay");
+        self.check(self.keys_go_to_overlay(cx), "keys go to the overlay while the palette is open");
+        self.key_window(cx, true, "the palette").await;
+        let palette = cx
+            .update(|window, cx| crate::chrome::get(window, cx).and_then(|c| c.read(cx).palette()))
+            .ok()
+            .flatten();
+        let Some(palette) = palette else {
+            self.check(false, "the palette's state is reachable");
+            return;
+        };
+        self.keys(cx, "split");
+        Self::settle(cx).await;
+        let (query, matched, first) = palette.read_with(cx, |p, cx| {
+            (p.query(cx), p.matched_count(), p.selected_index())
+        });
+        self.check(
+            query == "split" && matched >= 2,
+            &format!("typing goes into the palette's query (got {query:?}, {matched} matches)"),
+        );
+        self.key(cx, "down");
+        Self::settle(cx).await;
+        let second = palette.read_with(cx, |p, _| p.selected_index());
+        self.check(
+            first.is_some() && second.is_some() && first != second,
+            &format!("down moves the palette selection ({first:?} -> {second:?})"),
+        );
+        self.shoot_with_overlay(cx, "palette-arrowed");
+        self.key(cx, "enter");
+        let shut = self
+            .until_overlay(cx, |window, cx| !window.has_active_dialog(cx))
+            .await;
+        self.check(shut, "Enter closes the palette");
+        let ran = self
+            .until(cx, Duration::from_secs(5), |area, _, _| {
+                area.drawn.borrow().panes.len() == panes + 1
+            })
+            .await;
+        self.check(ran, "Enter runs the selected entry (a split)");
+        self.key_window(cx, false, "the palette closed").await;
+        self.focus_in_terminals(cx, "the palette").await;
+
+        // And Escape closes it without running anything.
+        cx.update(|window, cx| overlay::dispatch_action(Box::new(CommandPalette), window, cx))
+            .ok();
+        let shown = self
+            .until_overlay(cx, |window, cx| window.has_active_dialog(cx))
+            .await;
+        self.check(shown, "the palette opens again");
+        let before = self.focused(cx);
+        self.key(cx, "escape");
+        let shut = self
+            .until_overlay(cx, |window, cx| !window.has_active_dialog(cx))
+            .await;
+        self.check(shut, "Escape closes the palette");
+        self.focus_back(cx, &before, "the palette (Escape)").await;
     }
 
     /// Polls a check on the chrome's menu state (`Chrome::menu_open`).
