@@ -16,6 +16,7 @@ herdr-client = { path = "../herdr-client" }
 git2 = "0.21.0"
 ignore = "0.4.33"
 log = "0.4.34"
+trash = "5.2.9"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6.5"
@@ -23,6 +24,7 @@ objc2-foundation = { version = "0.3.2", default-features = false, features = ["s
 objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "NSApplication", "NSResponder", "NSDockTile", "NSSound"] }
 
 [dev-dependencies]
+serde_json = "1.0.154"
 # GPUI's own test support, not gpui-kit's: the Kit's `test-support` names
 # gpui-fast weakly, and Cargo still resolves it, which pins versions that
 # conflict with gpui-pre's. Keep in step with the gpui-pre that gpui-kit pins.
