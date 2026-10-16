@@ -8,11 +8,11 @@ Date: 2026-10-15. Status: accepted (app-shell, Part 1).
 | --- | --- | --- |
 | `workspace` | `Workspace`, the window root: `h_resizable` of sidebar / editor / terminal area. Routes cross-module actions. | app-shell |
 | `sidebar` | `Sidebar`: `v_resizable` of `agents::AgentList` over `files::FileTree` | app-shell |
-| `sidebar::agents` | `AgentList` | agents agent |
+| `sidebar::agents` | `AgentList` | chrome agent |
 | `sidebar::files` | `FileTree` | files agent |
 | `editor` | `Editor` (file tabs + code editor) | app-shell, Part 2 |
 | `terminal_area` | `TerminalArea` (herdr tab bar + split tree of Ghostty views) | ghostty-terminals agent |
-| `chrome` | `Chrome`: command palette, context menus, toasts, confirmations | ghostty-terminals agent proves the overlay window; API lives here |
+| `chrome`, `attention` | `Chrome`: command palette, context menus, toasts, confirmations; `Attention`: status changes and unseen results (see 0006) | chrome agent (ghostty-terminals agent provides the overlay window) |
 | `state` | `AppState`, the shared model | shared, small edits |
 | `herdr` | the only module that names herdr-client types | herdr-client integration |
 | `actions` | app-wide actions, app menu, global key bindings | shared |
@@ -71,10 +71,21 @@ else in the module is yours.
 ## Overlays
 
 Ghostty views sit above GPUI's layer, so `Chrome` will render floating UI in a
-transparent overlay window. Callers only use `Chrome`'s methods (`toast`,
-`open_command_palette`, later `confirm`, `context_menu`), so moving from the
-in-window placeholder (GPUI Kit notifications) to the overlay window touches
-only `chrome.rs`.
+transparent overlay window. Callers only use `Chrome`'s API, so moving from
+in-window rendering to the overlay touches only `chrome/`:
+
+- `OpenContextMenu { target, position }` (action, from any view) or
+  `Chrome::context_menu(target: MenuTarget, position, extra: Vec<MenuEntry>, ..)`.
+  `MenuTarget` is `Pane { pane_id } | Tab { tab_id } | Workspace { workspace_id }`;
+  the chrome supplies the herdr actions and plugin actions for the target,
+  `extra` adds the caller's own entries (`MenuEntry::item(label,
+  MenuCommand::Callback(..))`). The terminal area calls this for pane and tab
+  right-clicks.
+- `Chrome::run(HerdrCommand)` sends a herdr command, confirming closes first;
+  `Chrome::confirm(Confirmation, on_confirm)` asks anything else.
+- `Chrome::toast(message)`, `Chrome::open_command_palette()`.
+
+Details in 0006-chrome.md.
 
 ## Notes
 
