@@ -51,9 +51,15 @@ fn open_main_window(cx: &mut App) -> anyhow::Result<()> {
         }),
         ..WindowOptions::default()
     };
-    gpui_kit::open_window(options, cx, |window, cx| {
+    let (window, _) = gpui_kit::open_window(options, cx, |window, cx| {
         theme::sync_with_system(window, cx);
         cx.new(|cx| Workspace::new(state, window, cx))
+    })?;
+    // Files named on the command line open in the editor.
+    window.update(cx, |_, window, cx| {
+        for path in std::env::args_os().skip(1) {
+            window.dispatch_action(Box::new(actions::OpenFile { path: path.into() }), cx);
+        }
     })?;
     cx.activate(true);
     Ok(())
