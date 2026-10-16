@@ -136,7 +136,11 @@ rename dialog (herdr gets the typed label); down, down, Enter in a pane menu
 runs Split Right; typing fills the palette's query and down moves its
 selection. After each, the main window is key again and keyboard focus is on
 the terminal that had it (key status checks are skipped while another app is
-frontmost).
+frontmost). The text fields (name prompt, rename dialog, palette query) are
+also typed into with key-down `NSEvent`s handed to the overlay's `NSWindow`
+(`sendEvent:`), the path real typing takes, and the script checks that GPUI's
+view is the overlay's first responder (0008, "typing into overlay dialogs
+beeped").
 
 A right-click on a pane header or tab no longer moves keyboard focus off the
 terminal (`TerminalArea::context_menu` calls `prevent_default`, which stops

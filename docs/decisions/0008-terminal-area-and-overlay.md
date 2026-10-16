@@ -141,6 +141,8 @@ overlay.update(cx, |o, cx| o.remove_layer(id, cx));
   main window while a dialog is open in the overlay reaches nothing.
 - **AppKit setup** (in `overlay/native.rs`):
   - borderless, non-opaque, clear background, no shadow;
+  - GPUI's view made first responder again right after the style change
+    (see "Bug: typing into overlay dialogs beeped");
   - `addChildWindow:ordered:Above`, so it moves, hides and orders with the main
     window;
   - level reset to the parent's, because GPUI opens pop-ups above every app;
@@ -163,7 +165,10 @@ overlay.update(cx, |o, cx| o.remove_layer(id, cx));
 - **Capture and key status never depend on reaching the overlay window.**
   `Overlay` keeps the overlay's and the parent's `NSWindow`s. Mouse capture is
   set on the `NSWindow` directly. Key status is handed over with
-  `makeKeyAndOrderFront` from a foreground task (`make_key_later`). "Modal" is
+  `makeKeyAndOrderFront` from a foreground task (`request_key`). There is
+  at most one such task queued, and it applies the latest decision when it
+  runs, so a menu closing and a dialog opening in the same tick make one
+  request, not "main window" then "overlay" racing. "Modal" is
   plain state: the `Capture::Modal` layers plus a recorded "Kit dialog or sheet
   open" flag. The flag is refreshed after every `update_window`, on overlay
   frames, and in `sync_capture` whenever the window can be read. When it
@@ -297,6 +302,65 @@ the first menu opens, now that `sync_capture` compares with AppKit.
 
 Real clicks are not scripted. Posting events, even to our own PID, is off
 limits; the human tests them by hand.
+
+## Bug: typing into overlay dialogs beeped (2026-10-16)
+
+The human found that typing into the Rename Tab dialog did nothing: the
+field showed a caret, every key press gave the macOS "not allowed" beep. The
+overlay was key (the debug log said so). Every script keystroke had been a
+GPUI `dispatch_keystroke`, which hands text straight to GPUI's input
+handler, so AppKit's path for a key press was never exercised.
+
+**Root cause.** `attach` turns the overlay borderless with
+`setStyleMask:`. Changing the style mask swaps the window's frame view, and
+AppKit makes the window itself the first responder. Logged: first responder
+`GPUIView` before `attach`, `GPUIPanel` after. AppKit sends `keyDown:` to the
+first responder, so key presses went to the panel, not to GPUI's view;
+`-[NSWindow keyDown:]` found no one to handle them and beeped. GPUI's own
+view never beeps (it overrides `doCommandBySelector:`), which is how the beep
+pointed past GPUI. GPUI focus was fine all along: the prompt focuses its
+input with the overlay window's own `Window`, inside the dialog builder, and
+the input painted its caret and registered its input handler. Nothing
+delivered the keys to it. The other two suspects checked out too: GPUI's
+panel class answers YES to `canBecomeKeyWindow` and `canBecomeMainWindow`,
+and the overlay did become key.
+
+**Fixes.**
+- `native::attach` makes GPUI's view first responder again right after
+  `setStyleMask:`. The key hand-off also checks it whenever the overlay
+  becomes key and restores it with a warning if anything else took it.
+- Key hand-offs are coalesced (`Overlay::request_key`): one queued task,
+  which applies the latest `keyed` decision. The menu → dialog flapping in
+  the human's log ("handing key status back to the main window", then
+  "making the overlay key", two racing requests) is now one request.
+- Debug logging (`RUST_LOG=app::overlay=debug`): every key hand-off logs
+  AppKit's key status, the overlay's first responder class, whether GPUI's
+  view is first responder, whether an input handler is registered, and the
+  overlay window's focused element. `attach` logs the first responder too.
+
+**Checks** (`RT_SCRIPT=chrome`). For the name prompt (the same code serves
+New Worktree, New File and New Folder), the rename dialog (tab, workspace,
+pane) and the palette:
+- the overlay window's GPUI focus is on the field (the rename input's and
+  the palette query's own handles), and the main window keeps its focus;
+- GPUI's view is the overlay's first responder, the view answers
+  `selectedRange` (an input handler is registered), and the overlay is key;
+- real typing: key-down `NSEvent`s built in-process and handed to the
+  overlay's `NSWindow` with `sendEvent:` (`NativeKeyboard::send_key`), the
+  call AppKit's event loop makes. This goes through the first responder,
+  `keyDown:` and the text input system, unlike GPUI-level dispatch. It is a
+  method call on our own window: nothing goes through the OS, and no other
+  app can receive it. Letters, backspace, left arrows and Enter fill and
+  submit the prompt; Escape closes it; cmd-a, typing and Enter rename in
+  herdr; typing fills the palette's query and down moves its selection.
+
+With the first-responder fix taken out, the script fails 7 checks:
+first responder `GPUIPanel`, the prompt submits `""`, the rename never
+happens, and the palette query stays empty. That matches the human's
+report.
+
+Paste (cmd-v) isn't scripted, because it would overwrite the user's
+clipboard. Real keyboard input is tested by hand.
 
 ## Known gaps
 
