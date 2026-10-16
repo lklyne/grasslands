@@ -267,15 +267,6 @@ impl Run {
         })?
     }
 
-    fn key(&self, cx: &mut Cx, key: &str) {
-        cx.update(|window, cx| {
-            if let Ok(keystroke) = Keystroke::parse(key) {
-                window.dispatch_keystroke(keystroke, cx);
-            }
-        })
-        .ok();
-    }
-
     async fn click_tab(&mut self, cx: &mut Cx, index: usize) -> anyhow::Result<()> {
         let Some(bounds) =
             self.workspace(cx, |ws, _, _| ws.drawn_tabs().tabs.get(index).copied())?
