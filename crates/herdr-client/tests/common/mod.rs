@@ -1,4 +1,4 @@
-//! Shared helpers for tests that drive the isolated `gpui-dev` herdr session.
+//! Shared helpers for tests that drive the isolated `dev-*` herdr session.
 //! Run them with `scripts/dev-run cargo test -p herdr-client`.
 
 #![allow(dead_code)]
@@ -15,13 +15,13 @@ pub const TIMEOUT: Duration = Duration::from_secs(10);
 /// isolated dev session. Guards against ever touching the user's live herdr.
 pub fn dev_endpoint() -> Option<Endpoint> {
     let endpoint = Endpoint::from_env();
-    let isolated = endpoint.session.as_deref() == Some("gpui-dev")
+    let isolated = endpoint.session.as_deref().is_some_and(|s| s.starts_with("dev-"))
         && endpoint
             .socket_path
             .to_string_lossy()
             .contains("rusted-tools-herdr");
     if !isolated {
-        eprintln!("skipping: run through scripts/dev-run so herdr points at the gpui-dev session");
+        eprintln!("skipping: run through scripts/dev-run so herdr points at an isolated dev-* session");
         return None;
     }
     Some(endpoint)

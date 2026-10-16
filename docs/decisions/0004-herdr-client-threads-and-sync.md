@@ -28,4 +28,4 @@ On a dropped connection or `events_lost`: status `Reconnecting`, back off 100 ms
 
 ## Tests
 
-`scripts/dev-run cargo test -p herdr-client`. Tests that touch a server skip unless `HERDR_SESSION=gpui-dev` and the socket is under `rusted-tools-herdr`, so a plain `cargo test` can never touch the live session. `tests/reconnect.rs` runs `herdr --session gpui-dev server stop`, which kills every pane in the dev session; don't run it while another agent is demoing against `gpui-dev`.
+`scripts/dev-run cargo test -p herdr-client`. Tests that touch a server skip unless `HERDR_SESSION` is a `dev-*` session and the socket is under `rusted-tools-herdr`, so a plain `cargo test` can never touch the live session. `tests/reconnect.rs` stops the current checkout's own `dev-*` session; each worktree has its own, so it only affects that checkout.

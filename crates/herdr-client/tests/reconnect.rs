@@ -21,7 +21,7 @@ fn sync_should_reconnect_after_server_stop() {
 
     // Only ever the isolated dev session (checked by dev_endpoint).
     let status = Command::new(&endpoint.bin)
-        .args(["--session", "gpui-dev", "server", "stop"])
+        .args(["--session", endpoint.session.as_deref().unwrap(), "server", "stop"])
         .status()
         .unwrap();
     assert!(status.success());
