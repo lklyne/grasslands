@@ -31,14 +31,16 @@ else in the module is yours.
 - React to discrete changes: `cx.subscribe(&state, ...)` on `AppEvent`
   (`ActiveWorktreeChanged(Option<PathBuf>)`, `SnapshotReplaced`; add variants
   as needed).
-- `crate::herdr` holds stand-in types (`Snapshot`, `Agent`, `Workspace`,
-  `ConnectionStatus`, `Config::from_env`). When `crates/herdr-client` lands,
-  add it as a path dependency and turn these into re-exports or thin wrappers;
-  views keep importing from `crate::herdr`. The connection task lives in
-  `AppState` (spawned from `AppState::new`), applies events to the cache with
-  `cx.notify()`, and replaces it with `replace_snapshot` on reconnect.
-- Commands to herdr go through methods on `AppState` (e.g. `focus_pane`,
-  `split_pane`), never straight from a view, so there is one place that talks
+- `crate::herdr` re-exports `herdr-client` types under the names views use
+  (`Snapshot` = `herdr_client::State`, `Agent`, `AgentStatus`, `SplitTree`,
+  `ConnectionStatus`, `Config` = `Endpoint`, ...). `AppState::new` starts
+  `SessionSync` and applies its updates on the foreground: `snapshot:
+  Arc<Snapshot>` is replaced whole (`SnapshotReplaced`), `focused_pane` follows
+  (`FocusedPaneChanged`), raw events are re-emitted as `AppEvent::Herdr` and
+  `connection` tracks the status. Under `cargo test` it stays offline.
+- Commands to herdr go through methods on `AppState` (`focus_pane`, `split_pane`,
+  `set_split_ratio`, `new_tab`, ..., or `call` for anything else; each returns a
+  `Task<herdr::Result<T>>` to await or `.detach_and_log_err(cx)`), never straight from a view, so there is one place that talks
   to the socket.
 - `Config::from_env` honors `HERDR_BIN`, `HERDR_SESSION`, `HERDR_SOCKET_PATH`.
 

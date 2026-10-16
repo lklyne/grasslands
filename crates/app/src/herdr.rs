@@ -1,67 +1,21 @@
-//! The app's only door to herdr.
-//!
-//! `crates/herdr-client` is being built in parallel. Until it lands, this
-//! module holds stand-in types with the shape the views need; when it lands,
-//! these become re-exports of (or thin wrappers over) its types and the views
-//! do not change. Nothing outside this module and `state` names herdr types.
+//! The app's only door to herdr: re-exports of `herdr-client` under the names
+//! the views use. Nothing outside this module and `state` imports
+//! `herdr_client` directly.
 
-use std::path::PathBuf;
+#[allow(
+    unused_imports,
+    reason = "the views pick these up as they are filled in"
+)]
+pub use herdr_client::{
+    AgentInfo as Agent, AgentStatus, Client, ConnectionStatus, Error, Event, LayoutDescription,
+    NewTab, NewWorkspace, PaneDirection, PaneId, PaneInfo, PaneMoveDestination, PaneSplit,
+    PluginActionInfo, PluginInvocationContext, RightClickTarget, SessionSync, SplitDirection,
+    SplitRef, SplitTree, State as Snapshot, Tab, TabId, TabInfo, Update, Workspace, WorkspaceId,
+    WorkspaceInfo, WorktreeInfo, WorktreeParams,
+};
 
-/// Where to find herdr. Honors the same variables as the dev scripts so a
-/// dev run never touches the user's live session.
-#[derive(Debug, Clone)]
-pub struct Config {
-    pub bin: PathBuf,
-    pub session: Option<String>,
-    pub socket_path: Option<PathBuf>,
-}
+/// Where to find herdr: `HERDR_BIN`, `HERDR_SESSION`, `HERDR_SOCKET_PATH`
+/// (`Config::from_env`), so a dev run never touches the user's live session.
+pub type Config = herdr_client::Endpoint;
 
-impl Config {
-    pub fn from_env() -> Self {
-        Self {
-            bin: std::env::var_os("HERDR_BIN").map_or_else(|| "herdr".into(), PathBuf::from),
-            session: std::env::var("HERDR_SESSION").ok(),
-            socket_path: std::env::var_os("HERDR_SOCKET_PATH").map(PathBuf::from),
-        }
-    }
-}
-
-/// The connection's state, shown in the UI.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub enum ConnectionStatus {
-    #[default]
-    Disconnected,
-    Connecting,
-    Connected,
-    Failed(String),
-}
-
-/// Stand-in for herdr-client's snapshot cache. Replaced by
-/// `herdr_client::Snapshot` (or a wrapper) when that crate lands.
-#[derive(Debug, Clone, Default)]
-pub struct Snapshot {
-    pub workspaces: Vec<Workspace>,
-    pub agents: Vec<Agent>,
-}
-
-#[derive(Debug, Clone)]
-pub struct Workspace {
-    pub id: String,
-    pub label: String,
-}
-
-#[derive(Debug, Clone)]
-pub struct Agent {
-    pub pane_id: String,
-    pub name: String,
-    pub workspace_id: String,
-    pub status: AgentStatus,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AgentStatus {
-    Working,
-    Blocked,
-    Done,
-    Idle,
-}
+pub type Result<T> = herdr_client::Result<T>;
