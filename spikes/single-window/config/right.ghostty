@@ -1,0 +1,5 @@
+# Right terminal: large font, warm light theme.
+font-size = 18
+background = #f4ecd8
+foreground = #3b2f1e
+cursor-color = #b5541c

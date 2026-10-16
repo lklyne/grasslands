@@ -1,0 +1,5 @@
+# Left terminal: small font, dark blue.
+font-size = 11
+background = #10182a
+foreground = #c8d3f5
+cursor-color = #82aaff
