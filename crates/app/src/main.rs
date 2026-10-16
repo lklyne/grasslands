@@ -18,6 +18,7 @@ mod state;
 mod terminal_area;
 mod theme;
 mod workspace;
+mod worktree;
 
 use gpui_kit::*;
 

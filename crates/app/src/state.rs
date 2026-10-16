@@ -17,6 +17,7 @@ use gpui_kit::*;
 
 use crate::attention::{Attention, StatusChange};
 use crate::herdr::{self, Client, ConnectionStatus, PaneId, SessionSync, Snapshot, Update};
+use crate::worktree;
 
 #[derive(Debug, Clone)]
 pub enum AppEvent {
@@ -45,6 +46,8 @@ pub struct AppState {
     /// Status changes and unseen results, for toasts and badges.
     pub attention: Attention,
     active_worktree: Option<PathBuf>,
+    /// The focused pane's folder the active worktree was last resolved from.
+    focused_dir: Option<PathBuf>,
     /// `None` when the endpoint was refused.
     client: Option<Client>,
     _sync: Option<(SessionSync, Task<()>)>,
@@ -106,6 +109,7 @@ impl AppState {
             focused_pane: None,
             attention: Attention::default(),
             active_worktree: std::env::current_dir().ok(),
+            focused_dir: None,
             client: None,
             _sync: None,
         }
@@ -158,7 +162,26 @@ impl AppState {
             self.focused_pane.clone_from(&focused);
             cx.emit(AppEvent::FocusedPaneChanged(focused));
         }
+        self.follow_focused_pane(cx);
         cx.notify();
+    }
+
+    /// Re-roots on the focused pane's `foreground_cwd` (falling back to `cwd`),
+    /// so it also follows an agent that moves into another folder. With no
+    /// focused pane, or a folder that doesn't exist here, the root stays put.
+    fn follow_focused_pane(&mut self, cx: &mut Context<Self>) {
+        let dir = self
+            .snapshot
+            .focused_pane()
+            .and_then(herdr::PaneInfo::working_dir)
+            .map(PathBuf::from);
+        if dir.is_none() || dir == self.focused_dir {
+            return;
+        }
+        self.focused_dir.clone_from(&dir);
+        if let Some(root) = dir.as_deref().and_then(worktree::resolve_root) {
+            self.set_active_worktree(Some(root), cx);
+        }
     }
 
     /// Runs one blocking herdr call on the background executor. The typed
