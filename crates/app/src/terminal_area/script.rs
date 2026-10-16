@@ -220,7 +220,15 @@ impl Run {
     fn views_match_layout(&self, cx: &mut Cx) -> Result<usize, String> {
         cx.update(|window, cx| {
             let area = self.area.read(cx);
-            let slots: Vec<Bounds<Pixels>> = area.drawn.borrow().panes.values().copied().collect();
+            // Detached panes show a Reattach button instead of a view.
+            let drawn = area.drawn.borrow();
+            let slots: Vec<Bounds<Pixels>> = drawn
+                .panes
+                .iter()
+                .filter(|(pane, _)| !drawn.reattach.contains_key(*pane))
+                .map(|(_, bounds)| *bounds)
+                .collect();
+            drop(drawn);
             if let Some(tiny) = slots
                 .iter()
                 .find(|slot| slot.size.width < px(80.) || slot.size.height < px(60.))
@@ -646,6 +654,11 @@ impl Run {
         Self::settle(cx).await;
         self.check_views(cx, "after close");
 
+        self.focus_moves(cx).await?;
+        self.header_drags(cx, &tab_id).await?;
+        self.zoom(cx, &tab_id).await?;
+        self.detach_and_reattach(cx).await?;
+
         // Overlay: a passive toast takes the pointer only over itself; a
         // modal layer takes everything.
         let overlay = cx.update(overlay::get_or_open)??;
@@ -676,13 +689,20 @@ impl Run {
         });
         let modal_on = overlay.read_with(cx, |overlay, _| overlay.is_capturing());
         Self::sleep(cx, 300).await;
-        let overlay_key = overlay.update(cx, |overlay, cx| {
-            overlay.update_window(cx, |window, _| window.is_window_active())
-        });
-        self.check(
-            overlay_key == Some(true),
-            "a modal layer makes the overlay the key window (keyboard for menus/palette)",
-        );
+        // Key status needs the app to be the active app; while the human uses
+        // another app no window can be key, so these checks are skipped.
+        let frontmost = overlay::app_is_active();
+        if frontmost {
+            let overlay_key = overlay.update(cx, |overlay, cx| {
+                overlay.update_window(cx, |window, _| window.is_window_active())
+            });
+            self.check(
+                overlay_key == Some(true),
+                "a modal layer makes the overlay the key window (keyboard for menus/palette)",
+            );
+        } else {
+            eprintln!("skip key-window checks: the app is not frontmost");
+        }
         self.check(modal_on, "a modal layer makes the overlay take every click");
         overlay.update(cx, |overlay, cx| {
             overlay.remove_layer(modal_id, cx);
@@ -693,10 +713,12 @@ impl Run {
             .ok();
         let off = overlay.read_with(cx, |overlay, _| overlay.is_capturing());
         self.check(!off, "overlay is click-through again once layers close");
-        let key = cx
-            .update(|window, _| window.is_window_active())
-            .unwrap_or(false);
-        self.check(key, "main window is key again after the modal layer closed");
+        if frontmost {
+            let key = cx
+                .update(|window, _| window.is_window_active())
+                .unwrap_or(false);
+            self.check(key, "main window is key again after the modal layer closed");
+        }
 
         self.theme_reload(cx).await?;
         self.server_restart(cx, &workspace.label).await?;
@@ -713,7 +735,421 @@ impl Run {
     }
 }
 
+fn shell_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', r"'\''"))
+}
+
+fn center(bounds: Bounds<Pixels>) -> Point<Pixels> {
+    bounds.origin + point(bounds.size.width / 2., bounds.size.height / 2.)
+}
+
 impl Run {
+    fn press(&self, cx: &mut Cx, at: Point<Pixels>) {
+        self.mouse(
+            cx,
+            PlatformInput::MouseMove(MouseMoveEvent {
+                position: at,
+                pressed_button: None,
+                modifiers: Modifiers::default(),
+            }),
+        );
+        self.mouse(
+            cx,
+            PlatformInput::MouseDown(MouseDownEvent {
+                button: MouseButton::Left,
+                position: at,
+                modifiers: Modifiers::default(),
+                click_count: 1,
+                first_mouse: false,
+            }),
+        );
+    }
+
+    fn release(&self, cx: &mut Cx, at: Point<Pixels>) {
+        self.mouse(
+            cx,
+            PlatformInput::MouseUp(MouseUpEvent {
+                button: MouseButton::Left,
+                position: at,
+                modifiers: Modifiers::default(),
+                click_count: 1,
+            }),
+        );
+    }
+
+    async fn click(&self, cx: &mut Cx, at: Point<Pixels>) {
+        self.press(cx, at);
+        Self::settle(cx).await;
+        self.release(cx, at);
+        Self::settle(cx).await;
+    }
+
+    /// Drags with the left button from `from` to `to` in `steps` frames;
+    /// `during` runs at the halfway step, while the button is still down.
+    async fn drag(
+        &mut self,
+        cx: &mut Cx,
+        from: Point<Pixels>,
+        to: Point<Pixels>,
+        steps: usize,
+        mut during: impl FnMut(&mut Self, &mut Cx),
+    ) {
+        self.press(cx, from);
+        Self::settle(cx).await;
+        for step in 1..=steps {
+            let t = step as f32 / steps as f32;
+            let position = from + point((to.x - from.x) * t, (to.y - from.y) * t);
+            self.mouse(
+                cx,
+                PlatformInput::MouseMove(MouseMoveEvent {
+                    position,
+                    pressed_button: Some(MouseButton::Left),
+                    modifiers: Modifiers::default(),
+                }),
+            );
+            Self::settle(cx).await;
+            if step == steps / 2 {
+                during(self, cx);
+            }
+        }
+        self.release(cx, to);
+        Self::settle(cx).await;
+    }
+
+    fn drawn<R>(&self, cx: &mut Cx, f: impl FnOnce(&super::Drawn) -> R) -> anyhow::Result<R> {
+        self.read(cx, |area, _| f(&area.drawn.borrow()))
+    }
+
+    fn focused_pane(&self, cx: &mut Cx) -> Option<String> {
+        self.read(cx, |area, cx| area.snapshot(cx).focused_pane_id.clone())
+            .ok()
+            .flatten()
+    }
+
+    /// cmd-alt-arrows move herdr's focus to the pane next to the focused one.
+    async fn focus_moves(&mut self, cx: &mut Cx) -> anyhow::Result<()> {
+        // Start from the leftmost pane.
+        let leftmost = self.drawn(cx, |d| {
+            d.panes
+                .iter()
+                .min_by(|a, b| f32::from(a.1.origin.x).total_cmp(&f32::from(b.1.origin.x)))
+                .map(|(id, _)| id.clone())
+        })?;
+        let Some(leftmost) = leftmost else {
+            self.fail("focus: no panes drawn");
+            return Ok(());
+        };
+        cx.update(|window, cx| {
+            self.area
+                .update(cx, |area, cx| area.focus_pane(&leftmost, window, cx));
+        })
+        .ok();
+        let on_left = self
+            .until(cx, Duration::from_secs(5), |area, _, cx| {
+                area.snapshot(cx).focused_pane_id.as_deref() == Some(leftmost.as_str())
+            })
+            .await;
+        self.check(on_left, "focus starts on the leftmost pane");
+        let expected = self.drawn(cx, |d| {
+            super::layout::neighbor(&leftmost, crate::herdr::PaneDirection::Right, &d.panes)
+                .map(str::to_owned)
+        })?;
+        cx.update(|window, cx| {
+            window.dispatch_keystroke(Keystroke::parse("cmd-alt-right").unwrap_or_default(), cx);
+        })
+        .ok();
+        let moved = self
+            .until(cx, Duration::from_secs(5), |area, _, cx| {
+                expected.is_some() && area.snapshot(cx).focused_pane_id == expected
+            })
+            .await;
+        self.check(
+            moved,
+            &format!("cmd-alt-right moves herdr's focus {leftmost} -> {expected:?}"),
+        );
+        let terminal_follows = cx
+            .update(|window, cx| {
+                let area = self.area.read(cx);
+                let snapshot = area.snapshot(cx);
+                let want = expected
+                    .as_deref()
+                    .and_then(|p| snapshot.pane(p))
+                    .map(|p| p.terminal_id.clone());
+                area.terminals.focused(window, cx).map(str::to_owned) == want
+            })
+            .unwrap_or(false);
+        self.check(
+            terminal_follows,
+            "keyboard focus moved to that pane's terminal",
+        );
+        self.shoot(cx, "focus-moved");
+        cx.update(|window, cx| {
+            window.dispatch_keystroke(Keystroke::parse("cmd-alt-left").unwrap_or_default(), cx);
+        })
+        .ok();
+        let back = self
+            .until(cx, Duration::from_secs(5), |area, _, cx| {
+                area.snapshot(cx).focused_pane_id.as_deref() == Some(leftmost.as_str())
+            })
+            .await;
+        self.check(back, "cmd-alt-left moves it back");
+        Ok(())
+    }
+
+    /// Dragging a pane header: onto another pane swaps them, onto a tab moves
+    /// the pane there. The preview is drawn in the overlay, above terminals.
+    async fn header_drags(&mut self, cx: &mut Cx, first_tab: &str) -> anyhow::Result<()> {
+        let Some((_, tree)) = self.tab(cx)? else {
+            anyhow::bail!("no tab for header drags");
+        };
+        let order_before: Vec<String> = tree.pane_ids().into_iter().map(str::to_owned).collect();
+        let (Some(a), Some(b)) = (order_before.first().cloned(), order_before.last().cloned())
+        else {
+            anyhow::bail!("need two panes to swap");
+        };
+        let (from, to) = self.drawn(cx, |d| {
+            (d.headers.get(&a).copied(), d.headers.get(&b).copied())
+        })?;
+        let (Some(from), Some(to)) = (from, to) else {
+            self.fail("swap: headers were not drawn");
+            return Ok(());
+        };
+        let mut chip_shown = false;
+        self.drag(
+            cx,
+            center(from),
+            center(to) + point(px(0.), px(40.)),
+            12,
+            |run, cx| {
+                chip_shown = run
+                    .read(cx, |area, _| area.pane_drag.is_some())
+                    .unwrap_or(false);
+                run.shoot_with_overlay(cx, "dragging-header-over-terminal");
+            },
+        )
+        .await;
+        self.check(
+            chip_shown,
+            "the drag preview is an overlay layer while dragging",
+        );
+        let gone = self.read(cx, |area, _| area.pane_drag.is_none())?;
+        self.check(gone, "the drag preview is removed on drop");
+        let swapped = self
+            .until(cx, Duration::from_secs(5), |area, _, cx| {
+                let snapshot = area.snapshot(cx);
+                let order: Vec<&str> = snapshot
+                    .tab(first_tab)
+                    .and_then(|t| t.root.as_ref())
+                    .map(|root| root.pane_ids())
+                    .unwrap_or_default();
+                order.first() == Some(&b.as_str()) && order.last() == Some(&a.as_str())
+            })
+            .await;
+        self.check(
+            swapped,
+            &format!("dropping {a}'s header on {b} swaps them (pane.swap)"),
+        );
+        Self::sleep(cx, 400).await;
+        Self::settle(cx).await;
+        self.check_views(cx, "after swap");
+        self.shoot(cx, "after-swap");
+
+        // A second tab, then drag its pane's header onto the first tab.
+        self.dispatch(cx, Box::new(NewTab));
+        let second = self
+            .until(cx, Duration::from_secs(10), |area, _, cx| {
+                let snapshot = area.snapshot(cx);
+                TerminalArea::active_tab(&snapshot).is_some_and(|t| t.info.tab_id != first_tab)
+                    && area.drawn.borrow().panes.len() == 1
+            })
+            .await;
+        self.check(second, "a second tab to move from");
+        Self::sleep(cx, 500).await;
+        Self::settle(cx).await;
+        let (moving, header, tab) = self.drawn(cx, |d| {
+            let pane = d.panes.keys().next().cloned();
+            let header = pane.as_ref().and_then(|p| d.headers.get(p).copied());
+            (pane, header, d.tabs.get(first_tab).copied())
+        })?;
+        let (Some(moving), Some(header), Some(tab)) = (moving, header, tab) else {
+            self.fail("move: header or tab not drawn");
+            return Ok(());
+        };
+        let terminal = self.read(cx, |area, cx| {
+            area.snapshot(cx)
+                .pane(&moving)
+                .map(|p| p.terminal_id.clone())
+        })?;
+        let view_before = self.read(cx, |area, _| {
+            terminal
+                .as_deref()
+                .and_then(|t| area.terminals.get(t))
+                .map(|v| v.terminal.entity_id())
+        })?;
+        self.drag(cx, center(header), center(tab), 10, |_, _| {})
+            .await;
+        let moved = self
+            .until(cx, Duration::from_secs(10), |area, _, cx| {
+                let snapshot = area.snapshot(cx);
+                let in_first = snapshot
+                    .panes
+                    .values()
+                    .any(|p| Some(&p.terminal_id) == terminal.as_ref() && p.tab_id == first_tab);
+                let view = terminal
+                    .as_deref()
+                    .and_then(|t| area.terminals.get(t))
+                    .map(|v| v.terminal.entity_id());
+                in_first && view.is_some() && view == view_before
+            })
+            .await;
+        self.check(
+            moved,
+            "dropping a header on another tab moves the pane there (pane.move), same view",
+        );
+        // Show the first tab again if herdr stayed on the (now gone) second.
+        let task = self.read(cx, |area, cx| area.state.read(cx).focus_tab(first_tab, cx))?;
+        task.await.ok();
+        let four = self
+            .until(cx, Duration::from_secs(10), |area, _, _| {
+                area.drawn.borrow().panes.len() == 4
+            })
+            .await;
+        self.check(four, "the first tab shows the moved pane (4 panes)");
+        Self::sleep(cx, 400).await;
+        Self::settle(cx).await;
+        self.check_views(cx, "after move by drag");
+        self.shoot(cx, "after-move-by-drag");
+        Ok(())
+    }
+
+    /// cmd-shift-enter zooms the focused pane: only it is shown, full size.
+    async fn zoom(&mut self, cx: &mut Cx, tab_id: &str) -> anyhow::Result<()> {
+        let panes = self.drawn(cx, |d| d.panes.len())?;
+        cx.update(|window, cx| {
+            window.dispatch_keystroke(Keystroke::parse("cmd-shift-enter").unwrap_or_default(), cx);
+        })
+        .ok();
+        let zoomed = self
+            .until(cx, Duration::from_secs(5), |area, _, cx| {
+                area.snapshot(cx).tab(tab_id).is_some_and(|t| t.zoomed)
+                    && area.drawn.borrow().panes.len() == 1
+            })
+            .await;
+        self.check(zoomed, "cmd-shift-enter zooms the focused pane (pane.zoom)");
+        Self::sleep(cx, 400).await;
+        Self::settle(cx).await;
+        self.check_views(cx, "zoomed: the other views are hidden");
+        self.shoot(cx, "zoomed");
+        cx.update(|window, cx| {
+            window.dispatch_keystroke(Keystroke::parse("cmd-shift-enter").unwrap_or_default(), cx);
+        })
+        .ok();
+        let unzoomed = self
+            .until(cx, Duration::from_secs(5), |area, _, _| {
+                area.drawn.borrow().panes.len() == panes
+            })
+            .await;
+        self.check(unzoomed, "cmd-shift-enter again restores the split");
+        Self::sleep(cx, 400).await;
+        Self::settle(cx).await;
+        self.check_views(cx, "unzoomed");
+        Ok(())
+    }
+
+    /// Another client takes a terminal over: the pane shows Detached with a
+    /// Reattach button; clicking it takes the terminal back.
+    async fn detach_and_reattach(&mut self, cx: &mut Cx) -> anyhow::Result<()> {
+        let (pane, terminal, config) = self.read(cx, |area, cx| {
+            let snapshot = area.snapshot(cx);
+            let pane = area.drawn.borrow().panes.keys().next().cloned();
+            let terminal = pane
+                .as_deref()
+                .and_then(|p| snapshot.pane(p))
+                .map(|p| p.terminal_id.clone());
+            (pane, terminal, area.state.read(cx).herdr_config.clone())
+        })?;
+        let (Some(pane), Some(terminal), Some(config)) = (pane, terminal, config) else {
+            self.fail("detach: no pane or herdr config");
+            return Ok(());
+        };
+        let Some(session) = config.session.clone() else {
+            self.fail("detach needs HERDR_SESSION");
+            return Ok(());
+        };
+        // `script` gives the other client a pty; herdr refuses a zero-sized
+        // one, hence the stty. Killing `script` closes the pty, which ends
+        // the attach.
+        let attach = format!(
+            "stty rows 24 cols 80; exec {} --session {} terminal attach {} --takeover",
+            shell_quote(&config.bin.to_string_lossy()),
+            shell_quote(&session),
+            shell_quote(&terminal),
+        );
+        let other = std::process::Command::new("/usr/bin/script")
+            .args(["-q", "/dev/null", "sh", "-c", &attach])
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn();
+        let mut other = match other {
+            Ok(child) => child,
+            Err(error) => {
+                self.fail(&format!("could not start another client: {error}"));
+                return Ok(());
+            }
+        };
+        let detached = self
+            .until(cx, Duration::from_secs(10), |area, _, cx| {
+                !area.terminals.is_attached(&terminal, cx)
+                    && area.drawn.borrow().reattach.contains_key(&pane)
+            })
+            .await;
+        self.check(
+            detached,
+            "a takeover by another client shows the pane as Detached",
+        );
+        Self::settle(cx).await;
+        self.check_views(cx, "detached: its view is hidden");
+        self.shoot(cx, "detached");
+        let _ = other.kill();
+        let _ = other.wait();
+
+        let button = self.drawn(cx, |d| d.reattach.get(&pane).copied())?;
+        let Some(button) = button else {
+            self.fail("reattach: button not drawn");
+            return Ok(());
+        };
+        self.click(cx, center(button)).await;
+        let back = self
+            .until(cx, Duration::from_secs(10), |area, _, cx| {
+                area.terminals.is_attached(&terminal, cx)
+                    && !area.drawn.borrow().reattach.contains_key(&pane)
+            })
+            .await;
+        self.check(back, "clicking Reattach attaches the terminal again");
+        Self::sleep(cx, 600).await;
+        Self::settle(cx).await;
+        self.check_views(cx, "reattached");
+        cx.update(|window, cx| {
+            self.area
+                .update(cx, |area, cx| area.focus_pane(&pane, window, cx));
+        })
+        .ok();
+        Self::settle(cx).await;
+        self.type_text(cx, "echo back-$((40+2))\n");
+        let mut typed = false;
+        for _ in 0..30 {
+            Self::sleep(cx, 150).await;
+            if self.read_pane_text(cx, &pane).await.contains("back-42") {
+                typed = true;
+                break;
+            }
+        }
+        self.check(typed, "typing works in the reattached terminal");
+        self.shoot(cx, "reattached");
+        Ok(())
+    }
+
     /// Toggling light/dark rewrites every terminal's config file and
     /// reloads it in place.
     async fn theme_reload(&mut self, cx: &mut Cx) -> anyhow::Result<()> {

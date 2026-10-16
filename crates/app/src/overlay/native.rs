@@ -69,3 +69,10 @@ pub fn subviews(window: &Window) -> Vec<(Bounds<Pixels>, bool)> {
         })
         .collect()
 }
+
+/// Whether this app is the active (frontmost) app. A window can only be key
+/// while it is.
+pub fn app_is_active() -> bool {
+    objc2::MainThreadMarker::new()
+        .is_some_and(|mtm| objc2_app_kit::NSApplication::sharedApplication(mtm).isActive())
+}

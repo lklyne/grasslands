@@ -90,18 +90,47 @@ struct DraggedPane {
     label: SharedString,
 }
 
-impl Render for DraggedPane {
+/// GPUI's own drag preview, left empty: the main window draws under the
+/// terminals, so the visible preview is a [`DragChip`] in the overlay.
+struct NoPreview;
+
+impl Render for NoPreview {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        div()
+    }
+}
+
+/// The dragged pane's label, following the pointer in the overlay. It does
+/// not occlude, so the overlay keeps letting the drag's mouse events through
+/// to the main window, where the drop targets are.
+struct DragChip {
+    label: SharedString,
+    position: Point<Pixels>,
+}
+
+impl Render for DragChip {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         div()
+            .absolute()
+            .left(self.position.x + px(12.))
+            .top(self.position.y + px(10.))
             .px_2()
             .py_1()
             .rounded_md()
             .text_xs()
             .bg(cx.theme().secondary)
+            .text_color(cx.theme().secondary_foreground)
             .border_1()
             .border_color(cx.theme().border)
+            .shadow_md()
             .child(self.label.clone())
     }
+}
+
+struct PaneDragPreview {
+    overlay: Entity<overlay::Overlay>,
+    layer: overlay::LayerId,
+    chip: Entity<DragChip>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -127,8 +156,29 @@ struct Drawn {
     splits: HashMap<SplitKey, Bounds<Pixels>>,
     /// Terminal body (the native view's slot) of each visible pane.
     panes: HashMap<String, Bounds<Pixels>>,
-    /// Each tab in the tab bar (the chrome script right-clicks them).
+    /// Pane headers, tabs and Reattach buttons, for the script's in-app
+    /// pointer input.
+    headers: HashMap<String, Bounds<Pixels>>,
     tabs: HashMap<String, Bounds<Pixels>>,
+    reattach: HashMap<String, Bounds<Pixels>>,
+}
+
+/// A canvas that records its bounds (the parent's, when absolute and full
+/// size) into `drawn` during prepaint.
+fn record_bounds(
+    drawn: &Rc<RefCell<Drawn>>,
+    key: String,
+    slot: fn(&mut Drawn) -> &mut HashMap<String, Bounds<Pixels>>,
+) -> impl IntoElement {
+    let drawn = drawn.clone();
+    canvas(
+        move |bounds, _, _| {
+            slot(&mut drawn.borrow_mut()).insert(key, bounds);
+        },
+        |_, _, _, _| {},
+    )
+    .absolute()
+    .size_full()
 }
 
 pub struct TerminalArea {
@@ -137,10 +187,14 @@ pub struct TerminalArea {
     focus: FocusHandle,
     overrides: HashMap<SplitKey, RatioOverride>,
     drag: Option<DividerDrag>,
+    pane_drag: Option<PaneDragPreview>,
     drawn: Rc<RefCell<Drawn>>,
+    /// Terminal ids whose attach process was running at the last check.
+    attached: HashSet<String>,
     /// Panes already told to forward right-clicks to their program.
     right_click_set: HashSet<String>,
     _subscriptions: Vec<Subscription>,
+    _liveness: Task<()>,
 }
 
 impl TerminalArea {
@@ -165,15 +219,87 @@ impl TerminalArea {
             focus: cx.focus_handle(),
             overrides: HashMap::new(),
             drag: None,
+            pane_drag: None,
             drawn: Rc::default(),
+            attached: HashSet::new(),
             right_click_set: HashSet::new(),
             _subscriptions: subscriptions,
+            _liveness: Self::watch_liveness(cx),
         };
         this.sync_with_snapshot(window, cx);
         if let Some(scenario) = script::requested() {
             script::start(scenario, cx.entity(), window, cx);
         }
         this
+    }
+
+    /// An attach process can end without any herdr event (another client
+    /// took the terminal over), so check once a second and redraw to show
+    /// the pane as detached.
+    fn watch_liveness(cx: &mut Context<Self>) -> Task<()> {
+        cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor().timer(Duration::from_secs(1)).await;
+                let alive = this.update(cx, |this, cx| {
+                    let attached: HashSet<String> = this
+                        .terminals
+                        .iter()
+                        .filter(|(id, _)| this.terminals.is_attached(id, cx))
+                        .map(|(id, _)| id.clone())
+                        .collect();
+                    if attached != this.attached {
+                        this.attached = attached;
+                        cx.notify();
+                    }
+                });
+                if alive.is_err() {
+                    break;
+                }
+            }
+        })
+    }
+
+    fn start_pane_drag(
+        &mut self,
+        label: SharedString,
+        position: Point<Pixels>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.end_pane_drag(cx);
+        let overlay = match overlay::get_or_open(window, cx) {
+            Ok(overlay) => overlay,
+            Err(error) => {
+                log::error!("drag preview: {error:#}");
+                return;
+            }
+        };
+        let chip = cx.new(|_| DragChip { label, position });
+        let layer = overlay.update(cx, |overlay, cx| {
+            overlay.push_layer(chip.clone(), overlay::Capture::Passive, cx)
+        });
+        self.pane_drag = Some(PaneDragPreview {
+            overlay,
+            layer,
+            chip,
+        });
+    }
+
+    fn move_pane_drag(&mut self, position: Point<Pixels>, cx: &mut Context<Self>) {
+        if let Some(preview) = &self.pane_drag {
+            preview.chip.update(cx, |chip, cx| {
+                chip.position = position;
+                cx.notify();
+            });
+        }
+    }
+
+    fn end_pane_drag(&mut self, cx: &mut Context<Self>) {
+        if let Some(preview) = self.pane_drag.take() {
+            preview
+                .overlay
+                .update(cx, |overlay, cx| overlay.remove_layer(preview.layer, cx));
+        }
     }
 
     fn snapshot(&self, cx: &App) -> std::sync::Arc<Snapshot> {
@@ -617,20 +743,12 @@ impl TerminalArea {
                     tab.tab_id.clone(),
                     tab.tab_id.clone(),
                 );
-                let (drawn, bounds_tab) = (self.drawn.clone(), tab.tab_id.clone());
                 h_flex()
                     .id(SharedString::from(format!("tab-{}", tab.tab_id)))
                     .relative()
-                    .child(
-                        canvas(
-                            move |bounds, _, _| {
-                                drawn.borrow_mut().tabs.insert(bounds_tab, bounds);
-                            },
-                            |_, _, _, _| {},
-                        )
-                        .absolute()
-                        .size_full(),
-                    )
+                    .child(record_bounds(&self.drawn, tab.tab_id.clone(), |d| {
+                        &mut d.tabs
+                    }))
                     .group("tab")
                     .h_full()
                     .px_3()
@@ -882,6 +1000,10 @@ impl TerminalArea {
                     .child(
                         div()
                             .id(SharedString::from(format!("reattach-{pane_id}")))
+                            .relative()
+                            .child(record_bounds(&self.drawn, pane_id.to_owned(), |d| {
+                                &mut d.reattach
+                            }))
                             .px_3()
                             .py_1()
                             .rounded_md()
@@ -907,6 +1029,7 @@ impl TerminalArea {
         );
         let drawn = self.drawn.clone();
         let bounds_pane = pane_id.to_owned();
+        let area = cx.entity().downgrade();
         let dragged = DraggedPane {
             pane_id: pane_id.to_owned(),
             label: label.clone(),
@@ -914,6 +1037,10 @@ impl TerminalArea {
 
         let header = h_flex()
             .id(SharedString::from(format!("pane-header-{header_pane}")))
+            .relative()
+            .child(record_bounds(&self.drawn, pane_id.to_owned(), |d| {
+                &mut d.headers
+            }))
             .h(HEADER_HEIGHT)
             .flex_shrink_0()
             .px_2()
@@ -934,7 +1061,15 @@ impl TerminalArea {
                         this.close_pane_confirmed(close_pane.clone(), window, cx);
                     })),
             )
-            .on_drag(dragged, |dragged, _, _, cx| cx.new(|_| dragged.clone()))
+            .on_drag(dragged, move |dragged, _, window, cx| {
+                let label = dragged.label.clone();
+                let position = window.mouse_position();
+                area.update(cx, |area, cx| {
+                    area.start_pane_drag(label, position, window, cx)
+                })
+                .ok();
+                cx.new(|_| NoPreview)
+            })
             .drag_over::<DraggedPane>(move |style, _, _, _| style.bg(drop))
             .on_drop(cx.listener(move |this, dragged: &DraggedPane, _, cx| {
                 this.swap(&dragged.pane_id, &drop_header, cx);
@@ -1081,6 +1216,9 @@ impl Render for TerminalArea {
             let mut drawn = self.drawn.borrow_mut();
             drawn.panes.clear();
             drawn.splits.clear();
+            drawn.headers.clear();
+            drawn.tabs.clear();
+            drawn.reattach.clear();
         }
 
         let body = match Self::active_tab(&snapshot) {
@@ -1117,8 +1255,11 @@ impl Render for TerminalArea {
         let visible: HashSet<&str> = frame.visible.iter().map(String::as_str).collect();
         self.terminals.show_only(&visible, cx);
 
+        if self.pane_drag.is_some() && !cx.has_active_drag() {
+            // Dropped or cancelled without a mouse-up reaching us.
+            self.end_pane_drag(cx);
+        }
         let this = cx.entity().downgrade();
-        let dragging = self.drag.is_some();
         v_flex()
             .id("terminal-area")
             .key_context(CONTEXT)
@@ -1193,20 +1334,25 @@ impl Render for TerminalArea {
                                 return;
                             }
                             overlay::track_pointer(event.position, window, cx);
-                            if dragging {
-                                on_move
-                                    .update(cx, |this, cx| this.drag_divider_to(event.position, cx))
-                                    .ok();
+                            on_move
+                                .update(cx, |this, cx| {
+                                    if this.drag.is_some() {
+                                        this.drag_divider_to(event.position, cx);
+                                    }
+                                    this.move_pane_drag(event.position, cx);
+                                })
+                                .ok();
+                        });
+                        let this = this.clone();
+                        window.on_mouse_event(move |_: &MouseUpEvent, phase, _, cx| {
+                            if phase == DispatchPhase::Bubble {
+                                this.update(cx, |this, cx| {
+                                    this.end_divider_drag(cx);
+                                    this.end_pane_drag(cx);
+                                })
+                                .ok();
                             }
                         });
-                        if dragging {
-                            let this = this.clone();
-                            window.on_mouse_event(move |_: &MouseUpEvent, phase, _, cx| {
-                                if phase == DispatchPhase::Bubble {
-                                    this.update(cx, |this, cx| this.end_divider_drag(cx)).ok();
-                                }
-                            });
-                        }
                     },
                 )
                 .absolute()
