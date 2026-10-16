@@ -7,6 +7,7 @@
 
 mod buffer;
 mod language;
+mod titles;
 mod watcher;
 
 #[cfg(test)]
@@ -55,6 +56,15 @@ struct Group {
 impl Group {
     fn active(&self) -> Option<&Buffer> {
         self.buffers.get(self.active)
+    }
+
+    fn titles(&self) -> Vec<String> {
+        let paths: Vec<&Path> = self
+            .buffers
+            .iter()
+            .map(|buffer| buffer.path.as_path())
+            .collect();
+        titles::titles(&paths)
     }
 }
 
@@ -316,27 +326,33 @@ impl Editor {
     }
 
     fn render_tabs(&self, group: &Group, cx: &mut Context<Self>) -> impl IntoElement {
-        let tabs = group.buffers.iter().enumerate().map(|(index, buffer)| {
-            let dirty = buffer.is_dirty();
-            Tab::new().label(buffer.title()).suffix(
-                h_flex()
-                    .gap_1()
-                    .items_center()
-                    .when(dirty, |this| {
-                        this.child(div().text_color(cx.theme().warning).child("●"))
-                    })
-                    .child(
-                        Button::new(("close-tab", index))
-                            .ghost()
-                            .xsmall()
-                            .icon(IconName::Close)
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                cx.stop_propagation();
-                                this.request_close(index, window, cx);
-                            })),
-                    ),
-            )
-        });
+        let tabs =
+            group
+                .buffers
+                .iter()
+                .zip(group.titles())
+                .enumerate()
+                .map(|(index, (buffer, title))| {
+                    let dirty = buffer.is_dirty();
+                    Tab::new().label(title).suffix(
+                        h_flex()
+                            .gap_1()
+                            .items_center()
+                            .when(dirty, |this| {
+                                this.child(div().text_color(cx.theme().warning).child("●"))
+                            })
+                            .child(
+                                Button::new(("close-tab", index))
+                                    .ghost()
+                                    .xsmall()
+                                    .icon(IconName::Close)
+                                    .on_click(cx.listener(move |this, _, window, cx| {
+                                        cx.stop_propagation();
+                                        this.request_close(index, window, cx);
+                                    })),
+                            ),
+                    )
+                });
         let this = cx.entity().downgrade();
         TabBar::new("editor-tabs")
             .children(tabs)
