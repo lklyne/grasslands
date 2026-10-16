@@ -189,3 +189,28 @@ fn blocked_agent_raises_a_toast(cx: &mut TestAppContext) {
         .unwrap();
     assert_eq!(toasts, 1);
 }
+
+#[gpui_kit::test]
+fn unconfirmed_command_is_sent_and_failure_toasts(cx: &mut TestAppContext) {
+    let f = fixture(cx);
+    cx.update_window(f.window, |_, window, cx| {
+        f.chrome.update(cx, |chrome, cx| {
+            let focus = HerdrCommand::FocusPane {
+                pane_id: "w1:p1".into(),
+            };
+            chrome.run(focus, window, cx);
+        });
+    })
+    .unwrap();
+    // The endpoint has no server, so the send fails into an error toast.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let mut toasts = 0;
+    while toasts == 0 && std::time::Instant::now() < deadline {
+        cx.run_until_parked();
+        toasts = cx
+            .update_window(f.window, |_, window, cx| window.notifications(cx).len())
+            .unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    assert_eq!(toasts, 1);
+}

@@ -8,7 +8,7 @@ use gpui_kit::component::WindowExt as _;
 use gpui_kit::component::command::{Command, CommandGroup, CommandItem, CommandState};
 use gpui_kit::*;
 
-use super::{Chrome, HerdrCommand, MenuCommand, MenuTarget, pane_context};
+use super::{Chrome, HerdrCommand, MenuCommand, MenuTarget, pane_context, update_later};
 use crate::actions::{FocusPane, Quit, ToggleTheme};
 use crate::attention::{agent_name, status_label};
 use crate::herdr::{PluginActionInfo, PluginInvocationContext, SplitDirection};
@@ -24,8 +24,9 @@ pub(super) fn open(
     state: Entity<AppState>,
     window: &mut Window,
     cx: &mut App,
-) {
+) -> Entity<CommandState> {
     let command_state = cx.new(|cx| CommandState::new(window, cx));
+    let palette_state = command_state.clone();
     let first_frame = Cell::new(true);
     window.open_dialog(cx, move |dialog, window, cx| {
         if first_frame.replace(false) {
@@ -63,15 +64,14 @@ pub(super) fn open(
                 else {
                     return;
                 };
-                chrome
-                    .update(cx, |chrome, cx| {
-                        chrome.run_menu_command(command, window, cx)
-                    })
-                    .ok();
+                update_later(&chrome, window, cx, move |chrome, window, cx| {
+                    chrome.run_menu_command(command, window, cx);
+                });
             })
             .on_cancel(|window, cx| window.close_dialog(cx));
         dialog.w(px(600.)).close_button(false).child(palette)
     });
+    palette_state
 }
 
 fn groups(state: &AppState, plugin_actions: &[PluginActionInfo]) -> Vec<Group> {
