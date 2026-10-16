@@ -1,6 +1,6 @@
 # 0010 — One window: Ghostty terminals below GPUI
 
-Date: 2026-10-16. Status: declined 2026-10-16. The human chose to keep the overlay window; the spike (`spikes/single-window`) stays as reference.
+Date: 2026-10-16. Status: deferred 2026-10-16. The overlay window stays for now; this is open to revisit. The spike is in `spikes/single-window`.
 
 ## Verdict
 
