@@ -121,7 +121,8 @@ overlay.update(cx, |o, cx| o.remove_layer(id, cx));
   something it drew that occludes. GPUI Kit's toasts, menus and dialogs all do;
   give your own views `.occlude()`. It works by checking the overlay's bottom
   hitbox with `Hitbox::is_hovered_at`, on every pointer move (forwarded from the
-  main window by `Workspace`) and after every overlay frame.
+  main window by `Workspace`) and after every overlay frame. If that hit test
+  can't run (the overlay window is mid-update) the last answer stands.
 - **Modal.** While a `Capture::Modal` layer, a Kit dialog or a Kit sheet is
   open, the overlay takes every click and becomes the key window, so menus and
   the palette get the keyboard. Key status goes back to the main window when
@@ -159,6 +160,18 @@ overlay.update(cx, |o, cx| o.remove_layer(id, cx));
   GPUI's own `activate_window` already defers `makeKeyAndOrderFront`, so the
   key hand-off is safe. Its failures (the window is gone) are logged rather
   than dropped.
+- **Capture and key status never depend on reaching the overlay window.**
+  `Overlay` keeps the overlay's and the parent's `NSWindow`s. Mouse capture is
+  set on the `NSWindow` directly. Key status is handed over with
+  `makeKeyAndOrderFront` from a foreground task (`make_key_later`). "Modal" is
+  plain state: the `Capture::Modal` layers plus a recorded "Kit dialog or sheet
+  open" flag. The flag is refreshed after every `update_window`, on overlay
+  frames, and in `sync_capture` whenever the window can be read. When it
+  can't (mid-update), the last value stands. A failed read never turns into
+  "not modal". `sync_capture` also compares its decision with AppKit's actual
+  `ignoresMouseEvents` and corrects any drift, with a warning.
+- `is_capturing()` reads AppKit (`!ignoresMouseEvents`), not our flag. The
+  scripts check that, so they test what a real click meets.
 - Always use `cx.update_window(handle.into(), …)`, never the typed
   `WindowHandle<Root>::update`, to reach the overlay window. The typed form
   leases the `Root` entity, and `has_active_dialog` then panics reading it.
@@ -220,6 +233,70 @@ native view is shown on a file tab, that views are back on their slots on the
 herdr tab, that a blocked agent raises a toast on a file tab, that a dirty
 tab asks before closing, and that closing the last file selects herdr.
 Screenshots both themes.
+
+## Bug: real clicks fell through overlay popups (2026-10-16)
+
+The human found that real clicks on the overlay didn't work. With a menu and
+then a "New Folder" dialog open, Cancel showed hover but did nothing, the
+click reached the terminal underneath, and the menu stayed open under the
+dialog. Every script click had been a GPUI event dispatched in-app, so the
+AppKit path (NSEvent → window under the pointer) was never exercised.
+
+**Root cause.** The overlay opens lazily, usually for the first menu or
+dialog. `open` started the deferred `attach` task and then opened the modal
+piece. `sync_capture` set `ignoresMouseEvents = NO` right away and recorded
+`capturing = true`. The `attach` task ran a tick later and called
+`setIgnoresMouseEvents(YES)` unconditionally. `sync_capture` only acted when
+its own flag changed, and it stayed `true` while anything modal was open, so
+nothing put capture back. The window was click-through while modal. Clicks
+went to the main window: a sidebar button opened the "New Folder" dialog
+under the still-open menu, and Cancel's click landed on the terminal. Hover
+still showed because the panel's mouse tracking area keeps delivering moves.
+Escape worked, since keys follow key status, not capture, which is why the
+key-driven scripts stayed green.
+
+Reproduced: put the old line back and `RT_SCRIPT=chrome` logs
+`overlay: NSWindow capture was false, expected true; correcting` right after
+the first menu opens, now that `sync_capture` compares with AppKit.
+
+**Fixes.**
+- The overlay is made click-through once, synchronously, in `open`. `attach`
+  no longer touches capture.
+- The capture and key decisions use plain state and stored `NSWindow`s (see
+  Overlay API above). Before, `is_modal` read the dialog state through
+  `cx.update_window(overlay)` and treated a failure as "not modal". The key
+  hand-off went through `update_window` too, so a sync from inside the other
+  window's update could drop capture or lose key status.
+- `attach` turns off `hidesOnDeactivate` (GPUI opens the overlay as an
+  `NSPanel`), so the child never hides and leaves its parent's stack when
+  the app deactivates.
+- First click: audited, nothing swallowed. GPUI's view answers
+  `acceptsFirstMouse` with YES, and `first_mouse` only sets
+  `ClickEvent::first_focus`, which neither GPUI nor the Kit uses to drop a
+  click. The panel's non-activating bit is dropped by the `Borderless` style
+  mask in `attach`, so a click on the overlay activates the app.
+- `prompt::ask_name` closes an open context menu, as `Chrome::confirm` and
+  the palette already did. It queues the prompt first, so the overlay stays
+  modal across the switch and key status doesn't flick to the main window.
+  `RT_SCRIPT=chrome` checks menu → prompt: the menu is gone, the prompt is
+  open, and the overlay's `NSWindow` takes clicks.
+- Debug logging (`RUST_LOG=app::overlay=debug`) shows every capture change
+  (with modal, over-content and pointer), every key hand-off (with AppKit's
+  resulting key status and whether the app is active), and the attach result.
+
+**Script fixes found on the way.**
+- `RT_CHROME_SCRIPT` and `RT_SIDEBAR_SCRIPT` ran steps with `update_in`. In
+  gpui-pre 0.3.9 that picks the window the entity was last used in
+  (`current_window_by_entity`), not the context's window. Once the palette
+  had touched `Chrome` in the overlay, steps ran against the overlay window
+  and `log` printed nonsense. They now name the main window
+  (`cx.update(|window, cx| entity.update(…))`). Anything that needs the main
+  window must name it the same way, as `update_later` does.
+- `RT_SCRIPT`'s `settle` also draws the overlay window, so overlay hit tests
+  stay current while the screen is locked.
+
+Real clicks are not scripted. Posting events, even to our own PID, is off
+limits; the human tests them by hand.
 
 ## Known gaps
 
