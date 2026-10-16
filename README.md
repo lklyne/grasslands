@@ -12,7 +12,7 @@ This is v0 and alpha software. gpui-libghostty is itself alpha.
 - Runs one Ghostty view per herdr pane via `herdr terminal attach <id> --takeover`.
 - Follows the focused pane's folder (`foreground_cwd`, so it also follows an agent that `cd`s) to its git worktree root. The file tree re-roots, respects `.gitignore`, and updates live as agents create, edit and delete files.
 - Opens files in a tabbed code editor, grouped per worktree. Files an agent changes on disk reload, and you're asked when you have unsaved edits. Renames and trashes from the tree (and renames on disk) carry open tabs along.
-- Shows an agent list with status, blocked agents first, plus toasts, context menus, a command palette (app commands and herdr plugin actions) and confirmations before closing a running agent.
+- Lists every herdr workspace in the sidebar (repo, worktree, counts, status), each with its agents, blocked first. Click one to switch the terminal area to it. Create workspaces and worktrees, rename and close them. Plus toasts, context menus, a command palette (app commands and herdr plugin actions) and confirmations before closing a running agent.
 
 ## Prerequisites
 
@@ -61,6 +61,8 @@ scripts/herdr-dev workspace create --cwd ~/Developer/some-repo --focus
 scripts/herdr-dev pane split w1:p1 --direction right
 scripts/herdr-dev pane list
 ```
+
+One leak: herdr 0.9.5 creates worktrees under `~/.herdr/worktrees/`, the same folder your default herdr uses, even for a dev session. Remove test worktrees with `scripts/herdr-dev worktree remove --workspace <id>` ([0009](docs/decisions/0009-workspace-list.md)).
 
 Debug builds refuse to talk to any herdr socket outside `~/.local/share/rusted-tools-herdr` ([decision 0007](docs/decisions/0007-dev-herdr-guard.md)). A plain `cargo run -p app` from a shell inside your real herdr would inherit your live `HERDR_SOCKET_PATH`, so it shows "Disconnected" and does nothing instead. `RT_ALLOW_LIVE_HERDR=1` overrides the guard. Don't.
 

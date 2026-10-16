@@ -7,8 +7,8 @@ Date: 2026-10-15. Status: accepted (app-shell, Part 1).
 | Module | View | Owner |
 | --- | --- | --- |
 | `workspace` | `Workspace`, the window root: `h_resizable` of sidebar / editor / terminal area. Routes cross-module actions. | app-shell |
-| `sidebar` | `Sidebar`: `v_resizable` of `agents::AgentList` over `files::FileTree` | app-shell |
-| `sidebar::agents` | `AgentList` | chrome agent |
+| `sidebar` | `Sidebar`: `v_resizable` of `workspaces::WorkspaceList` over `files::FileTree` | app-shell |
+| `sidebar::workspaces` | `WorkspaceList`: every workspace with its agents (replaced `sidebar::agents`, see 0009) | herdr-client agent |
 | `sidebar::files` | `FileTree` | files agent |
 | `editor` | `Editor` (file tabs + code editor) | app-shell, Part 2 |
 | `terminal_area` | `TerminalArea` (herdr tab bar + split tree of Ghostty views) | ghostty-terminals agent |
@@ -81,13 +81,14 @@ in-window rendering to the overlay touches only `chrome/`:
   the chrome supplies the herdr actions and plugin actions for the target,
   `extra` adds the caller's own entries (`MenuEntry::item(label,
   MenuCommand::Callback(..))`). The terminal area calls this for pane and tab
-  right-clicks.
+  right-clicks; the workspace list for workspace and agent rows.
 - `Chrome::run(HerdrCommand)` sends a herdr command, confirming closes first;
   `Chrome::confirm(Confirmation, on_confirm)` asks anything else.
 - `Chrome::toast(message)`, `Chrome::open_command_palette()`.
 - Views that only have the main window get the chrome with
   `chrome::get(window, cx)`. The terminal area does this for its close
-  confirmations (`Chrome::confirm`). Everything chrome shows draws in the
+  confirmations (`Chrome::confirm`); the workspace list for close
+  (`Chrome::run`) and rename (`run_menu_command(MenuCommand::Rename(..))`). Everything chrome shows draws in the
   overlay; `on_confirm` callbacks run in the overlay window, so they should
   call `AppState`, not dispatch actions.
 

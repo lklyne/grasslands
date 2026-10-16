@@ -3,8 +3,10 @@
 //! Enter on to the dialog, whose `Confirm` runs `on_ok`. Cancel, Escape and ×
 //! close it without submitting.
 //!
-//! Actions dispatched from `submit` start in the Kit's dialog layer, outside
-//! `Workspace`, and never reach it; defer them until the dialog has closed.
+//! The dialog draws where the chrome draws floating UI (the overlay above the
+//! terminals), or in the main window when there is no chrome (headless tests).
+//! Either way `submit` runs afterwards in the main window, so it can dispatch
+//! actions to `Workspace` and focus views there.
 
 use std::cell::Cell;
 use std::rc::Rc;
@@ -23,30 +25,42 @@ pub fn ask_name(
     window: &mut Window,
     cx: &mut App,
 ) {
-    let input = cx.new(|cx| InputState::new(window, cx).default_value(initial.to_owned()));
+    let main = window.window_handle();
     let submit = Rc::new(submit);
-    let first_build = Cell::new(true);
-    window.open_dialog(cx, move |dialog, window, cx| {
-        if first_build.replace(false) {
-            input.focus_handle(cx).focus(window, cx);
-        }
-        let (input_ok, submit) = (input.clone(), submit.clone());
-        dialog
-            .title(title)
-            .w(px(420.))
-            .child(Input::new(&input))
-            .footer(
-                DialogFooter::new()
-                    .child(DialogClose::new().trigger(|button| button.label("Cancel")))
-                    .child(
-                        DialogAction::new()
-                            .child(Button::new("prompt-ok").primary().label(ok_label)),
-                    ),
-            )
-            .on_ok(move |_, window, cx| {
-                let value = input_ok.read(cx).value().to_string();
-                submit(&value, window, cx);
-                true
-            })
-    });
+    let initial = initial.to_owned();
+    let open = move |window: &mut Window, cx: &mut App| {
+        let input = cx.new(|cx| InputState::new(window, cx).default_value(initial));
+        let first_build = Cell::new(true);
+        window.open_dialog(cx, move |dialog, window, cx| {
+            if first_build.replace(false) {
+                input.focus_handle(cx).focus(window, cx);
+            }
+            let (input_ok, submit) = (input.clone(), submit.clone());
+            dialog
+                .title(title)
+                .w(px(420.))
+                .child(Input::new(&input))
+                .footer(
+                    DialogFooter::new()
+                        .child(DialogClose::new().trigger(|button| button.label("Cancel")))
+                        .child(
+                            DialogAction::new()
+                                .child(Button::new("prompt-ok").primary().label(ok_label)),
+                        ),
+                )
+                .on_ok(move |_, _, cx| {
+                    let value = input_ok.read(cx).value().to_string();
+                    let submit = submit.clone();
+                    cx.defer(move |cx| {
+                        cx.update_window(main, |_, window, cx| submit(&value, window, cx))
+                            .ok();
+                    });
+                    true
+                })
+        });
+    };
+    match crate::chrome::get(window, cx) {
+        Some(chrome) => chrome.update(cx, |chrome, cx| chrome.floating(cx, open)),
+        None => open(window, cx),
+    }
 }

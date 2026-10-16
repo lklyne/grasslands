@@ -4,7 +4,7 @@ Source of truth: https://claude.ai/code/artifact/37addbff-024a-4b6e-ae1c-43b0208
 
 ## Vision
 
-A native Rust desktop app that replaces herdr's terminal UI with a real GUI, while keeping herdr as the engine. herdr keeps owning the agents, terminals, worktrees, agent state and session restore. Our app owns everything you see and touch: the window, tabs, draggable split layout, file tree, code editor, agent list, menus and notifications.
+A native Rust desktop app that replaces herdr's terminal UI with a real GUI, while keeping herdr as the engine. herdr keeps owning the agents, terminals, worktrees, agent state and session restore. Our app owns everything you see and touch: the window, tabs, draggable split layout, file tree, code editor, workspace and agent list, menus and notifications.
 
 The file tree and editor always follow the **active git worktree**: whichever worktree the focused agent pane is working in.
 
@@ -17,7 +17,7 @@ Agents keep using the herdr agent skill unchanged. When an agent splits a pane o
 - Full two-way layout sync: workspaces, tabs, and a draggable, resizable split layout
 - One real Ghostty terminal per herdr pane
 - File tree and code editor that follow the active worktree
-- Agent list with live status, rebuilt in GPUI
+- Workspace list with each workspace's agents and their live status, rebuilt in GPUI after herdr's own sidebar
 - Our own context menus, command palette, confirmations and notifications, replacing herdr's TUI chrome
 
 **Not in v0:**
@@ -44,9 +44,11 @@ Always check crates.io for a newer patch before adding a dependency.
 ```
 ┌──────────────────────── GPUI app ────────────────────────┐
 │ Sidebar          │ Editor           │ Terminal area       │
-│ - Agent list     │ - File tabs      │ - herdr tab bar     │
-│ - File tree      │ - Code editor    │ - Split tree of     │
-│                  │                  │   Ghostty views     │
+│ - Workspaces,    │ - File tabs      │ - herdr tab bar     │
+│   each with its  │ - Code editor    │ - Split tree of     │
+│   agents         │                  │   Ghostty views     │
+│ - File tree      │                  │   (focused          │
+│                  │                  │   workspace)        │
 └───────▲──────────────────────────────────────▲───────────┘
         │ socket: snapshot, events, commands  │ PTY: herdr terminal attach
 ┌───────┴──────────────────────────────────────┴───────────┐
@@ -115,11 +117,15 @@ This also follows agents that move into another folder, since `foreground_cwd` t
 - Open files are grouped per worktree; switching worktrees swaps to that worktree's tabs.
 - When an agent changes an open file on disk, it reloads automatically. If you have unsaved edits, you're asked whether to keep yours or take the agent's.
 
-## Agent list
+## Workspaces and agents
 
-- Built from `agent.list` and kept current with `pane.agent_status_changed`.
-- Shows each agent's name, workspace and status (working, blocked, done, idle), with blocked agents sorted to the top.
-- Click to focus that agent's pane. Badges for unseen "done" and "blocked" agents.
+The upper sidebar panel lists every herdr workspace, modeled on herdr's own TUI sidebar. The terminal area shows only herdr's focused workspace, so this list is how you see and switch to the others.
+
+- One row per workspace, in herdr's order: label, repo name (and the checkout folder plus a "worktree" tag for a linked worktree), tab and pane counts, and the aggregate agent status as a colored dot.
+- Each row expands to its agents (name and status, blocked first). Badges count blocked agents and unseen "done" ones, per workspace and in the panel header.
+- Click a workspace to focus it (`workspace.focus`); the terminal area follows. Click an agent to focus its pane.
+- Create a workspace (in the active worktree's folder) or a worktree (`worktree.create`, asks for a branch name) from the header's +. Rename and close from the row's menu; × closes. Closing asks first when agents are running there.
+- Built from `session.snapshot` (workspaces and agents) and kept current by re-reading on every event, including `pane.agent_status_changed`.
 
 ## Replacing herdr's UI
 
