@@ -1,17 +1,22 @@
-//! The workspace list, modeled on herdr's own sidebar. One row per herdr
-//! workspace: label, repo and worktree, tab and pane counts, aggregate agent
-//! status, and badges for blocked agents and finished ones nobody has looked
-//! at. Each row expands to its agents, blocked first.
+//! The workspace list, modeled on herdr's own sidebar. Workspaces are grouped
+//! under their repo (main checkout first, linked worktrees nested after it;
+//! see `groups`), with repo-less ones in a last section. A workspace row shows
+//! its label, git branch (`git`), tab and pane counts, aggregate agent status,
+//! and badges for blocked agents and finished ones nobody has looked at. Each
+//! row expands to its agents, blocked first; a collapsed repo heading rolls up
+//! its workspaces' status and badges.
 //!
 //! Click a workspace to focus it (`workspace.focus`; the terminal area
 //! follows herdr's focused workspace). Click an agent to focus its pane.
 //! Right-click or "…" opens the chrome's workspace menu (rename, new tab,
 //! close, close group); × closes through the chrome (`chrome::get`), which
-//! asks first when agents are running. The header's + creates a workspace or a worktree.
+//! asks first when agents are running. The header's + creates a workspace or a
+//! worktree from the focused workspace; a repo heading's + makes a worktree of
+//! that repo.
 
 use std::cmp::Ordering;
-use std::collections::HashSet;
-use std::path::Path;
+use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
 
 use gpui_kit::component::WindowExt as _;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
@@ -27,7 +32,9 @@ use crate::actions::{FocusPane, OpenContextMenu};
 use crate::attention::{Attention, agent_name, status_label};
 use crate::chrome::{self, HerdrCommand, MenuCommand, MenuTarget};
 use crate::herdr::{Agent, AgentStatus, Snapshot, WorkspaceInfo, WorktreeParams};
-use crate::state::AppState;
+use crate::state::{AppEvent, AppState};
+use git::{Checkout, HeadWatcher, Placement};
+use groups::{Groups, RepoGroup};
 
 pub fn init(_cx: &mut App) {}
 
@@ -35,7 +42,16 @@ pub struct WorkspaceList {
     state: Entity<AppState>,
     /// Workspaces whose agent rows are folded away. Everything starts open.
     collapsed: HashSet<String>,
+    /// Repos (by key) whose workspaces are folded away.
+    collapsed_repos: HashSet<String>,
+    /// git2's answer per workspace folder (`None`: not in git).
+    checkouts: HashMap<PathBuf, Option<Checkout>>,
+    /// Folders being read for the first time.
+    reading: HashSet<PathBuf>,
+    heads: Option<HeadWatcher>,
     _observe: Subscription,
+    _subscribe: Subscription,
+    _heads_task: Option<Task<()>>,
 }
 
 /// Blocked agents need you, so they come first; then running, finished, idle.
@@ -81,18 +97,31 @@ fn needs_you(agents: &[&Agent], attention: &Attention, snapshot: &Snapshot) -> (
     (blocked, unseen)
 }
 
-/// "repo" for a main checkout, "repo · checkout-folder" for a linked
-/// worktree (with `true`), `None` outside git.
-fn worktree_line(info: &WorkspaceInfo) -> Option<(String, bool)> {
-    let worktree = info.worktree.as_ref()?;
-    if !worktree.is_linked_worktree {
-        return Some((worktree.repo_name.clone(), false));
+/// The folder a workspace's branch is read from: herdr's checkout path, or
+/// the folder of the focused pane in its active tab.
+fn checkout_dir(snapshot: &Snapshot, info: &WorkspaceInfo) -> Option<PathBuf> {
+    if let Some(worktree) = &info.worktree {
+        return Some(PathBuf::from(&worktree.checkout_path));
     }
-    let checkout = Path::new(&worktree.checkout_path).file_name().map_or_else(
-        || worktree.checkout_path.clone(),
-        |n| n.to_string_lossy().into_owned(),
-    );
-    Some((format!("{} · {checkout}", worktree.repo_name), true))
+    let workspace = snapshot
+        .workspaces
+        .iter()
+        .find(|w| w.info.workspace_id == info.workspace_id)?;
+    let tab = workspace
+        .tabs
+        .iter()
+        .find(|t| t.info.tab_id == info.active_tab_id)?;
+    let pane = snapshot.panes.get(tab.focused_pane_id.as_ref()?)?;
+    pane.working_dir().map(PathBuf::from)
+}
+
+/// The status that needs you most among `statuses` (blocked over working
+/// over done over idle).
+fn rolled_up(statuses: impl IntoIterator<Item = AgentStatus>) -> AgentStatus {
+    statuses
+        .into_iter()
+        .min_by_key(|&s| rank(s))
+        .unwrap_or(AgentStatus::Unknown)
 }
 
 fn plural(n: u64, one: &str) -> String {
@@ -139,12 +168,145 @@ fn dot(color: Hsla) -> Div {
 impl WorkspaceList {
     pub fn new(state: Entity<AppState>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let observe = cx.observe(&state, |_, _, cx| cx.notify());
+        let subscribe = cx.subscribe(&state, |this, _, event, cx| match event {
+            AppEvent::SnapshotReplaced => this.sync_checkouts(cx),
+            // The focused pane moved to another checkout; catch up on any
+            // branch change the watcher could have missed.
+            AppEvent::ActiveWorktreeChanged(_) => {
+                let dirs = this.checkouts.keys().cloned().collect();
+                this.read_checkouts(dirs, cx);
+            }
+            _ => {}
+        });
+        // Tests stay off notify's thread, like `AppState` stays off herdr's.
+        let (heads, heads_task) = if cfg!(test) {
+            (None, None)
+        } else {
+            let (tx, rx) = async_channel::unbounded::<PathBuf>();
+            let task = cx.spawn(async move |this, cx| {
+                while let Ok(git_dir) = rx.recv().await {
+                    if this
+                        .update(cx, |this, cx| this.head_changed(&git_dir, cx))
+                        .is_err()
+                    {
+                        break;
+                    }
+                }
+            });
+            let watcher = HeadWatcher::new(tx)
+                .inspect_err(|error| tracing::warn!("workspaces: no HEAD watcher: {error}"))
+                .ok();
+            (watcher, Some(task))
+        };
         script::start(window, cx);
-        Self {
+        let mut this = Self {
             state,
             collapsed: HashSet::new(),
+            collapsed_repos: HashSet::new(),
+            checkouts: HashMap::new(),
+            reading: HashSet::new(),
+            heads,
             _observe: observe,
+            _subscribe: subscribe,
+            _heads_task: heads_task,
+        };
+        this.sync_checkouts(cx);
+        this
+    }
+
+    /// Reads folders of workspaces seen for the first time and forgets ones
+    /// no workspace uses any more.
+    fn sync_checkouts(&mut self, cx: &mut Context<Self>) {
+        let snapshot = self.state.read(cx).snapshot.clone();
+        let wanted: HashSet<PathBuf> = snapshot
+            .workspaces
+            .iter()
+            .filter_map(|w| checkout_dir(&snapshot, &w.info))
+            .collect();
+        let before = self.checkouts.len();
+        self.checkouts.retain(|dir, _| wanted.contains(dir));
+        if self.checkouts.len() != before {
+            self.watch_heads();
         }
+        let new: Vec<PathBuf> = wanted
+            .into_iter()
+            .filter(|d| !self.checkouts.contains_key(d) && !self.reading.contains(d))
+            .collect();
+        if !new.is_empty() {
+            self.reading.extend(new.iter().cloned());
+            self.read_checkouts(new, cx);
+        }
+    }
+
+    /// Re-reads `dirs` with git2 off the main thread.
+    fn read_checkouts(&mut self, dirs: Vec<PathBuf>, cx: &mut Context<Self>) {
+        if dirs.is_empty() {
+            return;
+        }
+        let read = cx.background_executor().spawn(async move {
+            dirs.into_iter()
+                .map(|dir| {
+                    let checkout = git::read(&dir);
+                    (dir, checkout)
+                })
+                .collect::<Vec<_>>()
+        });
+        cx.spawn(async move |this, cx| {
+            let results = read.await;
+            this.update(cx, |this, cx| {
+                for (dir, checkout) in results {
+                    this.reading.remove(&dir);
+                    this.checkouts.insert(dir, checkout);
+                }
+                this.watch_heads();
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    fn head_changed(&mut self, git_dir: &std::path::Path, cx: &mut Context<Self>) {
+        let dirs = self
+            .checkouts
+            .iter()
+            .filter(|(_, c)| c.as_ref().is_some_and(|c| c.git_dir == git_dir))
+            .map(|(dir, _)| dir.clone())
+            .collect();
+        self.read_checkouts(dirs, cx);
+    }
+
+    fn watch_heads(&mut self) {
+        if let Some(heads) = &mut self.heads {
+            heads.set(
+                self.checkouts
+                    .values()
+                    .flatten()
+                    .map(|c| c.git_dir.clone())
+                    .collect(),
+            );
+        }
+    }
+
+    fn checkout(&self, snapshot: &Snapshot, info: &WorkspaceInfo) -> Option<&Checkout> {
+        self.checkouts.get(&checkout_dir(snapshot, info)?)?.as_ref()
+    }
+
+    /// herdr's repo info, else what git2 found in the workspace's folder.
+    fn placement(&self, snapshot: &Snapshot, info: &WorkspaceInfo) -> Option<Placement> {
+        info.worktree
+            .as_ref()
+            .map(Placement::from_herdr)
+            .or_else(|| {
+                self.checkout(snapshot, info)
+                    .and_then(|c| c.placement.clone())
+            })
+    }
+
+    fn groups<'a>(&self, snapshot: &'a Snapshot) -> Groups<'a> {
+        groups::group(snapshot.workspaces.iter().map(|w| &w.info), |info| {
+            self.placement(snapshot, info)
+        })
     }
 
     /// `workspace.focus`; the terminal area follows herdr's focused workspace.
@@ -174,6 +336,14 @@ impl WorkspaceList {
         cx.notify();
     }
 
+    /// Folds or unfolds a repo group, by repo key.
+    pub fn toggle_repo(&mut self, repo_key: &str, cx: &mut Context<Self>) {
+        if !self.collapsed_repos.remove(repo_key) {
+            self.collapsed_repos.insert(repo_key.to_owned());
+        }
+        cx.notify();
+    }
+
     /// A new workspace in the active worktree's folder, focused. herdr names
     /// it; rename it from its menu.
     pub fn new_workspace(&mut self, cx: &mut Context<Self>) {
@@ -182,32 +352,50 @@ impl WorkspaceList {
         state.new_workspace(cwd, None, cx).detach_and_log_err(cx);
     }
 
-    /// Asks for a branch name, then `worktree.create` from the focused
-    /// workspace's repo. herdr opens the worktree as a new, focused workspace.
-    pub fn new_worktree(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    /// Asks for a branch name, then `worktree.create` in the repo at
+    /// `repo_root` (the focused workspace's repo when `None`). herdr opens the
+    /// worktree as a new, focused workspace.
+    pub fn new_worktree(
+        &mut self,
+        repo_root: Option<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let this = cx.entity().downgrade();
         crate::prompt::ask_name(
             "New Worktree",
             "Create",
             "",
             move |branch, window, cx| {
-                let _ = this.update(cx, |this, cx| this.create_worktree(branch, window, cx));
+                let _ = this.update(cx, |this, cx| {
+                    this.create_worktree(branch, repo_root.as_deref(), window, cx);
+                });
             },
             window,
             cx,
         );
     }
 
-    /// `worktree.create` on a new `branch` from the focused workspace's repo;
-    /// a failure becomes an error toast.
-    pub fn create_worktree(&mut self, branch: &str, window: &mut Window, cx: &mut Context<Self>) {
+    /// `worktree.create` on a new `branch` in the repo at `repo_root`, or the
+    /// focused workspace's repo; a failure becomes an error toast.
+    pub fn create_worktree(
+        &mut self,
+        branch: &str,
+        repo_root: Option<&str>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let branch = branch.trim();
         if branch.is_empty() {
             return;
         }
         let state = self.state.read(cx);
         let params = WorktreeParams {
-            workspace_id: state.snapshot.focused_workspace_id.clone(),
+            workspace_id: match repo_root {
+                Some(_) => None,
+                None => state.snapshot.focused_workspace_id.clone(),
+            },
+            cwd: repo_root.map(str::to_owned),
             branch: Some(branch.to_owned()),
             focus: true,
             ..Default::default()
@@ -266,14 +454,22 @@ impl WorkspaceList {
                         )
                         .item(
                             PopupMenuItem::new("New Worktree…").on_click(move |_, window, cx| {
-                                let _ = b.update(cx, |this, cx| this.new_worktree(window, cx));
+                                let _ =
+                                    b.update(cx, |this, cx| this.new_worktree(None, window, cx));
                             }),
                         )
                     }),
             )
     }
 
-    fn render_workspace(&self, info: &WorkspaceInfo, cx: &mut Context<Self>) -> AnyElement {
+    /// A workspace row, `indent` from the left, and its agents when open.
+    fn render_workspace(
+        &self,
+        info: &WorkspaceInfo,
+        indent: Pixels,
+        branch: Option<String>,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let state = self.state.read(cx);
         let snapshot = &state.snapshot;
         let id = info.workspace_id.clone();
@@ -310,7 +506,6 @@ impl WorkspaceList {
                 )
             });
 
-        let detail = worktree_line(info);
         let row_id = id.clone();
         let menu_id = id.clone();
         let more_id = id.clone();
@@ -322,7 +517,7 @@ impl WorkspaceList {
                 move || format!("ws-{id}")
             })
             .group(group.clone())
-            .pl_1()
+            .pl(indent)
             .pr_1()
             .py_1()
             .gap_1()
@@ -369,24 +564,13 @@ impl WorkspaceList {
                                 this.child(badge(unseen.to_string(), theme.success))
                             }),
                     )
-                    .when_some(detail, |this, (line, linked)| {
+                    .when_some(branch, |this, branch| {
                         this.child(
-                            h_flex()
-                                .gap_1()
+                            div()
                                 .text_xs()
                                 .text_color(theme.muted_foreground)
-                                .child(div().truncate().child(line))
-                                .when(linked, |this| {
-                                    this.child(
-                                        div()
-                                            .flex_shrink_0()
-                                            .px_1()
-                                            .rounded_sm()
-                                            .border_1()
-                                            .border_color(theme.border)
-                                            .child("worktree"),
-                                    )
-                                }),
+                                .truncate()
+                                .child(branch),
                         )
                     })
                     .child(
@@ -436,7 +620,7 @@ impl WorkspaceList {
         let agent_rows = open.then(|| {
             agents
                 .iter()
-                .map(|agent| self.render_agent(agent, cx))
+                .map(|agent| self.render_agent(agent, indent, cx))
                 .collect::<Vec<_>>()
         });
         v_flex()
@@ -445,7 +629,106 @@ impl WorkspaceList {
             .into_any_element()
     }
 
-    fn render_agent(&self, agent: &Agent, cx: &Context<Self>) -> AnyElement {
+    /// A repo's heading: chevron, name, a + for a worktree of this repo,
+    /// and, when folded, its workspaces' status and badges rolled up.
+    fn render_repo(&self, group: &RepoGroup, cx: &mut Context<Self>) -> AnyElement {
+        let state = self.state.read(cx);
+        let snapshot = &state.snapshot;
+        let repo = &group.repo;
+        let open = !self.collapsed_repos.contains(&repo.key);
+        let (mut blocked, mut unseen) = (0, 0);
+        for (info, _) in &group.workspaces {
+            let (b, u) = needs_you(
+                &agents_of(snapshot, &info.workspace_id),
+                &state.attention,
+                snapshot,
+            );
+            blocked += b;
+            unseen += u;
+        }
+        let status = rolled_up(group.workspaces.iter().map(|(i, _)| i.agent_status));
+        let theme = cx.theme();
+        let name = repo.name.clone();
+        let key = repo.key.clone();
+        let root = repo.root.clone();
+        let hover = SharedString::from(format!("repo-row-{key}"));
+        h_flex()
+            .id(SharedString::from(format!("repo-{key}")))
+            .debug_selector({
+                let name = name.clone();
+                move || format!("repo-{name}")
+            })
+            .group(hover.clone())
+            .pl_1()
+            .pr_1()
+            .pt_1p5()
+            .pb_0p5()
+            .gap_1()
+            .items_center()
+            .cursor_pointer()
+            .hover(|this| this.bg(theme.accent.opacity(0.6)))
+            .on_click(cx.listener(move |this, _, _, cx| this.toggle_repo(&key, cx)))
+            .child(
+                gpui_kit::component::Icon::new(if open {
+                    IconName::ChevronDown
+                } else {
+                    IconName::ChevronRight
+                })
+                .xsmall()
+                .text_color(theme.muted_foreground),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .text_xs()
+                    .font_semibold()
+                    .text_color(theme.muted_foreground)
+                    .truncate()
+                    .child(name.clone()),
+            )
+            .when(!open, |this| {
+                this.child(dot(status_color(status, cx)))
+                    .when(blocked > 0, |this| {
+                        this.child(badge(blocked.to_string(), theme.danger))
+                    })
+                    .when(unseen > 0, |this| {
+                        this.child(badge(unseen.to_string(), theme.success))
+                    })
+            })
+            .child(
+                div()
+                    .flex_shrink_0()
+                    .invisible()
+                    .group_hover(hover, |this| this.visible())
+                    .child(
+                        Button::new(SharedString::from(format!("repo-new-{}", repo.key)))
+                            .ghost()
+                            .xsmall()
+                            .icon(IconName::Plus)
+                            .tooltip(format!("New worktree of {name}"))
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                cx.stop_propagation();
+                                this.new_worktree(Some(root.clone()), window, cx);
+                            })),
+                    ),
+            )
+            .into_any_element()
+    }
+
+    fn render_section(label: &'static str, cx: &App) -> AnyElement {
+        div()
+            .pl(px(24.))
+            .pt_1p5()
+            .pb_0p5()
+            .text_xs()
+            .font_semibold()
+            .text_color(cx.theme().muted_foreground)
+            .child(label)
+            .into_any_element()
+    }
+
+    fn render_agent(&self, agent: &Agent, indent: Pixels, cx: &Context<Self>) -> AnyElement {
         let state = self.state.read(cx);
         let theme = cx.theme();
         let focused = state.focused_pane.as_deref() == Some(agent.pane_id.as_str());
@@ -461,7 +744,7 @@ impl WorkspaceList {
                 let pane_id = agent.pane_id.clone();
                 move || format!("agent-{pane_id}")
             })
-            .pl(px(28.))
+            .pl(indent + px(24.))
             .pr_3()
             .py_0p5()
             .gap_2()
@@ -536,11 +819,28 @@ impl Render for WorkspaceList {
         let snapshot = state.snapshot.clone();
         let all: Vec<&Agent> = snapshot.agents.iter().collect();
         let (blocked, unseen) = needs_you(&all, &state.attention, &snapshot);
-        let rows: Vec<AnyElement> = snapshot
-            .workspaces
-            .iter()
-            .map(|w| self.render_workspace(&w.info, cx))
-            .collect();
+        let groups = self.groups(&snapshot);
+        let branch = |info: &WorkspaceInfo| {
+            self.checkout(&snapshot, info)
+                .and_then(|c| c.branch.clone())
+        };
+        let mut rows: Vec<AnyElement> = Vec::new();
+        for group in &groups.repos {
+            rows.push(self.render_repo(group, cx));
+            if self.collapsed_repos.contains(&group.repo.key) {
+                continue;
+            }
+            for &(info, linked) in &group.workspaces {
+                let indent = if linked { px(20.) } else { px(8.) };
+                rows.push(self.render_workspace(info, indent, branch(info), cx));
+            }
+        }
+        if !groups.repos.is_empty() && !groups.ungrouped.is_empty() {
+            rows.push(Self::render_section("No repo", cx));
+        }
+        for &info in &groups.ungrouped {
+            rows.push(self.render_workspace(info, px(4.), None, cx));
+        }
         let empty = rows.is_empty();
         let muted = cx.theme().muted_foreground;
         v_flex()
@@ -567,6 +867,8 @@ impl Render for WorkspaceList {
     }
 }
 
+mod git;
+mod groups;
 mod script;
 #[cfg(test)]
 mod tests;

@@ -7,13 +7,17 @@
 //! - `focus <workspace>`: click a workspace row (`workspace.focus`)
 //! - `agent <pane>`: click an agent row
 //! - `toggle <workspace>`: click a row's chevron
+//! - `toggle-repo <repo name>`: click a repo heading
 //! - `new-workspace`: header + → New Workspace
 //! - `new-worktree`: header + → New Worktree… (opens the prompt)
 //! - `worktree <branch>`: submit the New Worktree prompt with `branch`
+//! - `new-worktree-in <repo name>`: a repo heading's + (opens the prompt)
+//! - `repo-worktree <repo name> <branch>`: submit that prompt with `branch`
 //! - `rename <workspace>`: the menu's Rename Workspace… (chrome's prompt)
 //! - `close <workspace>`: the row's × (chrome confirms if agents run)
 //! - `key enter|escape`: `Confirm` / `Cancel` to the focused dialog
-//! - `log <label>`: print workspaces, agents and focus to stderr
+//! - `log <label>`: print the groups, workspaces, branches, agents and focus
+//!   to stderr
 //!
 //! e.g. `RT_SIDEBAR_SCRIPT='wait 2000; focus w2; wait 800; log after'`.
 
@@ -22,8 +26,10 @@ use std::time::Duration;
 use gpui_kit::base::actions::{Cancel, Confirm};
 use gpui_kit::*;
 
+use super::git::Repo;
 use super::{WorkspaceList, close_workspace, rename_workspace};
 use crate::attention::{agent_name, status_label};
+use crate::herdr::WorkspaceInfo;
 
 pub(super) fn start(window: &mut Window, cx: &mut Context<WorkspaceList>) {
     if !cfg!(debug_assertions) {
@@ -68,9 +74,24 @@ fn run_step(
         "focus" => this.activate_workspace(arg, cx),
         "agent" => this.activate_agent(arg, window, cx),
         "toggle" => this.toggle(arg, cx),
+        "toggle-repo" => match repo_named(this, arg, cx) {
+            Some(repo) => this.toggle_repo(&repo.key, cx),
+            None => eprintln!("[sidebar-script] no repo {arg}"),
+        },
         "new-workspace" => this.new_workspace(cx),
-        "new-worktree" => this.new_worktree(window, cx),
-        "worktree" => this.create_worktree(arg, window, cx),
+        "new-worktree" => this.new_worktree(None, window, cx),
+        "worktree" => this.create_worktree(arg, None, window, cx),
+        "new-worktree-in" => match repo_named(this, arg, cx) {
+            Some(repo) => this.new_worktree(Some(repo.root), window, cx),
+            None => eprintln!("[sidebar-script] no repo {arg}"),
+        },
+        "repo-worktree" => {
+            let (name, branch) = arg.split_once(' ').unwrap_or((arg, ""));
+            match repo_named(this, name, cx) {
+                Some(repo) => this.create_worktree(branch, Some(&repo.root), window, cx),
+                None => eprintln!("[sidebar-script] no repo {name}"),
+            }
+        }
         "rename" => rename_workspace(arg, window, cx),
         "close" => close_workspace(arg, window, cx),
         "key" => match arg {
@@ -83,25 +104,55 @@ fn run_step(
     }
 }
 
+fn repo_named(this: &WorkspaceList, name: &str, cx: &App) -> Option<Repo> {
+    let snapshot = this.state.read(cx).snapshot.clone();
+    this.groups(&snapshot)
+        .repos
+        .into_iter()
+        .map(|g| g.repo)
+        .find(|r| r.name == name)
+}
+
 fn log(this: &WorkspaceList, label: &str, cx: &App) {
-    let snapshot = &this.state.read(cx).snapshot;
+    let snapshot = this.state.read(cx).snapshot.clone();
     eprintln!(
         "[sidebar-script] {label}: focused workspace {:?}, pane {:?}",
         snapshot.focused_workspace_id, snapshot.focused_pane_id
     );
-    for w in &snapshot.workspaces {
+    let line = |info: &WorkspaceInfo, indent: &str| {
+        let branch = this
+            .checkout(&snapshot, info)
+            .and_then(|c| c.branch.clone());
         eprintln!(
-            "[sidebar-script]   {} {:?} tabs={} panes={} status={} worktree={:?}",
-            w.info.workspace_id,
-            w.info.label,
-            w.info.tab_count,
-            w.info.pane_count,
-            status_label(w.info.agent_status),
-            w.info
-                .worktree
-                .as_ref()
-                .map(|t| (&t.repo_name, t.is_linked_worktree)),
+            "[sidebar-script]   {indent}{} {:?} branch={branch:?} tabs={} panes={} status={}{}",
+            info.workspace_id,
+            info.label,
+            info.tab_count,
+            info.pane_count,
+            status_label(info.agent_status),
+            if this.collapsed.contains(&info.workspace_id) {
+                " (folded)"
+            } else {
+                ""
+            },
         );
+    };
+    let groups = this.groups(&snapshot);
+    for group in &groups.repos {
+        let folded = this.collapsed_repos.contains(&group.repo.key);
+        eprintln!(
+            "[sidebar-script]   repo {} ({}){}",
+            group.repo.name,
+            group.repo.root,
+            if folded { " (folded)" } else { "" }
+        );
+        for &(info, linked) in &group.workspaces {
+            line(info, if linked { "    linked " } else { "  main " });
+        }
+    }
+    eprintln!("[sidebar-script]   no repo:");
+    for &info in &groups.ungrouped {
+        line(info, "  ");
     }
     for a in &snapshot.agents {
         eprintln!(
