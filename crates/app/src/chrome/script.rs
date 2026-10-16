@@ -5,6 +5,7 @@
 //! - `menu pane|tab|workspace <id>`: open that context menu
 //! - `run close-pane|close-tab|close-workspace|close-group <id>`: `Chrome::run`
 //! - `palette`, `query <text>`: open the palette, type into it
+//! - `type <text>`: replace the rename dialog's text
 //! - `key down|enter|escape`: dispatch `SelectDown`, `Confirm` or `Cancel` to
 //!   the focused element (the open menu or dialog)
 //! - `log <label>`: print what is open and herdr's panes and agents to stderr
@@ -55,7 +56,10 @@ pub(super) fn start(window: &mut Window, cx: &mut Context<Chrome>) {
                         continue;
                     }
                 };
-                if cx.update(|window, cx| window.dispatch_action(action, cx)).is_err() {
+                if cx
+                    .update(|window, cx| window.dispatch_action(action, cx))
+                    .is_err()
+                {
                     return;
                 }
                 cx.background_executor().timer(STEP).await;
@@ -123,6 +127,15 @@ fn run_step(
                 .and_then(WeakEntity::upgrade)
                 .ok_or("no palette open")?;
             palette.update(cx, |palette, cx| palette.set_query(query, window, cx));
+        }
+        "type" => {
+            let text = step.strip_prefix("type ").unwrap_or_default().to_owned();
+            let input = chrome
+                .rename_input
+                .as_ref()
+                .and_then(WeakEntity::upgrade)
+                .ok_or("no rename dialog open")?;
+            input.update(cx, |input, cx| input.set_value(text, window, cx));
         }
         "log" => log(chrome, first, window, cx),
         other => return Err(format!("unknown step {other:?}")),

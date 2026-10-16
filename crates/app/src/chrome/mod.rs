@@ -106,6 +106,8 @@ pub struct Chrome {
     /// The open (or last opened) palette's state.
     palette: Option<WeakEntity<CommandState>>,
     rename: Option<Subscription>,
+    /// The rename dialog's input, while one is open.
+    rename_input: Option<WeakEntity<InputState>>,
     badge: usize,
     _subscriptions: Vec<Subscription>,
 }
@@ -131,6 +133,7 @@ impl Chrome {
             open_menu: None,
             palette: None,
             rename: None,
+            rename_input: None,
             badge: 0,
             _subscriptions: vec![events, badge],
         };
@@ -477,6 +480,7 @@ impl Chrome {
                 .placeholder("Name")
                 .default_value(current.unwrap_or_default())
         });
+        self.rename_input = Some(input.downgrade());
         let submit: Callback = {
             let chrome = cx.entity().downgrade();
             let input = input.clone();
@@ -531,9 +535,7 @@ fn update_later(
 ) {
     let chrome = chrome.clone();
     window.defer(cx, move |window, cx| {
-        chrome
-            .update(cx, |chrome, cx| f(chrome, window, cx))
-            .ok();
+        chrome.update(cx, |chrome, cx| f(chrome, window, cx)).ok();
     });
 }
 

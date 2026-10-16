@@ -41,13 +41,15 @@ pub(super) fn open(
     });
 }
 
-/// The workspaces that `workspace.close { close_group: true }` would close
-/// along with `workspace_id`: every workspace of the same repo.
+/// The workspaces that `workspace.close { close_group: true }` closes along
+/// with `workspace_id`. herdr closes a group only from its main checkout:
+/// that workspace plus every linked worktree of the same repo. On a linked
+/// worktree (or outside a repo) it closes just the one, so this is empty.
 pub(super) fn group_members<'a>(snapshot: &'a Snapshot, workspace_id: &str) -> Vec<&'a Workspace> {
-    let Some(repo_key) = snapshot
+    let Some(source) = snapshot
         .workspace(workspace_id)
         .and_then(|w| w.info.worktree.as_ref())
-        .map(|wt| &wt.repo_key)
+        .filter(|wt| !wt.is_linked_worktree)
     else {
         return Vec::new();
     };
@@ -55,10 +57,11 @@ pub(super) fn group_members<'a>(snapshot: &'a Snapshot, workspace_id: &str) -> V
         .workspaces
         .iter()
         .filter(|w| {
-            w.info
-                .worktree
-                .as_ref()
-                .is_some_and(|wt| &wt.repo_key == repo_key)
+            w.info.workspace_id == workspace_id
+                || w.info
+                    .worktree
+                    .as_ref()
+                    .is_some_and(|wt| wt.is_linked_worktree && wt.repo_key == source.repo_key)
         })
         .collect()
 }
@@ -80,6 +83,35 @@ fn agent_summary(names: &[&str]) -> String {
             many.len(),
             many.join(", ")
         ),
+    }
+}
+
+fn group_confirmation(
+    snapshot: &Snapshot,
+    workspace_id: &str,
+    members: &[&Workspace],
+) -> Confirmation {
+    let labels: Vec<&str> = members.iter().map(|w| w.info.label.as_str()).collect();
+    let names = agents_where(snapshot, |_, ws| {
+        members.iter().any(|w| w.info.workspace_id == ws)
+    });
+    let repo = snapshot
+        .workspace(workspace_id)
+        .and_then(|w| w.info.worktree.as_ref())
+        .map_or("this repo", |wt| wt.repo_name.as_str());
+    let mut message = format!(
+        "This closes {} workspaces of {repo}: {}.",
+        labels.len(),
+        labels.join(", ")
+    );
+    if !names.is_empty() {
+        message.push(' ');
+        message.push_str(&agent_summary(&names));
+    }
+    Confirmation {
+        title: "Close the worktree group?".into(),
+        message,
+        confirm_label: "Close Group".into(),
     }
 }
 
@@ -108,8 +140,16 @@ pub(super) fn needed_for(command: &Command, snapshot: &Snapshot) -> Option<Confi
         }
         Command::CloseWorkspace {
             workspace_id,
-            close_group: false,
+            close_group,
         } => {
+            let members = if *close_group {
+                group_members(snapshot, workspace_id)
+            } else {
+                Vec::new()
+            };
+            if members.len() > 1 {
+                return Some(group_confirmation(snapshot, workspace_id, &members));
+            }
             let names = agents_where(snapshot, |_, ws| ws == workspace_id);
             let label = snapshot
                 .workspace(workspace_id)
@@ -118,34 +158,6 @@ pub(super) fn needed_for(command: &Command, snapshot: &Snapshot) -> Option<Confi
                 title: format!("Close {label}?"),
                 message: agent_summary(&names),
                 confirm_label: "Close Workspace".into(),
-            })
-        }
-        Command::CloseWorkspace {
-            workspace_id,
-            close_group: true,
-        } => {
-            let members = group_members(snapshot, workspace_id);
-            let labels: Vec<&str> = members.iter().map(|w| w.info.label.as_str()).collect();
-            let names = agents_where(snapshot, |_, ws| {
-                members.iter().any(|w| w.info.workspace_id == ws)
-            });
-            let repo = snapshot
-                .workspace(workspace_id)
-                .and_then(|w| w.info.worktree.as_ref())
-                .map_or("this repo", |wt| wt.repo_name.as_str());
-            let mut message = format!(
-                "This closes {} workspaces of {repo}: {}.",
-                labels.len(),
-                labels.join(", ")
-            );
-            if !names.is_empty() {
-                message.push(' ');
-                message.push_str(&agent_summary(&names));
-            }
-            Some(Confirmation {
-                title: "Close the worktree group?".into(),
-                message,
-                confirm_label: "Close Group".into(),
             })
         }
         _ => None,
@@ -159,7 +171,7 @@ mod tests {
         Agent, AgentStatus, Snapshot, Workspace, WorkspaceInfo, WorkspaceWorktreeInfo,
     };
 
-    fn workspace(id: &str, repo: Option<&str>) -> Workspace {
+    fn workspace(id: &str, repo: Option<&str>, linked: bool) -> Workspace {
         Workspace {
             info: WorkspaceInfo {
                 workspace_id: id.into(),
@@ -175,7 +187,7 @@ mod tests {
                     repo_name: repo.into(),
                     repo_root: String::new(),
                     checkout_path: String::new(),
-                    is_linked_worktree: true,
+                    is_linked_worktree: linked,
                 }),
                 tokens: Default::default(),
             },
@@ -209,9 +221,9 @@ mod tests {
     fn snapshot() -> Snapshot {
         Snapshot {
             workspaces: vec![
-                workspace("w1", Some("repo")),
-                workspace("w2", Some("repo")),
-                workspace("w3", None),
+                workspace("w1", Some("repo"), false),
+                workspace("w2", Some("repo"), true),
+                workspace("w3", None, false),
             ],
             agents: vec![agent("w1:p1", "w1:t1", "w1")],
             ..Snapshot::default()
@@ -245,7 +257,7 @@ mod tests {
     #[test]
     fn closing_a_worktree_group_always_needs_confirmation() {
         let command = Command::CloseWorkspace {
-            workspace_id: "w2".into(),
+            workspace_id: "w1".into(),
             close_group: true,
         };
         let confirmation = needed_for(&command, &snapshot()).map(|c| c.message);
@@ -256,6 +268,20 @@ mod tests {
                  The agent agent-w1:p1 is running there and will be stopped."
             )
         );
+    }
+
+    #[test]
+    fn linked_worktree_has_no_group() {
+        assert!(group_members(&snapshot(), "w2").is_empty());
+    }
+
+    #[test]
+    fn group_close_on_a_linked_worktree_confirms_like_a_plain_close() {
+        let command = Command::CloseWorkspace {
+            workspace_id: "w2".into(),
+            close_group: true,
+        };
+        assert_eq!(needed_for(&command, &snapshot()), None);
     }
 
     #[test]

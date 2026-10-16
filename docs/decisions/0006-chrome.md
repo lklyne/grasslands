@@ -50,7 +50,10 @@ Date: 2026-10-15. Status: accepted (chrome agent). Modules: `chrome`, `sidebar::
   The terminal area adds pane-specific entries (copy, paste, …) as `Callback`s.
 - Pane: Focus, Split Right/Down, Toggle Zoom, Rename…, Close. Tab: Focus, New
   Tab, Rename…, Close. Workspace: Focus, New Tab, Rename…, Close, and Close
-  Worktree Group when other workspaces share its repo.
+  Worktree Group on a repo's main checkout when linked worktrees of it are
+  open. Checked in the dev session: herdr's `close_group` closes the group
+  only from the main checkout (it plus the linked worktrees); on a linked
+  worktree it closes just that workspace, so the entry isn't offered there.
 - The menu is a GPUI Kit `PopupMenu` placed with `deferred(anchored())`. On
   close it gives focus back to whatever had it; without that, app key
   bindings (cmd-shift-p) stopped reaching `Workspace` after a menu.
@@ -77,6 +80,22 @@ Checked in the dev session: `plugin pane open` with `split`, `tab`, `overlay`
 and `zoomed` all create ordinary panes (ids, tabs, layouts, `zoomed` flag) in
 `session.snapshot`, so they render like any pane once the terminal area draws
 layouts. `popup` stays invisible (0005).
+
+## Callbacks never nest Chrome updates
+
+Menu items, palette entries, confirmations and the rename dialog run their
+work through `update_later` (`window.defer`), and `Chrome::run` sends
+unconfirmed commands directly. A nested `Chrome` update panics in GPUI, and
+these callbacks can fire while the chrome is itself being updated.
+
+## Driving it live (debug builds)
+
+`RT_CHROME_SCRIPT` runs `;`-separated steps after startup (`menu pane <id>`,
+`run close-pane <id>`, `palette`, `query <text>`, `type <text>`,
+`key down|enter|escape`, `wait <ms>`, `log <label>`); see `chrome/script.rs`.
+Keys are GPUI actions dispatched to the window, not OS input. `log` prints
+what is open plus herdr's workspaces, tabs, panes and agents, which is what
+the live checks assert on.
 
 ## Overlay window
 
