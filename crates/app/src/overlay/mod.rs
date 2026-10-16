@@ -28,7 +28,9 @@
 
 mod native;
 
+use std::cell::Cell;
 use std::collections::HashMap;
+use std::rc::Rc;
 
 use gpui_kit::base::Root;
 use gpui_kit::component::WindowExt as _;
@@ -57,10 +59,22 @@ struct Layer {
 
 /// One overlay per main window. Get it with [`get_or_open`].
 pub struct Overlay {
-    parent: AnyWindowHandle,
+    /// The main window's `NSWindow`, which gets key status back.
+    parent_ns: objc2::rc::Retained<objc2_app_kit::NSWindow>,
     window: WindowHandle<Root>,
+    /// The overlay's own `NSWindow`, kept so capture changes never need an
+    /// update of the overlay window (which fails while it is mid-update).
+    ns: objc2::rc::Retained<objc2_app_kit::NSWindow>,
     content: Entity<OverlayContent>,
     next_layer: u64,
+    /// Whether a GPUI Kit dialog or sheet is open in the overlay. Recorded
+    /// wherever the overlay window is at hand (after each `update_window`,
+    /// on every overlay frame), so deciding capture never has to reach into
+    /// the window.
+    kit_modal: Rc<Cell<bool>>,
+    /// Whether the pointer was over something the overlay drew, last time
+    /// that could be checked.
+    over_content: bool,
     /// Whether the overlay window currently takes mouse events.
     capturing: bool,
     /// Whether we made the overlay the key window (and owe it back to the parent).
@@ -109,9 +123,7 @@ pub fn track_pointer(position: Point<Pixels>, window: &Window, cx: &mut App) {
 /// is the window AppKit makes key), otherwise the main window itself.
 pub fn key_target(window: &Window, cx: &mut App) -> AnyWindowHandle {
     match get(window, cx) {
-        Some(overlay) if overlay.update(cx, |overlay, cx| overlay.is_modal(cx)) => {
-            overlay.read(cx).window_handle()
-        }
+        Some(overlay) if overlay.read(cx).is_modal(cx) => overlay.read(cx).window_handle(),
         _ => window.window_handle(),
     }
 }
@@ -186,8 +198,12 @@ impl Overlay {
             ..WindowOptions::default()
         };
         let mut content = None;
+        let kit_modal = Rc::new(Cell::new(false));
         let window = cx.open_window(options, |window, cx| {
-            let view = cx.new(|_| OverlayContent::default());
+            let view = cx.new(|_| OverlayContent {
+                kit_modal: kit_modal.clone(),
+                ..OverlayContent::default()
+            });
             content = Some(view.clone());
             // Root paints the theme background over the whole window; the
             // overlay must stay see-through.
@@ -196,9 +212,12 @@ impl Overlay {
         let content = content.ok_or_else(|| anyhow::anyhow!("overlay built no content"))?;
         let child = cx.update_window(window.into(), |_, window, _| ns_window(window))?;
         let child = child.ok_or_else(|| anyhow::anyhow!("no overlay NSWindow"))?;
-        Self::attach_later(parent_ns, child, cx);
+        // Click-through from the start. Only `sync_capture` changes it after
+        // this; the deferred `attach` must not (it used to, and undid the
+        // capture of the menu or dialog the overlay was opened for).
+        native::set_ignores_mouse(&child, true);
+        Self::attach_later(parent_ns.clone(), child.clone(), cx);
 
-        let parent_handle = parent.window_handle();
         let overlay = cx.new(|cx| {
             let subscriptions =
                 vec![
@@ -207,10 +226,13 @@ impl Overlay {
                     }),
                 ];
             Self {
-                parent: parent_handle,
+                parent_ns,
                 window,
+                ns: child,
                 content: content.clone(),
                 next_layer: 0,
+                kit_modal,
+                over_content: false,
                 capturing: false,
                 keyed: false,
                 last_pointer: None,
@@ -242,8 +264,13 @@ impl Overlay {
         cx: &mut Context<Self>,
         f: impl FnOnce(&mut Window, &mut App) -> R,
     ) -> Option<R> {
+        let kit_modal = self.kit_modal.clone();
         let result = cx
-            .update_window(self.window.into(), |_, window, cx| f(window, cx))
+            .update_window(self.window.into(), |_, window, cx| {
+                let result = f(window, cx);
+                kit_modal.set(window.has_active_dialog(cx) || window.has_active_sheet(cx));
+                result
+            })
             .ok();
         // A dialog or sheet may have opened or closed.
         self.sync_capture(None, cx);
@@ -285,27 +312,28 @@ impl Overlay {
             .any(|layer| layer.id == id)
     }
 
-    /// Whether something modal is open in the overlay.
-    pub fn is_modal(&self, cx: &mut App) -> bool {
-        let layers = self
-            .content
-            .read(cx)
-            .layers
-            .iter()
-            .any(|layer| layer.capture == Capture::Modal);
-        // Through the untyped handle: a typed `update` would lease the Root
-        // entity that `has_active_dialog` reads.
-        layers
-            || cx
-                .update_window(self.window.into(), |_, window, cx| {
-                    window.has_active_dialog(cx) || window.has_active_sheet(cx)
-                })
-                .unwrap_or(false)
+    /// Whether something modal is open in the overlay: a `Capture::Modal`
+    /// layer, or a Kit dialog or sheet. Reads only plain state, so it gives
+    /// the same answer whatever window is being updated.
+    pub fn is_modal(&self, cx: &App) -> bool {
+        self.kit_modal.get()
+            || self
+                .content
+                .read(cx)
+                .layers
+                .iter()
+                .any(|layer| layer.capture == Capture::Modal)
     }
 
-    /// Whether the overlay currently takes mouse events (for logs and tests).
+    /// Whether the overlay's `NSWindow` takes mouse events right now, read
+    /// from AppKit rather than from our own flag (for logs and tests).
     pub fn is_capturing(&self) -> bool {
-        self.capturing
+        !native::ignores_mouse(&self.ns)
+    }
+
+    /// Whether the overlay's `NSWindow` is the key window.
+    pub fn is_key(&self) -> bool {
+        native::is_key(&self.ns)
     }
 
     fn match_parent_frame(&mut self, parent: &mut Window, cx: &mut Context<Self>) {
@@ -334,9 +362,15 @@ impl Overlay {
         cx: &mut App,
     ) {
         cx.spawn(async move |_| {
+            let before = native::ignores_mouse(&child);
             native::attach(&parent, &child);
+            let attached = native::ignores_mouse(&child);
             native::match_content_frame(&parent, &child);
             native::show(&child);
+            tracing::debug!(
+                "overlay: attached; click-through before={before} after-attach={attached} after-show={}",
+                native::ignores_mouse(&child)
+            );
         })
         .detach();
     }
@@ -355,55 +389,87 @@ impl Overlay {
             .detach();
     }
 
+    /// Makes `ns` the key window from a foreground task, as GPUI's own
+    /// `activate_window` does, but straight on the `NSWindow`: going through
+    /// `update_window` fails while that window is mid-update (a sync from the
+    /// main window's mouse-move handler), and the hand-off was then lost.
+    fn make_key_later(
+        ns: objc2::rc::Retained<objc2_app_kit::NSWindow>,
+        what: &'static str,
+        cx: &mut App,
+    ) {
+        cx.spawn(async move |_| {
+            native::make_key(&ns);
+            tracing::debug!(
+                "overlay: asked {what} to become key; key now: {}, app active: {}",
+                native::is_key(&ns),
+                native::app_is_active()
+            );
+        })
+        .detach();
+    }
+
     /// Recomputes whether the overlay takes the mouse and the keyboard.
     /// `pointer` is the latest pointer position in window coordinates, if known.
     fn sync_capture(&mut self, pointer: Option<Point<Pixels>>, cx: &mut Context<Self>) {
         if pointer.is_some() {
             self.last_pointer = pointer;
         }
+        // Kit dialogs close on their own (Escape, Cancel, ×) without telling
+        // us, so refresh the recorded state whenever the overlay window can be
+        // read. While it is mid-update it can't; then the last recorded state
+        // stands, rather than a failed read turning into "not modal".
+        match cx.update_window(self.window.into(), |_, window, cx| {
+            window.has_active_dialog(cx) || window.has_active_sheet(cx)
+        }) {
+            Ok(open) => self.kit_modal.set(open),
+            Err(error) => tracing::debug!(
+                "overlay: dialog state unreadable, keeping kit_modal={}: {error:#}",
+                self.kit_modal.get()
+            ),
+        }
         let modal = self.is_modal(cx);
-        let over_content = self.last_pointer.is_some_and(|pointer| {
+        if let Some(pointer) = self.last_pointer {
             let background = self.content.read(cx).background.clone();
-            cx.update_window(self.window.into(), |_, window, _| {
+            // The hit test needs the overlay window; while it is mid-update
+            // keep the last answer rather than guessing "not over content".
+            match cx.update_window(self.window.into(), |_, window, _| {
                 background.is_some_and(|hitbox| !hitbox.is_hovered_at(pointer, window))
-            })
-            .unwrap_or(false)
-        });
-        let capture = modal || over_content;
-        if capture != self.capturing {
-            self.capturing = capture;
-            let result = cx.update_window(self.window.into(), |_, window, _| {
-                if let Some(ns) = ns_window(window) {
-                    native::set_ignores_mouse(&ns, !capture);
-                }
-            });
-            if let Err(error) = result {
-                tracing::warn!("overlay: could not change mouse capture: {error:#}");
+            }) {
+                Ok(over) => self.over_content = over,
+                Err(error) => tracing::debug!(
+                    "overlay: hit test skipped, keeping over_content={}: {error:#}",
+                    self.over_content
+                ),
             }
         }
-        if modal && !self.keyed {
-            self.keyed = true;
-            if let Err(error) =
-                cx.update_window(self.window.into(), |_, window, _| window.activate_window())
-            {
-                tracing::warn!("overlay: could not make the overlay key: {error:#}");
-            }
-        } else if !modal && self.keyed {
-            self.keyed = false;
-            if let Err(error) = self
-                .parent
-                .update(cx, |_, window, _| window.activate_window())
-            {
+        let capture = modal || self.over_content;
+        // Compare with AppKit's actual state, not only our flag, so anything
+        // else flipping it is corrected on the next sync.
+        let actual = !native::ignores_mouse(&self.ns);
+        if capture != self.capturing || capture != actual {
+            if capture == self.capturing {
                 tracing::warn!(
-                    "overlay: could not hand key status back to the main window: {error:#}"
+                    "overlay: NSWindow capture was {actual}, expected {capture}; correcting"
                 );
             }
-        }
-        if modal && !native::app_is_active() {
-            // Not an error: a window can only be key while the app is active.
             tracing::debug!(
-                "overlay: modal while the app is in the background; it becomes key when the app is activated"
+                "overlay: mouse capture {} (modal={modal}, over_content={}, pointer={:?})",
+                if capture { "on" } else { "off" },
+                self.over_content,
+                self.last_pointer,
             );
+            self.capturing = capture;
+            native::set_ignores_mouse(&self.ns, !capture);
+        }
+        if modal && !self.keyed {
+            tracing::debug!("overlay: modal, making the overlay key");
+            self.keyed = true;
+            Self::make_key_later(self.ns.clone(), "overlay", cx);
+        } else if !modal && self.keyed {
+            tracing::debug!("overlay: nothing modal, handing key status back to the main window");
+            self.keyed = false;
+            Self::make_key_later(self.parent_ns.clone(), "main window", cx);
         }
     }
 }
@@ -416,12 +482,15 @@ struct OverlayContent {
     /// The bottom-most hitbox, covering the whole window. Where it is hovered
     /// nothing the overlay drew is under the pointer.
     background: Option<Hitbox>,
+    /// Shared with `Overlay::kit_modal`.
+    kit_modal: Rc<Cell<bool>>,
 }
 
 impl Render for OverlayContent {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let this = cx.entity().downgrade();
         let overlay = self.overlay.clone();
+        let kit_modal = self.kit_modal.clone();
         div()
             .size_full()
             .relative()
@@ -431,6 +500,9 @@ impl Render for OverlayContent {
                     move |_, hitbox, window, cx| {
                         this.update(cx, |this, _| this.background = Some(hitbox))
                             .ok();
+                        // A Kit dialog may have closed on its own (Escape,
+                        // Cancel, ×); this window is at hand now, so record it.
+                        kit_modal.set(window.has_active_dialog(cx) || window.has_active_sheet(cx));
                         // Layers just changed what is under the pointer;
                         // re-decide once this frame is the one hit-tested.
                         if let Some(overlay) = overlay.as_ref().and_then(WeakEntity::upgrade) {

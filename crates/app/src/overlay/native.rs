@@ -17,17 +17,29 @@ pub fn ns_window(window: &Window) -> Option<Retained<NSWindow>> {
     view.window()
 }
 
-/// Makes `child` a borderless, see-through, click-through window glued above
-/// `parent`. As a child window it moves, hides and orders with the parent; its
-/// level is reset to the parent's because GPUI opened it as a pop-up, which
-/// would float above every other app. Its frame is set separately, with
-/// [`match_content_frame`], outside any GPUI update.
+/// Makes `child` a borderless, see-through window glued above `parent`. As a
+/// child window it moves, hides and orders with the parent; its level is reset
+/// to the parent's because GPUI opened it as a pop-up, which would float above
+/// every other app. Its frame is set separately, with [`match_content_frame`],
+/// outside any GPUI update.
+///
+/// Mouse capture is left alone: this runs a tick after the overlay opens, and
+/// by then the overlay may already have turned capture on for the menu or
+/// dialog it opened for. Setting click-through here is what left real clicks
+/// falling through to the terminals (0008).
+///
+/// GPUI opened it as a non-activating `NSPanel`. The style mask below drops
+/// the non-activating bit, so a click on the overlay activates the app like a
+/// click on the main window. Panels also hide whenever the app deactivates;
+/// that is turned off so the child never leaves its parent's stack.
 pub fn attach(parent: &NSWindow, child: &NSWindow) {
     child.setStyleMask(NSWindowStyleMask::Borderless);
     child.setOpaque(false);
     child.setBackgroundColor(Some(&NSColor::clearColor()));
     child.setHasShadow(false);
-    child.setIgnoresMouseEvents(true);
+    // SAFETY: `child` is GPUI's `NSPanel` subclass (WindowKind::PopUp), which
+    // has this setter; main thread.
+    let _: () = unsafe { objc2::msg_send![child, setHidesOnDeactivate: false] };
     // SAFETY: both windows are live and this runs on the main thread.
     unsafe { parent.addChildWindow_ordered(child, NSWindowOrderingMode::Above) };
     child.setLevel(parent.level());
@@ -50,6 +62,20 @@ pub fn show(child: &NSWindow) {
 
 pub fn set_ignores_mouse(window: &NSWindow, ignores: bool) {
     window.setIgnoresMouseEvents(ignores);
+}
+
+pub fn ignores_mouse(window: &NSWindow) -> bool {
+    window.ignoresMouseEvents()
+}
+
+/// Makes `window` key (and orders it front). Call outside GPUI updates: AppKit
+/// calls GPUI's activation callbacks synchronously.
+pub fn make_key(window: &NSWindow) {
+    window.makeKeyAndOrderFront(None);
+}
+
+pub fn is_key(window: &NSWindow) -> bool {
+    window.isKeyWindow()
 }
 
 /// Frames (window coordinates, top-left origin) and hidden flags of the

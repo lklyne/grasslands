@@ -96,14 +96,25 @@ impl Run {
     }
 
     /// Lets GPUI lay out and paint. A locked screen stops the display link,
-    /// so draw directly as well.
+    /// so draw directly as well, the overlay window included (its hit tests
+    /// decide mouse capture).
     async fn settle(cx: &mut Cx) {
         for _ in 0..3 {
-            cx.update(|window, cx| {
-                window.refresh();
-                let _ = window.draw(cx);
-            })
-            .ok();
+            let overlay = cx
+                .update(|window, cx| {
+                    window.refresh();
+                    let _ = window.draw(cx);
+                    overlay::get(window, cx).map(|o| o.read(cx).window_handle())
+                })
+                .ok()
+                .flatten();
+            if let Some(overlay) = overlay {
+                cx.update_window(overlay, |_, window, cx| {
+                    window.refresh();
+                    let _ = window.draw(cx);
+                })
+                .ok();
+            }
             Self::sleep(cx, 60).await;
         }
     }
@@ -675,6 +686,7 @@ impl Run {
             overlay.remove_layer(toast_id, cx);
         });
         Self::sleep(cx, 400).await;
+        Self::settle(cx).await;
         cx.update(|window, cx| overlay::track_pointer(on_toast, window, cx))
             .ok();
         let off = overlay.read_with(cx, |overlay, _| overlay.is_capturing());
