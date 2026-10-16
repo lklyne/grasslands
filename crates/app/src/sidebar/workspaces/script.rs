@@ -6,12 +6,14 @@
 //! - `wait <ms>`
 //! - `focus <workspace>`: click a workspace row (`workspace.focus`)
 //! - `agent <pane>`: click an agent row
-//! - `toggle <workspace>`: click a row's chevron
-//! - `toggle-repo <repo name>`: click a repo heading
-//! - `new-workspace`: header + → New Workspace
-//! - `new-worktree`: header + → New Worktree… (opens the prompt)
+//! - `fold <repo name>`: click a group's ▾/▸
+//! - `toggle-agents`: click the agents label (folds the section)
+//! - `sort`: click "grouped" / "priority"
+//! - `new-workspace`: the footer's "new"
+//! - `menu`: the footer's "menu" (the chrome's menu, drawn in the overlay)
+//! - `new-worktree`: menu → New Worktree… (opens the prompt)
 //! - `worktree <branch>`: submit the New Worktree prompt with `branch`
-//! - `new-worktree-in <repo name>`: a repo heading's + (opens the prompt)
+//! - `new-worktree-in <repo name>`: a repo row's + (opens the prompt)
 //! - `repo-worktree <repo name> <branch>`: submit that prompt with `branch`
 //! - `rename <workspace>`: the menu's Rename Workspace… (chrome's prompt)
 //! - `close <workspace>`: the row's × (chrome confirms if agents run)
@@ -19,8 +21,8 @@
 //!   window that owns the keyboard: the overlay while a prompt or dialog is
 //!   open there (`overlay::dispatch_keystroke`)
 //! - `keys <text>`: type `text`, one key press per character, the same way
-//! - `log <label>`: print the groups, workspaces, branches, agents and focus
-//!   to stderr
+//! - `log <label>`: print the rows (as herdr would draw them), agents and
+//!   focus to stderr
 //!
 //! e.g. `RT_SIDEBAR_SCRIPT='wait 2000; focus w2; wait 800; log after'`.
 
@@ -29,9 +31,9 @@ use std::time::Duration;
 use gpui_kit::*;
 
 use super::git::Repo;
-use super::{WorkspaceList, close_workspace, rename_workspace};
+use super::groups::Kind;
+use super::{WorkspaceList, agents, close_workspace, rename_workspace};
 use crate::attention::{agent_name, status_label};
-use crate::herdr::WorkspaceInfo;
 use crate::overlay;
 
 pub(super) fn start(window: &mut Window, cx: &mut Context<WorkspaceList>) {
@@ -93,12 +95,14 @@ fn run_step(
     match verb {
         "focus" => this.activate_workspace(arg, cx),
         "agent" => this.activate_agent(arg, window, cx),
-        "toggle" => this.toggle(arg, cx),
-        "toggle-repo" => match repo_named(this, arg, cx) {
-            Some(repo) => this.toggle_repo(&repo.key, cx),
+        "fold" => match repo_named(this, arg, cx) {
+            Some(repo) => this.toggle_group(&repo.key, cx),
             None => eprintln!("[sidebar-script] no repo {arg}"),
         },
+        "toggle-agents" => this.toggle_agents(cx),
+        "sort" => this.toggle_agent_sort(cx),
         "new-workspace" => this.new_workspace(cx),
+        "menu" => this.open_menu(point(px(120.), px(400.)), window, cx),
         "new-worktree" => this.new_worktree(None, window, cx),
         "worktree" => this.create_worktree(arg, None, window, cx),
         "new-worktree-in" => match repo_named(this, arg, cx) {
@@ -121,60 +125,57 @@ fn run_step(
 
 fn repo_named(this: &WorkspaceList, name: &str, cx: &App) -> Option<Repo> {
     let snapshot = this.state.read(cx).snapshot.clone();
-    this.groups(&snapshot)
-        .repos
-        .into_iter()
-        .map(|g| g.repo)
-        .find(|r| r.name == name)
+    this.repos(&snapshot).into_iter().find(|r| r.name == name)
 }
 
 fn log(this: &WorkspaceList, label: &str, cx: &App) {
     let snapshot = this.state.read(cx).snapshot.clone();
     eprintln!(
-        "[sidebar-script] {label}: focused workspace {:?}, pane {:?}",
-        snapshot.focused_workspace_id, snapshot.focused_pane_id
+        "[sidebar-script] {label}: focused workspace {:?}, pane {:?}, agents {} {:?}",
+        snapshot.focused_workspace_id,
+        snapshot.focused_pane_id,
+        if this.agents_open { "open" } else { "folded" },
+        this.agent_sort,
     );
-    let line = |info: &WorkspaceInfo, indent: &str| {
-        let branch = this
-            .checkout(&snapshot, info)
-            .and_then(|c| c.branch.clone());
+    for entry in this.entries(&snapshot) {
+        let info = entry.info;
+        let lead = match entry.kind {
+            Kind::Parent
+                if entry
+                    .repo
+                    .as_ref()
+                    .is_some_and(|r| this.folded.contains(&r.key)) =>
+            {
+                "▸ "
+            }
+            Kind::Parent => "▾ ",
+            Kind::Child => "   ",
+            Kind::Plain => " ",
+        };
+        let checkout = this.checkout(&snapshot, info);
         eprintln!(
-            "[sidebar-script]   {indent}{} {:?} branch={branch:?} tabs={} panes={} status={}{}",
-            info.workspace_id,
+            "[sidebar-script]   {lead}{} {} [{}] status={}",
             info.label,
-            info.tab_count,
-            info.pane_count,
+            info.workspace_id,
+            entry.repo.as_ref().map_or("-", |r| r.name.as_str()),
             status_label(info.agent_status),
-            if this.collapsed.contains(&info.workspace_id) {
-                " (folded)"
-            } else {
-                ""
-            },
         );
-    };
-    let groups = this.groups(&snapshot);
-    for group in &groups.repos {
-        let folded = this.collapsed_repos.contains(&group.repo.key);
-        eprintln!(
-            "[sidebar-script]   repo {} ({}){}",
-            group.repo.name,
-            group.repo.root,
-            if folded { " (folded)" } else { "" }
-        );
-        for &(info, linked) in &group.workspaces {
-            line(info, if linked { "    linked " } else { "  main " });
+        if entry.kind != Kind::Child
+            && let Some(branch) = checkout.and_then(|c| c.branch.as_deref())
+        {
+            eprintln!(
+                "[sidebar-script]      {branch} ahead/behind={:?}",
+                checkout.and_then(|c| c.ahead_behind)
+            );
         }
     }
-    eprintln!("[sidebar-script]   no repo:");
-    for &info in &groups.ungrouped {
-        line(info, "  ");
-    }
-    for a in &snapshot.agents {
+    for a in agents::ordered(&snapshot, this.agent_sort) {
         eprintln!(
-            "[sidebar-script]   agent {} {} {}",
+            "[sidebar-script]   agent {} {} {} in {}",
             a.pane_id,
             agent_name(a),
-            status_label(a.agent_status)
+            status_label(a.agent_status),
+            a.workspace_id,
         );
     }
 }

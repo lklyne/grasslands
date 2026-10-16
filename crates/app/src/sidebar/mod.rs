@@ -1,5 +1,5 @@
-//! The sidebar: the workspace list (with each workspace's agents) above the
-//! file tree, in a vertical split.
+//! The sidebar: the workspace list (spaces, then agents) above the file
+//! tree, in a vertical split.
 
 pub mod files;
 pub mod workspaces;
@@ -40,8 +40,8 @@ impl Render for Sidebar {
                 v_resizable("sidebar-split")
                     .child(
                         resizable_panel()
-                            .size(px(400.))
-                            .size_range(px(80.)..px(800.))
+                            .size(px(560.))
+                            .size_range(px(120.)..px(1000.))
                             .child(self.workspaces.clone()),
                     )
                     .child(resizable_panel().child(self.files.clone())),

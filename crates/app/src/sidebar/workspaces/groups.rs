@@ -1,45 +1,83 @@
-//! Groups herdr's workspaces by repo, like herdr's own sidebar: one group per
-//! repo in the order its first workspace appears, the main checkout's
-//! workspaces first and its linked worktrees after them, then every workspace
-//! with no repo in an ungrouped section. Within each part herdr's order holds.
+//! The rows of the spaces list, in herdr's order (`workspace_entries` in
+//! herdr 0.9.5's `client/shell/sidebar.rs`):
+//!
+//! - A repo forms a group only when it has both a main-checkout workspace and
+//!   a linked-worktree workspace. Its rows sit where its first workspace sits
+//!   in herdr's list: the main checkout's workspaces (the group's parent rows,
+//!   which carry the fold toggle), then its linked worktrees indented beneath.
+//! - A folded group keeps only its parent rows, plus the focused linked
+//!   worktree if there is one.
+//! - Every other workspace is a plain row in herdr's order, repo or not.
+
+use std::collections::HashSet;
 
 use super::git::{Placement, Repo};
 use crate::herdr::WorkspaceInfo;
 
-pub struct RepoGroup<'a> {
-    pub repo: Repo,
-    /// Each workspace with `true` for a linked worktree.
-    pub workspaces: Vec<(&'a WorkspaceInfo, bool)>,
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Kind {
+    Plain,
+    /// A main checkout heading its repo's group.
+    Parent,
+    /// A linked worktree under its group's parent.
+    Child,
 }
 
-pub struct Groups<'a> {
-    pub repos: Vec<RepoGroup<'a>>,
-    pub ungrouped: Vec<&'a WorkspaceInfo>,
+pub struct Entry<'a> {
+    pub info: &'a WorkspaceInfo,
+    pub kind: Kind,
+    /// The workspace's repo, grouped or not.
+    pub repo: Option<Repo>,
 }
 
-/// `place` says which repo a workspace is in (`None`: no repo).
-pub fn group<'a>(
-    workspaces: impl IntoIterator<Item = &'a WorkspaceInfo>,
+/// `place` says which repo a workspace is in (`None`: no repo); `folded`
+/// holds the repo keys whose groups are folded.
+pub fn entries<'a>(
+    workspaces: &[&'a WorkspaceInfo],
     place: impl Fn(&WorkspaceInfo) -> Option<Placement>,
-) -> Groups<'a> {
-    let mut repos: Vec<RepoGroup<'a>> = Vec::new();
-    let mut ungrouped = Vec::new();
-    for info in workspaces {
-        let Some(Placement { repo, linked }) = place(info) else {
-            ungrouped.push(info);
+    folded: &HashSet<String>,
+) -> Vec<Entry<'a>> {
+    let placed: Vec<Option<Placement>> = workspaces.iter().map(|i| place(i)).collect();
+    let has = |key: &str, linked: bool| {
+        placed
+            .iter()
+            .flatten()
+            .any(|p| p.repo.key == key && p.linked == linked)
+    };
+    let mut emitted = HashSet::new();
+    let mut entries = Vec::new();
+    for (info, placement) in workspaces.iter().zip(&placed) {
+        let Some(placement) = placement.as_ref().filter(|p| has(&p.repo.key, !p.linked)) else {
+            entries.push(Entry {
+                info,
+                kind: Kind::Plain,
+                repo: placement.as_ref().map(|p| p.repo.clone()),
+            });
             continue;
         };
-        match repos.iter_mut().find(|g| g.repo.key == repo.key) {
-            Some(group) => group.workspaces.push((info, linked)),
-            None => repos.push(RepoGroup {
-                repo,
-                workspaces: vec![(info, linked)],
-            }),
+        let key = &placement.repo.key;
+        if !emitted.insert(key.clone()) {
+            continue;
+        }
+        let members = || {
+            workspaces.iter().zip(&placed).filter_map(|(info, p)| {
+                p.as_ref()
+                    .filter(|p| &p.repo.key == key)
+                    .map(|p| (*info, p))
+            })
+        };
+        let row = |(info, p): (&'a WorkspaceInfo, &Placement)| Entry {
+            info,
+            kind: if p.linked { Kind::Child } else { Kind::Parent },
+            repo: Some(p.repo.clone()),
+        };
+        entries.extend(members().filter(|(_, p)| !p.linked).map(row));
+        let children = members().filter(|(_, p)| p.linked);
+        if folded.contains(key) {
+            entries.extend(children.filter(|(info, _)| info.focused).take(1).map(row));
+        } else {
+            entries.extend(children.map(row));
         }
     }
-    for group in &mut repos {
-        // Stable, so herdr's order holds among main and among linked.
-        group.workspaces.sort_by_key(|&(_, linked)| linked);
-    }
-    Groups { repos, ungrouped }
+    entries
 }

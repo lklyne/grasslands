@@ -8,9 +8,12 @@ use std::sync::Arc;
 use gpui_kit::{AppContext as _, Entity, Modifiers, TestAppContext, VisualTestContext};
 use serde_json::json;
 
+use std::collections::HashSet;
+
+use super::agents::ordered;
 use super::git::Placement;
-use super::groups::group;
-use super::{WorkspaceList, by_attention, counts, rolled_up};
+use super::groups::{Kind, entries};
+use super::{AgentSort, WorkspaceList, rolled_up};
 use crate::herdr::{Agent, AgentStatus, Snapshot, WorkspaceInfo};
 use crate::state::{AppState, offline_config};
 
@@ -38,41 +41,32 @@ fn linked(repo: &str, checkout: &str) -> serde_json::Value {
             "checkout_path": checkout, "is_linked_worktree": true })
 }
 
-#[test]
-fn blocked_agents_sort_first() {
-    let mut agents = [
-        agent("a", "w1", AgentStatus::Idle),
-        agent("b", "w1", AgentStatus::Done),
-        agent("c", "w1", AgentStatus::Blocked),
-        agent("d", "w1", AgentStatus::Working),
-    ];
-    agents.sort_by(by_attention);
-    let order: Vec<&str> = agents.iter().map(|a| a.pane_id.as_str()).collect();
-    assert_eq!(order, ["c", "d", "b", "a"]);
-}
-
 fn main_checkout(repo: &str) -> serde_json::Value {
     json!({ "repo_key": format!("/r/{repo}/.git"), "repo_name": repo,
             "repo_root": format!("/r/{repo}"), "checkout_path": format!("/r/{repo}"),
             "is_linked_worktree": false })
 }
 
-/// Group ids in display order: `repo: ids…`, then `-: ids…` for no repo.
-fn grouped(infos: &[WorkspaceInfo]) -> Vec<String> {
-    let groups = group(infos, |i| i.worktree.as_ref().map(Placement::from_herdr));
-    let ids = |ids: Vec<&str>| ids.join(" ");
-    groups
-        .repos
-        .iter()
-        .map(|g| {
-            let ws = g.workspaces.iter().map(|(i, _)| i.workspace_id.as_str());
-            format!("{}: {}", g.repo.name, ids(ws.collect()))
-        })
-        .chain((!groups.ungrouped.is_empty()).then(|| {
-            let ws = groups.ungrouped.iter().map(|i| i.workspace_id.as_str());
-            format!("-: {}", ids(ws.collect()))
-        }))
-        .collect()
+/// Rows as herdr draws their lead: `id` plain, `>id` a group's parent,
+/// `  id` a linked worktree under it.
+fn rows(infos: &[WorkspaceInfo], folded: &[&str]) -> Vec<String> {
+    let infos: Vec<&WorkspaceInfo> = infos.iter().collect();
+    let folded: HashSet<String> = folded.iter().map(|k| format!("/r/{k}/.git")).collect();
+    entries(
+        &infos,
+        |i| i.worktree.as_ref().map(Placement::from_herdr),
+        &folded,
+    )
+    .iter()
+    .map(|e| {
+        let lead = match e.kind {
+            Kind::Plain => "",
+            Kind::Parent => ">",
+            Kind::Child => "  ",
+        };
+        format!("{lead}{}", e.info.workspace_id)
+    })
+    .collect()
 }
 
 #[test]
@@ -82,27 +76,45 @@ fn group_should_put_main_checkout_before_its_linked_worktrees() {
         info("w2", 2, main_checkout("alpha")),
         info("w3", 3, linked("alpha", "/wt/two")),
     ];
-    assert_eq!(grouped(&infos), ["alpha: w2 w1 w3"]);
+    assert_eq!(rows(&infos, &[]), [">w2", "  w1", "  w3"]);
 }
 
 #[test]
-fn group_should_order_repos_by_their_first_workspace() {
-    let infos = [
-        info("w1", 1, main_checkout("beta")),
-        info("w2", 2, main_checkout("alpha")),
-        info("w3", 3, linked("beta", "/wt/b")),
-    ];
-    assert_eq!(grouped(&infos), ["beta: w1 w3", "alpha: w2"]);
-}
-
-#[test]
-fn group_should_put_workspaces_without_repo_last() {
+fn group_should_sit_where_its_first_workspace_sits() {
     let infos = [
         info("w1", 1, json!(null)),
-        info("w2", 2, main_checkout("alpha")),
+        info("w2", 2, linked("beta", "/wt/b")),
         info("w3", 3, json!(null)),
+        info("w4", 4, main_checkout("beta")),
     ];
-    assert_eq!(grouped(&infos), ["alpha: w2", "-: w1 w3"]);
+    assert_eq!(rows(&infos, &[]), ["w1", ">w4", "  w2", "w3"]);
+}
+
+#[test]
+fn repo_without_linked_worktree_should_be_a_plain_row() {
+    let infos = [
+        info("w1", 1, main_checkout("alpha")),
+        info("w2", 2, json!(null)),
+    ];
+    assert_eq!(rows(&infos, &[]), ["w1", "w2"]);
+}
+
+#[test]
+fn linked_worktree_without_main_checkout_should_be_a_plain_row() {
+    let infos = [info("w1", 1, linked("alpha", "/wt/a"))];
+    assert_eq!(rows(&infos, &[]), ["w1"]);
+}
+
+#[test]
+fn folded_group_should_keep_parent_and_focused_child() {
+    let mut focused = info("w3", 3, linked("alpha", "/wt/b"));
+    focused.focused = true;
+    let infos = [
+        info("w1", 1, main_checkout("alpha")),
+        info("w2", 2, linked("alpha", "/wt/a")),
+        focused,
+    ];
+    assert_eq!(rows(&infos, &["alpha"]), [">w1", "  w3"]);
 }
 
 #[test]
@@ -113,22 +125,58 @@ fn group_should_match_repo_key_with_trailing_slash() {
         info("w1", 1, slashed),
         info("w2", 2, linked("alpha", "/wt/a")),
     ];
-    assert_eq!(grouped(&infos), ["alpha: w1 w2"]);
+    assert_eq!(rows(&infos, &[]), [">w1", "  w2"]);
 }
 
 #[test]
-fn rolled_up_status_should_prefer_blocked() {
-    let statuses = [
-        AgentStatus::Done,
-        AgentStatus::Blocked,
-        AgentStatus::Working,
-    ];
-    assert_eq!(rolled_up(statuses), AgentStatus::Blocked);
+fn rolled_up_status_should_follow_herdr_priority() {
+    let statuses = [AgentStatus::Working, AgentStatus::Done, AgentStatus::Idle];
+    assert_eq!(rolled_up(statuses), AgentStatus::Done);
+    assert_eq!(
+        rolled_up([AgentStatus::Done, AgentStatus::Blocked]),
+        AgentStatus::Blocked
+    );
+}
+
+fn agents_snapshot() -> Snapshot {
+    let workspaces = [info("w1", 1, json!(null)), info("w2", 2, json!(null))]
+        .into_iter()
+        .map(|info| crate::herdr::Workspace { info, tabs: vec![] })
+        .collect();
+    let mut late_done = agent("c", "w1", AgentStatus::Done);
+    late_done.state_change_seq = 9;
+    Snapshot {
+        workspaces,
+        agents: vec![
+            agent("a", "w2", AgentStatus::Blocked),
+            agent("b", "w1", AgentStatus::Working),
+            late_done,
+            agent("d", "w1", AgentStatus::Done),
+        ],
+        ..Snapshot::default()
+    }
+}
+
+fn panes(agents: Vec<&Agent>) -> Vec<&str> {
+    agents.iter().map(|a| a.pane_id.as_str()).collect()
 }
 
 #[test]
-fn counts_use_singular_for_one() {
-    assert_eq!(counts(&info("w1", 1, json!(null))), "1 tab · 3 panes");
+fn grouped_agents_should_follow_workspaces_then_priority() {
+    let snapshot = agents_snapshot();
+    assert_eq!(
+        panes(ordered(&snapshot, AgentSort::Grouped)),
+        ["c", "d", "b", "a"]
+    );
+}
+
+#[test]
+fn priority_agents_should_put_blocked_first_then_newest_change() {
+    let snapshot = agents_snapshot();
+    assert_eq!(
+        panes(ordered(&snapshot, AgentSort::Priority)),
+        ["a", "c", "d", "b"]
+    );
 }
 
 fn snapshot() -> Arc<Snapshot> {
@@ -168,22 +216,32 @@ fn fixture(
 }
 
 #[gpui::test]
-fn every_workspace_and_its_agents_get_rows(cx: &mut TestAppContext) {
+fn every_workspace_and_agent_gets_a_row(cx: &mut TestAppContext) {
     let (_, _, cx) = fixture(cx);
-    let found: Vec<bool> = ["ws-w1", "ws-w2", "agent-w2:p1", "agent-w2:p2"]
+    let found: Vec<bool> = ["ws-w1", "ws-w2", "ws-w3", "agent-w2:p1", "agent-w2:p2"]
         .iter()
         .map(|s| cx.debug_bounds(s).is_some())
         .collect();
-    assert_eq!(found, [true; 4]);
+    assert_eq!(found, [true; 5]);
 }
 
 #[gpui::test]
-fn collapsing_a_workspace_hides_its_agents(cx: &mut TestAppContext) {
+fn folding_the_agents_section_hides_agent_rows(cx: &mut TestAppContext) {
     let (_, _, cx) = fixture(cx);
-    let toggle = cx.debug_bounds("ws-toggle-w2").unwrap().center();
+    let toggle = cx.debug_bounds("agents-toggle").unwrap().center();
     cx.simulate_click(toggle, Modifiers::none());
     cx.run_until_parked();
     assert!(cx.debug_bounds("agent-w2:p1").is_none());
+}
+
+#[gpui::test]
+fn sort_toggle_should_switch_to_priority(cx: &mut TestAppContext) {
+    let (list, _, cx) = fixture(cx);
+    let toggle = cx.debug_bounds("agents-sort").unwrap().center();
+    cx.simulate_click(toggle, Modifiers::none());
+    cx.run_until_parked();
+    let sort = list.read_with(cx, |list, _| list.agent_sort);
+    assert_eq!(sort, AgentSort::Priority);
 }
 
 #[gpui::test]
@@ -197,9 +255,9 @@ fn clicking_a_finished_agent_marks_it_seen(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
-fn repo_gets_a_heading(cx: &mut TestAppContext) {
+fn group_parent_gets_a_fold_toggle(cx: &mut TestAppContext) {
     let (_, _, cx) = fixture(cx);
-    assert!(cx.debug_bounds("repo-repo").is_some());
+    assert!(cx.debug_bounds("fold-repo").is_some());
 }
 
 #[gpui::test]
@@ -211,22 +269,13 @@ fn main_checkout_row_sits_above_linked_worktree_row(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
-fn folding_a_repo_hides_its_workspaces(cx: &mut TestAppContext) {
+fn folding_a_group_hides_its_linked_worktrees_only(cx: &mut TestAppContext) {
     let (_, _, cx) = fixture(cx);
-    let heading = cx.debug_bounds("repo-repo").unwrap().center();
-    cx.simulate_click(heading, Modifiers::none());
+    let toggle = cx.debug_bounds("fold-repo").unwrap().center();
+    cx.simulate_click(toggle, Modifiers::none());
     cx.run_until_parked();
-    let hidden = ["ws-w2", "ws-w3", "agent-w2:p1"].map(|s| cx.debug_bounds(s).is_none());
-    assert_eq!(hidden, [true; 3]);
-}
-
-#[gpui::test]
-fn workspace_without_repo_stays_visible_after_folding_repos(cx: &mut TestAppContext) {
-    let (_, _, cx) = fixture(cx);
-    let heading = cx.debug_bounds("repo-repo").unwrap().center();
-    cx.simulate_click(heading, Modifiers::none());
-    cx.run_until_parked();
-    assert!(cx.debug_bounds("ws-w1").is_some());
+    let shown = ["ws-w1", "ws-w2", "ws-w3", "agent-w2:p1"].map(|s| cx.debug_bounds(s).is_some());
+    assert_eq!(shown, [true, false, true, true]);
 }
 
 #[gpui::test]

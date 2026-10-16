@@ -1,10 +1,13 @@
-//! Each workspace's branch, and its repo when herdr doesn't say, read with
-//! git2 from the workspace's checkout folder. herdr's API has no branch, and
-//! fills `WorkspaceInfo::worktree` only for workspaces it has resolved.
+//! Each workspace's branch and how far it is ahead of / behind its upstream,
+//! and its repo when herdr doesn't say, read with git2 from the workspace's
+//! checkout folder. herdr's socket API has neither (its own sidebar reads git
+//! in the server), and fills `WorkspaceInfo::worktree` only for workspaces it
+//! has resolved.
 //!
-//! Results are cached per folder and re-read only when a workspace's folder
-//! first appears, when the active worktree changes, or when a watched `HEAD`
-//! file changes (checkout, commit on a detached HEAD), never per frame.
+//! Results are cached per folder and re-read when a workspace's folder first
+//! appears, when the active worktree changes, when a watched `HEAD` file
+//! changes (checkout), and on a slow timer (commits, fetches, pushes), never
+//! per frame.
 
 use std::path::{Path, PathBuf};
 
@@ -45,9 +48,10 @@ impl Placement {
 /// What git2 found for one folder.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Checkout {
-    /// The branch name, or a short SHA when detached. `None` only if HEAD
-    /// can't be read.
+    /// The branch HEAD names; `None` when detached, like herdr.
     pub branch: Option<String>,
+    /// Commits ahead of and behind the branch's upstream, if it has one.
+    pub ahead_behind: Option<(usize, usize)>,
     /// `None` for a bare repo.
     pub placement: Option<Placement>,
     /// This checkout's own git dir, which holds its `HEAD`.
@@ -59,8 +63,10 @@ pub fn read(dir: &Path) -> Option<Checkout> {
     let repo = git2::Repository::discover(dir).ok()?;
     let git_dir = repo.path().canonicalize().ok()?;
     let placement = placement(&repo);
+    let branch = branch(&repo);
     Some(Checkout {
-        branch: head_label(&repo),
+        ahead_behind: branch.as_deref().and_then(|b| ahead_behind(&repo, b)),
+        branch,
         placement,
         git_dir,
     })
@@ -87,20 +93,23 @@ fn placement(repo: &git2::Repository) -> Option<Placement> {
     })
 }
 
-/// The branch HEAD points at (also before its first commit), or the
-/// 7-character SHA of a detached HEAD.
-fn head_label(repo: &git2::Repository) -> Option<String> {
+/// The branch HEAD points at, also before its first commit.
+fn branch(repo: &git2::Repository) -> Option<String> {
     let head = repo.find_reference("HEAD").ok()?;
-    if let Ok(Some(target)) = head.symbolic_target() {
-        return Some(
-            target
-                .strip_prefix("refs/heads/")
-                .unwrap_or(target)
-                .to_owned(),
-        );
-    }
-    let sha = head.target()?.to_string();
-    Some(sha[..7.min(sha.len())].to_owned())
+    let target = head.symbolic_target().ok().flatten()?;
+    Some(
+        target
+            .strip_prefix("refs/heads/")
+            .unwrap_or(target)
+            .to_owned(),
+    )
+}
+
+fn ahead_behind(repo: &git2::Repository, branch: &str) -> Option<(usize, usize)> {
+    let local = repo.find_branch(branch, git2::BranchType::Local).ok()?;
+    let head = local.get().target()?;
+    let upstream = local.upstream().ok()?.get().target()?;
+    repo.graph_ahead_behind(head, upstream).ok()
 }
 
 /// Watches git dirs for `HEAD` changes and reports which git dir changed.
@@ -219,15 +228,50 @@ mod tests {
     }
 
     #[test]
-    fn read_should_show_short_sha_when_detached() {
+    fn read_should_show_no_branch_when_detached() {
         let dir = temp_dir("detached");
         let repo = repo_with_commit(&dir);
         let head = repo.head().unwrap().target().unwrap();
         repo.set_head_detached(head).unwrap();
-        assert_eq!(
-            read(&dir).unwrap().branch,
-            Some(head.to_string()[..7].to_owned())
-        );
+        assert_eq!(read(&dir).unwrap().branch, None);
+    }
+
+    #[test]
+    fn read_should_count_commits_ahead_of_upstream() {
+        let dir = temp_dir("ahead");
+        let remote = dir.join("remote.git");
+        git2::Repository::init_bare(&remote).unwrap();
+        let local = dir.join("local");
+        std::fs::create_dir_all(&local).unwrap();
+        let repo = repo_with_commit(&local);
+        repo.remote("origin", remote.to_str().unwrap()).unwrap();
+        repo.find_remote("origin")
+            .unwrap()
+            .push(&["refs/heads/main:refs/heads/main"], None)
+            .unwrap();
+        repo.find_remote("origin")
+            .unwrap()
+            .fetch(&["main"], None, None)
+            .unwrap();
+        repo.find_branch("main", git2::BranchType::Local)
+            .unwrap()
+            .set_upstream(Some("origin/main"))
+            .unwrap();
+        let sig = git2::Signature::now("t", "t@example.com").unwrap();
+        for message in ["two", "three"] {
+            let parent = repo.head().unwrap().peel_to_commit().unwrap();
+            let tree = parent.tree().unwrap();
+            repo.commit(Some("HEAD"), &sig, &sig, message, &tree, &[&parent])
+                .unwrap();
+        }
+        assert_eq!(read(&local).unwrap().ahead_behind, Some((2, 0)));
+    }
+
+    #[test]
+    fn read_should_have_no_ahead_count_without_upstream() {
+        let dir = temp_dir("no-upstream");
+        repo_with_commit(&dir);
+        assert_eq!(read(&dir).unwrap().ahead_behind, None);
     }
 
     #[test]
