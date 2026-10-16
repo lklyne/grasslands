@@ -6,7 +6,7 @@ use std::{
     ffi::{CStr, CString, c_void},
     fmt,
     io::Write as _,
-    path::PathBuf,
+    path::{Path, PathBuf},
     ptr::NonNull,
 };
 
@@ -64,6 +64,9 @@ pub enum TerminalConfiguration {
     Custom(TerminalTheme),
     /// Load user configuration, then override its colors with application values.
     UserDefaultWithOverride(TerminalTheme),
+    /// Use built-in defaults plus one application-supplied Ghostty config file,
+    /// so each terminal can carry its own font, theme and shader settings.
+    File(PathBuf),
 }
 
 /// Configuration for a terminal process rendered by libghostty.
@@ -105,9 +108,21 @@ fn theme_config_contents(theme: &TerminalTheme) -> String {
     )
 }
 
-fn write_theme_config(theme: &TerminalTheme) -> Result<tempfile::NamedTempFile, String> {
+fn write_theme_config(
+    theme: &TerminalTheme,
+    base_config: Option<&Path>,
+) -> Result<tempfile::NamedTempFile, String> {
     let mut file = tempfile::NamedTempFile::new()
         .map_err(|error| format!("create temporary Ghostty theme: {error}"))?;
+    // A surface built from a config file keeps that file's settings when its
+    // colors change, so the theme is layered over a copy of it.
+    if let Some(base_config) = base_config {
+        let base = std::fs::read_to_string(base_config)
+            .map_err(|error| format!("read Ghostty config {}: {error}", base_config.display()))?;
+        file.write_all(base.as_bytes())
+            .and_then(|()| file.write_all(b"\n"))
+            .map_err(|error| format!("write temporary Ghostty theme: {error}"))?;
+    }
     file.write_all(theme_config_contents(theme).as_bytes())
         .map_err(|error| format!("write temporary Ghostty theme: {error}"))?;
     Ok(file)
@@ -117,6 +132,7 @@ fn write_theme_config(theme: &TerminalTheme) -> Result<tempfile::NamedTempFile, 
 /// update can rebuild the same configuration with new colors.
 pub struct TerminalThemeState {
     load_user_config: bool,
+    base_config: Option<PathBuf>,
     file: Option<tempfile::NamedTempFile>,
 }
 
@@ -146,7 +162,7 @@ impl TerminalThemeState {
         theme: &TerminalTheme,
         update: impl FnOnce(&CStr) -> bool,
     ) -> Result<(), String> {
-        let file = write_theme_config(theme)?;
+        let file = write_theme_config(theme, self.base_config.as_deref())?;
         let path = CString::new(file.path().to_string_lossy().as_bytes())
             .map_err(|_| "temporary Ghostty theme path contains a NUL byte".to_owned())?;
         if !update(path.as_c_str()) {
@@ -155,6 +171,28 @@ impl TerminalThemeState {
         self.file = Some(file);
         Ok(())
     }
+
+    /// Rebuilds the running surface's configuration from built-in defaults and
+    /// `path`, replacing any earlier configuration source.
+    pub fn load_file(&mut self, surface: &mut NativeSurface, path: &Path) -> Result<(), String> {
+        let c_path = config_path(path)?;
+        if !surface.update_theme(false, Some(c_path.as_c_str())) {
+            return Err(format!("libghostty could not load {}", path.display()));
+        }
+        self.load_user_config = false;
+        self.base_config = Some(path.to_owned());
+        self.file = None;
+        Ok(())
+    }
+}
+
+fn config_path(path: &Path) -> Result<CString, String> {
+    CString::new(path.to_string_lossy().as_bytes()).map_err(|_| {
+        format!(
+            "Ghostty config path contains a NUL byte: {}",
+            path.display()
+        )
+    })
 }
 
 /// Creates the native child used by the generated adapter.
@@ -184,19 +222,23 @@ pub unsafe fn spawn_surface(
         })?;
     let command =
         CString::new(command).map_err(|_| "terminal command contains a NUL byte".to_owned())?;
-    let (load_user_config, theme_config) = match configuration {
-        TerminalConfiguration::Default => (false, None),
-        TerminalConfiguration::UserDefault => (true, None),
-        TerminalConfiguration::Custom(theme) => (false, Some(write_theme_config(&theme)?)),
-        TerminalConfiguration::UserDefaultWithOverride(theme) => {
-            (true, Some(write_theme_config(&theme)?))
+    let (load_user_config, base_config, theme_config) = match configuration {
+        TerminalConfiguration::Default => (false, None, None),
+        TerminalConfiguration::UserDefault => (true, None, None),
+        TerminalConfiguration::Custom(theme) => {
+            (false, None, Some(write_theme_config(&theme, None)?))
         }
+        TerminalConfiguration::UserDefaultWithOverride(theme) => {
+            (true, None, Some(write_theme_config(&theme, None)?))
+        }
+        TerminalConfiguration::File(path) => (false, Some(path), None),
     };
     let theme_config_path = theme_config
         .as_ref()
-        .map(|file| CString::new(file.path().to_string_lossy().as_bytes()))
-        .transpose()
-        .map_err(|_| "temporary Ghostty theme path contains a NUL byte".to_owned())?;
+        .map(|file| file.path())
+        .or(base_config.as_deref())
+        .map(config_path)
+        .transpose()?;
     let native_window = native_window(window)?;
     let surface = unsafe {
         NativeSurface::new(
@@ -216,6 +258,7 @@ pub unsafe fn spawn_surface(
         surface,
         TerminalThemeState {
             load_user_config,
+            base_config,
             file: theme_config,
         },
     ))
@@ -609,6 +652,7 @@ mod tests {
         );
         let mut state = TerminalThemeState {
             load_user_config: false,
+            base_config: None,
             file: None,
         };
 
@@ -645,12 +689,46 @@ mod tests {
         assert!(second.exists());
     }
 
+    /// A surface built from a config file keeps that file's settings when its
+    /// colors change.
+    #[test]
+    fn theme_updates_layer_colors_over_the_surface_config_file() {
+        let mut base = tempfile::NamedTempFile::new().expect("create a config file");
+        base.write_all(b"font-size = 21\n")
+            .expect("write the config file");
+        let mut state = TerminalThemeState {
+            load_user_config: false,
+            base_config: Some(base.path().to_owned()),
+            file: None,
+        };
+
+        let contents = std::cell::RefCell::new(String::new());
+        state
+            .apply_with(
+                &theme(
+                    TerminalColor::new(0x11, 0x12, 0x13),
+                    TerminalColor::new(0xee, 0xed, 0xec),
+                ),
+                |path| {
+                    *contents.borrow_mut() = std::fs::read_to_string(theme_file_path(path))
+                        .expect("the update can read the theme");
+                    true
+                },
+            )
+            .expect("apply the theme");
+
+        let contents = contents.into_inner();
+        assert!(contents.starts_with("font-size = 21\n"));
+        assert!(contents.contains("background = #111213\n"));
+    }
+
     /// A surface that refuses a theme leaves the colors it is already running with
     /// in place, so a later update can still be applied.
     #[test]
     fn a_refused_theme_update_keeps_the_running_theme() {
         let mut state = TerminalThemeState {
             load_user_config: true,
+            base_config: None,
             file: None,
         };
 
@@ -782,7 +860,7 @@ mod tests {
             TerminalColor::new(255, 255, 255),
             [TerminalColor::new(0, 0, 0); 16],
         );
-        let file = write_theme_config(&theme).expect("theme config should be writable");
+        let file = write_theme_config(&theme, None).expect("theme config should be writable");
         let path = file.path().to_owned();
         assert!(path.exists());
 

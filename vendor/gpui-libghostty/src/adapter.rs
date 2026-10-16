@@ -94,6 +94,12 @@ macro_rules! bind_gpui {
                     self.theme.apply(&mut self.surface, &theme)
                 }
 
+                /// Reconfigures the running terminal from built-in defaults plus the
+                /// Ghostty config file at `path`, without restarting its process.
+                pub fn load_config_file(&mut self, path: &std::path::Path) -> Result<(), String> {
+                    self.theme.load_file(&mut self.surface, path)
+                }
+
                 /// Number of frames Ghostty has drawn for this terminal. It advances once
                 /// per rendered frame, so a caller that applies a theme can wait for the
                 /// new colors to reach the screen instead of guessing a delay.
