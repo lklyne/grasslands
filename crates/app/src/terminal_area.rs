@@ -41,8 +41,8 @@ impl Render for TerminalArea {
             state.connection,
             state
                 .herdr_config
-                .session
-                .as_deref()
+                .as_ref()
+                .and_then(|config| config.session.as_deref())
                 .unwrap_or("default session")
         );
         v_flex()

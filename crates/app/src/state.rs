@@ -36,7 +36,8 @@ pub enum AppEvent {
 }
 
 pub struct AppState {
-    pub herdr_config: herdr::Config,
+    /// `None` when the endpoint was refused.
+    pub herdr_config: Option<herdr::Config>,
     pub connection: ConnectionStatus,
     /// The latest herdr cache: workspaces → tabs → split trees, panes, agents.
     pub snapshot: Arc<Snapshot>,
@@ -44,17 +45,33 @@ pub struct AppState {
     /// Status changes and unseen results, for toasts and badges.
     pub attention: Attention,
     active_worktree: Option<PathBuf>,
-    client: Client,
+    /// `None` when the endpoint was refused.
+    client: Option<Client>,
     _sync: Option<(SessionSync, Task<()>)>,
 }
 
 impl EventEmitter<AppEvent> for AppState {}
 
 impl AppState {
-    /// Connects to herdr (starting its server if needed). Under `cargo test`
-    /// it stays offline: GPUI's test scheduler rejects wakeups from the sync
-    /// thread, and tests must never reach a real herdr by accident.
-    pub fn new(herdr_config: herdr::Config, cx: &mut Context<Self>) -> Self {
+    /// Connects to herdr (starting its server if needed). A refused endpoint
+    /// (see `herdr::Config::from_env`) leaves the app disconnected: no sync,
+    /// no client, every call fails. Under `cargo test` it stays offline: GPUI's
+    /// test scheduler rejects wakeups from the sync thread, and tests must
+    /// never reach a real herdr by accident.
+    pub fn new(herdr_config: herdr::Result<herdr::Config>, cx: &mut Context<Self>) -> Self {
+        let herdr_config = match herdr_config {
+            Ok(config) => config,
+            Err(error) => {
+                log::error!("herdr: {error}");
+                return Self::disconnected(error.to_string());
+            }
+        };
+        // `from_env` configs auto-start a server; tests must use an inert one.
+        #[cfg(test)]
+        assert!(
+            !herdr_config.auto_start,
+            "tests must not build AppState from the environment; use an auto_start: false config"
+        );
         let mut connection = ConnectionStatus::Connecting;
         let sync = if cfg!(test) {
             None
@@ -73,14 +90,24 @@ impl AppState {
             }
         };
         Self {
-            client: Client::new(herdr_config.clone()),
-            herdr_config,
+            client: Some(Client::new(herdr_config.clone())),
+            herdr_config: Some(herdr_config),
             connection,
+            _sync: sync,
+            ..Self::disconnected(String::new())
+        }
+    }
+
+    fn disconnected(reason: String) -> Self {
+        Self {
+            herdr_config: None,
+            connection: ConnectionStatus::Disconnected { reason },
             snapshot: Arc::default(),
             focused_pane: None,
             attention: Attention::default(),
             active_worktree: std::env::current_dir().ok(),
-            _sync: sync,
+            client: None,
+            _sync: None,
         }
     }
 
@@ -141,7 +168,11 @@ impl AppState {
         cx: &App,
         call: impl FnOnce(&Client) -> herdr::Result<T> + Send + 'static,
     ) -> Task<herdr::Result<T>> {
-        let client = self.client.clone();
+        let Some(client) = self.client.clone() else {
+            return Task::ready(Err(herdr::Error::Refused(
+                "herdr is disconnected; see the connection status".into(),
+            )));
+        };
         cx.background_executor().spawn(async move { call(&client) })
     }
 
@@ -329,5 +360,54 @@ impl AppState {
             c.plugin_action_invoke(Some(&plugin_id), &action_id, Some(&context))
                 .map(drop)
         })
+    }
+}
+
+/// A config that can never reach a herdr: no server start, a socket nobody
+/// listens on. For tests that need an `AppState`.
+#[cfg(test)]
+pub fn offline_config() -> herdr::Config {
+    herdr::Config {
+        bin: "/nonexistent/herdr".into(),
+        session: None,
+        socket_path: std::env::temp_dir().join("rusted-tools-test-no-herdr.sock"),
+        auto_start: false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use gpui_kit::{AppContext as _, TestAppContext};
+
+    use super::{AppState, offline_config};
+    use crate::herdr::{self, ConnectionStatus};
+
+    fn refused() -> herdr::Error {
+        herdr::Error::Refused("socket outside the dev root".into())
+    }
+
+    #[gpui::test]
+    fn refused_endpoint_leaves_app_disconnected(cx: &mut TestAppContext) {
+        let state = cx.new(|cx| AppState::new(Err(refused()), cx));
+        let connection = cx.read(|cx| state.read(cx).connection.clone());
+        assert!(matches!(connection, ConnectionStatus::Disconnected { .. }));
+    }
+
+    #[gpui::test]
+    fn refused_endpoint_fails_every_call(cx: &mut TestAppContext) {
+        let state = cx.new(|cx| AppState::new(Err(refused()), cx));
+        let task = cx.update(|cx| state.read(cx).focus_pane("w1:p1", cx));
+        let result = cx.foreground_executor().block_test(task);
+        assert!(matches!(result, Err(herdr::Error::Refused(_))));
+    }
+
+    #[gpui::test]
+    #[should_panic(expected = "tests must not build AppState from the environment")]
+    fn tests_cannot_use_an_auto_starting_config(cx: &mut TestAppContext) {
+        let config = herdr::Config {
+            auto_start: true,
+            ..offline_config()
+        };
+        cx.new(|cx| AppState::new(Ok(config), cx));
     }
 }

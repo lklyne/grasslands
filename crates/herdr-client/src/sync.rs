@@ -44,6 +44,11 @@ pub enum ConnectionStatus {
     Reconnecting {
         reason: String,
     },
+    /// Not connected and not retrying, e.g. the endpoint was refused. The
+    /// sync engine never reports this; apps use it when they don't start one.
+    Disconnected {
+        reason: String,
+    },
 }
 
 /// Sent to the app on [`SessionSync::updates`].

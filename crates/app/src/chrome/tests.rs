@@ -62,7 +62,7 @@ fn snapshot(status: AgentStatus) -> Arc<Snapshot> {
 fn fixture(cx: &mut TestAppContext) -> Fixture {
     cx.update(gpui_kit::init);
     cx.update(|cx| {
-        let state = cx.new(|cx| AppState::new(offline(), cx));
+        let state = cx.new(|cx| AppState::new(Ok(offline()), cx));
         let options = WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(Bounds {
                 origin: Point::default(),

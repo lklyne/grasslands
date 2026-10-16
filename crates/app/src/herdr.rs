@@ -16,6 +16,8 @@ pub use herdr_client::{
 
 /// Where to find herdr: `HERDR_BIN`, `HERDR_SESSION`, `HERDR_SOCKET_PATH`
 /// (`Config::from_env`), so a dev run never touches the user's live session.
+/// In debug and test builds `from_env` refuses any socket outside
+/// `~/.local/share/rusted-tools-herdr` unless `RT_ALLOW_LIVE_HERDR=1`.
 pub type Config = herdr_client::Endpoint;
 
 pub type Result<T> = herdr_client::Result<T>;

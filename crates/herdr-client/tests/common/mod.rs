@@ -14,7 +14,10 @@ pub const TIMEOUT: Duration = Duration::from_secs(10);
 /// The dev endpoint, or `None` (test skipped) unless the environment points at the
 /// isolated dev session. Guards against ever touching the user's live herdr.
 pub fn dev_endpoint() -> Option<Endpoint> {
-    let endpoint = Endpoint::from_env();
+    let Ok(endpoint) = Endpoint::from_env() else {
+        eprintln!("skipping: herdr endpoint refused; run through scripts/dev-run");
+        return None;
+    };
     let isolated = endpoint
         .session
         .as_deref()

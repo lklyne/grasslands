@@ -19,7 +19,7 @@ mod sync;
 pub mod types;
 
 pub use client::*;
-pub use endpoint::Endpoint;
+pub use endpoint::{ALLOW_LIVE_ENV, DEV_ROOT, Endpoint, check_dev_socket};
 pub use error::{EVENTS_LOST, Error, Result};
 pub use events::Event;
 pub use state::{SplitRef, SplitTree, State, Tab, Workspace};

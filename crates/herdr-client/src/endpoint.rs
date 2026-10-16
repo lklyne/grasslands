@@ -7,7 +7,7 @@ use std::env;
 use std::io::{BufRead, BufReader, ErrorKind, Write};
 use std::os::unix::net::UnixStream;
 use std::os::unix::process::CommandExt;
-use std::path::PathBuf;
+use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread;
@@ -23,6 +23,14 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 const SERVER_START_TIMEOUT: Duration = Duration::from_secs(10);
 
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
+
+/// Set to `1` to let a debug or test build reach a herdr outside the dev root.
+pub const ALLOW_LIVE_ENV: &str = "RT_ALLOW_LIVE_HERDR";
+
+/// Debug and test builds only talk to herdr sessions under `$HOME/` + this.
+/// Agent panes inherit `HERDR_SOCKET_PATH` for the user's live herdr, so a
+/// bare `cargo run`/`cargo test` would otherwise drive it.
+pub const DEV_ROOT: &str = ".local/share/rusted-tools-herdr";
 
 /// How to reach (and if needed start) a herdr server.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -43,7 +51,10 @@ impl Endpoint {
     /// Without `HERDR_SOCKET_PATH` the socket follows herdr's own rule:
     /// `$XDG_CONFIG_HOME/herdr[/sessions/<name>]/herdr.sock`, with
     /// `XDG_CONFIG_HOME` defaulting to `~/.config`.
-    pub fn from_env() -> Self {
+    ///
+    /// Debug and test builds refuse a socket outside `$HOME/.local/share/rusted-tools-herdr`
+    /// unless `RT_ALLOW_LIVE_HERDR=1` (see [`check_dev_socket`]). Release builds don't.
+    pub fn from_env() -> Result<Self> {
         let var = |name: &str| env::var(name).ok().filter(|v| !v.is_empty());
         let bin = PathBuf::from(var("HERDR_BIN").unwrap_or_else(|| "herdr".to_owned()));
         let session = var("HERDR_SESSION");
@@ -57,12 +68,24 @@ impl Endpoint {
                     });
                 default_socket_path(&config, session.as_deref())
             });
-        Self {
+        let endpoint = Self {
             bin,
             session,
             socket_path,
             auto_start: true,
+        };
+        endpoint.check_allowed()?;
+        Ok(endpoint)
+    }
+
+    /// The dev-root guard for this endpoint, as configured by the environment.
+    pub fn check_allowed(&self) -> Result<()> {
+        if !guarded() {
+            return Ok(());
         }
+        let allow = env::var(ALLOW_LIVE_ENV).is_ok_and(|v| v == "1");
+        let home = env::var_os("HOME").map(PathBuf::from);
+        check_dev_socket(&self.socket_path, home.as_deref(), allow)
     }
 
     /// Opens a connection, starting the server first if allowed and needed.
@@ -108,6 +131,7 @@ impl Endpoint {
     /// Starts the server in its own process group so it outlives this app, then waits
     /// until it answers `ping`.
     pub fn start_server(&self) -> Result<()> {
+        self.check_allowed()?;
         log::info!(
             "starting herdr server: {:?} session={:?}",
             self.bin,
@@ -150,6 +174,36 @@ impl Endpoint {
             self.socket_path.display()
         )))
     }
+}
+
+/// Whether the dev-root guard applies to this build.
+fn guarded() -> bool {
+    cfg!(any(debug_assertions, test))
+}
+
+/// Refuses `socket` unless it lies under `home`/[`DEV_ROOT`] or `allow` is set.
+/// The check is lexical: relative paths and `..` are refused outright.
+pub fn check_dev_socket(socket: &Path, home: Option<&Path>, allow: bool) -> Result<()> {
+    if allow {
+        return Ok(());
+    }
+    let refuse = |why: &str| {
+        Err(Error::Refused(format!(
+            "{why}: {} is outside ~/{DEV_ROOT}. Debug builds only talk to dev herdr \
+             sessions; run through scripts/dev-run, or set {ALLOW_LIVE_ENV}=1 to override",
+            socket.display()
+        )))
+    };
+    let Some(home) = home.filter(|home| home.is_absolute()) else {
+        return refuse("HOME is not set");
+    };
+    if !socket.is_absolute() || socket.components().any(|c| c == Component::ParentDir) {
+        return refuse("not a plain absolute path");
+    }
+    if !socket.starts_with(home.join(DEV_ROOT)) {
+        return refuse("refusing herdr socket");
+    }
+    Ok(())
 }
 
 fn default_socket_path(config_home: &std::path::Path, session: Option<&str>) -> PathBuf {
@@ -236,6 +290,68 @@ mod tests {
     fn default_socket_path_should_use_root_socket_without_session() {
         let path = default_socket_path(std::path::Path::new("/c"), None);
         assert_eq!(path, PathBuf::from("/c/herdr/herdr.sock"));
+    }
+
+    const HOME: &str = "/Users/u";
+
+    fn check(socket: &str, allow: bool) -> Result<()> {
+        check_dev_socket(Path::new(socket), Some(Path::new(HOME)), allow)
+    }
+
+    #[test]
+    fn dev_guard_should_accept_socket_under_dev_root() {
+        let socket = "/Users/u/.local/share/rusted-tools-herdr/herdr/sessions/dev-x/herdr.sock";
+        assert!(check(socket, false).is_ok());
+    }
+
+    #[test]
+    fn dev_guard_should_refuse_live_default_socket() {
+        let err = check("/Users/u/.config/herdr/herdr.sock", false).unwrap_err();
+        assert!(matches!(err, Error::Refused(_)));
+    }
+
+    #[test]
+    fn dev_guard_should_refuse_dot_dot_escape() {
+        let socket = "/Users/u/.local/share/rusted-tools-herdr/../../../.config/herdr/herdr.sock";
+        assert!(check(socket, false).is_err());
+    }
+
+    #[test]
+    fn dev_guard_should_refuse_relative_socket() {
+        assert!(check("herdr.sock", false).is_err());
+    }
+
+    #[test]
+    fn dev_guard_should_refuse_lookalike_prefix() {
+        let socket = "/Users/u/.local/share/rusted-tools-herdr-live/herdr.sock";
+        assert!(check(socket, false).is_err());
+    }
+
+    #[test]
+    fn dev_guard_should_refuse_without_home() {
+        let socket = "/Users/u/.local/share/rusted-tools-herdr/herdr.sock";
+        assert!(check_dev_socket(Path::new(socket), None, false).is_err());
+    }
+
+    #[test]
+    fn dev_guard_should_allow_anything_when_overridden() {
+        assert!(check("/Users/u/.config/herdr/herdr.sock", true).is_ok());
+    }
+
+    #[test]
+    fn start_server_should_refuse_outside_dev_root_without_spawning() {
+        let endpoint = Endpoint {
+            bin: "/nonexistent/herdr-must-not-run".into(),
+            session: None,
+            socket_path: "/nonexistent/live/herdr.sock".into(),
+            auto_start: true,
+        };
+        // Refused before spawning: a spawn attempt would be a ServerStart error.
+        // Skipped if the override happens to be set in this environment.
+        if env::var(ALLOW_LIVE_ENV).is_ok_and(|v| v == "1") {
+            return;
+        }
+        assert!(matches!(endpoint.start_server(), Err(Error::Refused(_))));
     }
 
     #[test]

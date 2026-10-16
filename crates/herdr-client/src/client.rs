@@ -206,8 +206,8 @@ impl Client {
         Self { endpoint }
     }
 
-    pub fn from_env() -> Self {
-        Self::new(Endpoint::from_env())
+    pub fn from_env() -> crate::Result<Self> {
+        Endpoint::from_env().map(Self::new)
     }
 
     pub fn endpoint(&self) -> &Endpoint {

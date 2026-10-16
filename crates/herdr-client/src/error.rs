@@ -24,6 +24,9 @@ pub enum Error {
     ServerStart(String),
     #[error("herdr closed the connection")]
     Closed,
+    /// The dev-root guard refused this endpoint (debug and test builds only).
+    #[error("herdr endpoint refused: {0}")]
+    Refused(String),
 }
 
 impl Error {

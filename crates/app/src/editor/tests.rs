@@ -13,7 +13,6 @@ use gpui_kit::{
 use super::buffer::Prompt;
 use super::watcher::FileWatcher;
 use super::{Answer, Editor};
-use crate::herdr;
 use crate::state::AppState;
 
 struct Fixture {
@@ -38,7 +37,7 @@ fn fixture(cx: &mut TestAppContext, name: &str) -> Fixture {
         super::init(cx);
     });
     let (window, (editor, state)) = cx.update(|cx| {
-        let state = cx.new(|cx| AppState::new(herdr::Config::from_env(), cx));
+        let state = cx.new(|cx| AppState::new(Ok(crate::state::offline_config()), cx));
         let options = WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(Bounds {
                 origin: Point::default(),
