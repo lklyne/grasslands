@@ -119,13 +119,15 @@ This also follows agents that move into another folder, since `foreground_cwd` t
 
 ## Workspaces and agents
 
-The upper sidebar panel lists every herdr workspace, modeled on herdr's own TUI sidebar. The terminal area shows only herdr's focused workspace, so this list is how you see and switch to the others.
+The upper sidebar panel lists every herdr workspace and agent, laid out like herdr's own TUI sidebar (same rules, same shapes and density, in the monospace font with the GPUI Kit theme's colors). The terminal area shows only herdr's focused workspace, so this list is how you see and switch to the others.
 
-- Grouped by repo, like herdr's sidebar: a heading per repo, the main checkout's workspaces first and its linked worktrees nested beneath them, and workspaces with no repo in a last section. Repo info comes from herdr's `worktree` field, or from git2 when herdr has none. Repo headings and workspaces fold; a folded heading rolls up its workspaces' status and badges.
-- Each workspace row: label, current git branch (short SHA when detached; read with git2 and cached, refreshed when `HEAD` changes), tab and pane counts, and the aggregate agent status as a colored dot.
-- Each row expands to its agents (name and status, blocked first). Badges count blocked agents and unseen "done" ones, per workspace and in the panel header.
-- Click a workspace to focus it (`workspace.focus`); the terminal area follows. Click an agent to focus its pane.
-- Create a workspace (in the active worktree's folder) or a worktree (`worktree.create`, asks for a branch name) from the header's +; a repo heading's + creates a worktree of that repo. Rename and close from the row's menu; × closes. Closing asks first when agents are running there.
+- **spaces:** one compact row per workspace: a status glyph (a ring when idle; filled red when blocked, yellow when working, teal when done and unseen) and the label. A dimmer second line shows the git branch, truncated with an ellipsis, with `↑N` (green) / `↓N` (red) against its upstream. Branch and ahead/behind are read with git2 (herdr's socket API has neither); a detached HEAD shows no line. The focused workspace's row is highlighted.
+- Grouping follows herdr: a repo forms a group only when it has both a main-checkout workspace and a linked-worktree workspace. The main checkout's row heads the group with a ▾/▸ fold toggle, and its linked worktrees sit indented beneath it without branch lines. Everything else is a plain row in herdr's order. A folded group keeps the focused worktree visible and its parent rolls up the group's status and badges.
+- Badges count blocked agents and unseen results per row and in the "spaces" label row.
+- Footer: "new" makes a workspace in the active worktree's folder; "menu" opens the focused workspace's menu plus New Workspace, New Worktree… and the command palette.
+- **agents:** every agent as two lines (glyph, workspace and tab; then the agent's name), with "blocked" and "done" badges. "grouped" keeps herdr's workspace order with blocked first in each workspace; "priority" is herdr's attention queue (blocked, done, working, idle, newest change first). The section folds from its label.
+- Click a workspace to focus it (`workspace.focus`); the terminal area follows. Click an agent to focus its pane and mark its result seen.
+- Hovering a row shows + (a worktree of that repo, `worktree.create`, asks for a branch name), … (the workspace menu: rename, new tab, close, close group) and ×. Closing asks first when agents are running there.
 - Built from `session.snapshot` (workspaces and agents) and kept current by re-reading on every event, including `pane.agent_status_changed`.
 
 ## Replacing herdr's UI
