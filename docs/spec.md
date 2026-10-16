@@ -121,10 +121,11 @@ This also follows agents that move into another folder, since `foreground_cwd` t
 
 The upper sidebar panel lists every herdr workspace, modeled on herdr's own TUI sidebar. The terminal area shows only herdr's focused workspace, so this list is how you see and switch to the others.
 
-- One row per workspace, in herdr's order: label, repo name (and the checkout folder plus a "worktree" tag for a linked worktree), tab and pane counts, and the aggregate agent status as a colored dot.
+- Grouped by repo, like herdr's sidebar: a heading per repo, the main checkout's workspaces first and its linked worktrees nested beneath them, and workspaces with no repo in a last section. Repo info comes from herdr's `worktree` field, or from git2 when herdr has none. Repo headings and workspaces fold; a folded heading rolls up its workspaces' status and badges.
+- Each workspace row: label, current git branch (short SHA when detached; read with git2 and cached, refreshed when `HEAD` changes), tab and pane counts, and the aggregate agent status as a colored dot.
 - Each row expands to its agents (name and status, blocked first). Badges count blocked agents and unseen "done" ones, per workspace and in the panel header.
 - Click a workspace to focus it (`workspace.focus`); the terminal area follows. Click an agent to focus its pane.
-- Create a workspace (in the active worktree's folder) or a worktree (`worktree.create`, asks for a branch name) from the header's +. Rename and close from the row's menu; × closes. Closing asks first when agents are running there.
+- Create a workspace (in the active worktree's folder) or a worktree (`worktree.create`, asks for a branch name) from the header's +; a repo heading's + creates a worktree of that repo. Rename and close from the row's menu; × closes. Closing asks first when agents are running there.
 - Built from `session.snapshot` (workspaces and agents) and kept current by re-reading on every event, including `pane.agent_status_changed`.
 
 ## Replacing herdr's UI
