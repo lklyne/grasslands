@@ -14,7 +14,13 @@ impl RootWatcher {
     pub fn new(root: &Path, changes: async_channel::Sender<Vec<PathBuf>>) -> notify::Result<Self> {
         let mut watcher =
             notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
-                let Ok(event) = event else { return };
+                let event = match event {
+                    Ok(event) => event,
+                    Err(error) => {
+                        tracing::warn!("files: watch error: {error}");
+                        return;
+                    }
+                };
                 if matches!(event.kind, EventKind::Access(_)) {
                     return;
                 }

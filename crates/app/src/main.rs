@@ -12,6 +12,7 @@ mod attention;
 mod chrome;
 mod editor;
 mod herdr;
+mod logging;
 mod overlay;
 mod placeholder;
 mod sidebar;
@@ -27,6 +28,12 @@ use crate::state::AppState;
 use crate::workspace::Workspace;
 
 fn main() {
+    let _log_guard = logging::init();
+    tracing::info!(
+        "rusted-tools starting; logs in {}",
+        logging::log_dir()
+            .map_or_else(|| "stderr only".to_owned(), |dir| dir.display().to_string())
+    );
     gpui_kit::application()
         .with_assets(gpui_kit::assets::Assets)
         .run(|cx| {
@@ -38,7 +45,7 @@ fn main() {
             sidebar::init(cx);
             chrome::init(cx);
             if let Err(error) = open_main_window(cx) {
-                eprintln!("could not open the window: {error:#}");
+                tracing::error!("could not open the window: {error:#}");
                 cx.quit();
             }
         });

@@ -84,6 +84,8 @@ pub struct Terminals {
     /// Extra Ghostty config lines per terminal (later: a status shader).
     overrides: HashMap<String, String>,
     config_dir: PathBuf,
+    /// Terminals whose attach process has exited, already logged.
+    detached: HashSet<String>,
 }
 
 /// What changed in one reconcile.
@@ -104,7 +106,23 @@ impl Terminals {
             failed: HashMap::new(),
             overrides: HashMap::new(),
             config_dir,
+            detached: HashSet::new(),
         }
+    }
+
+    /// Logs each terminal whose attach process exited, once per exit.
+    pub fn report_detached(&mut self, cx: &App) {
+        for (id, view) in &self.views {
+            if view.terminal.read(cx).is_alive() {
+                self.detached.remove(id);
+            } else if self.detached.insert(id.clone()) {
+                tracing::warn!(
+                    "terminal {id} (pane {}): attach process exited",
+                    view.pane_id
+                );
+            }
+        }
+        self.detached.retain(|id| self.views.contains_key(id));
     }
 
     pub fn get(&self, terminal_id: &str) -> Option<&TerminalView> {
@@ -178,7 +196,7 @@ impl Terminals {
                     result.spawned.push(terminal_id.to_owned());
                 }
                 Err(error) => {
-                    log::error!("terminal {terminal_id} (pane {}): {error:#}", pane.pane_id);
+                    tracing::error!("terminal {terminal_id} (pane {}): {error:#}", pane.pane_id);
                     self.failed
                         .insert(terminal_id.to_owned(), format!("{error:#}"));
                 }

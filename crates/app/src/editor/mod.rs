@@ -95,7 +95,7 @@ impl Editor {
         let watcher = (!cfg!(test))
             .then(|| FileWatcher::new(sender))
             .transpose()
-            .inspect_err(|error| eprintln!("editor: file watching is off: {error}"))
+            .inspect_err(|error| tracing::warn!("editor: file watching is off: {error}"))
             .ok()
             .flatten();
         let disk_changes = cx.spawn_in(window, async move |this, cx| {
@@ -228,7 +228,9 @@ impl Editor {
                     Some(to) => moved.push((buffer.path.clone(), to)),
                     None => buffer.mark_deleted(),
                 },
-                Err(error) => eprintln!("editor: cannot reload {}: {error}", buffer.path.display()),
+                Err(error) => {
+                    tracing::warn!("editor: cannot reload {}: {error}", buffer.path.display())
+                }
             }
         }
         for (from, to) in moved {
@@ -477,7 +479,7 @@ enum Answer {
 }
 
 fn notify_error(message: String, window: &mut Window, cx: &mut App) {
-    eprintln!("editor: {message}");
+    tracing::error!("editor: {message}");
     window.push_notification(Notification::error(message), cx);
 }
 

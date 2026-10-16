@@ -1024,6 +1024,7 @@ fn status_dot(status: AgentStatus, cx: &App) -> impl IntoElement {
 
 impl Render for TerminalArea {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.terminals.report_detached(cx);
         let snapshot = self.snapshot(cx);
         let mut frame = Frame {
             snapshot: snapshot.clone(),

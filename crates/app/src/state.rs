@@ -76,7 +76,7 @@ impl AppState {
         let herdr_config = match herdr_config {
             Ok(config) => config,
             Err(error) => {
-                log::error!("herdr: {error}");
+                tracing::error!("herdr: {error}");
                 return Self::disconnected(error.to_string());
             }
         };
@@ -244,17 +244,25 @@ impl AppState {
 
     /// Runs one blocking herdr call on the background executor. The typed
     /// methods below cover the common ones; use this for anything else.
+    #[track_caller]
     pub fn call<T: Send + 'static>(
         &self,
         cx: &App,
         call: impl FnOnce(&Client) -> herdr::Result<T> + Send + 'static,
     ) -> Task<herdr::Result<T>> {
+        // Every herdr command error is logged here, whatever the caller does
+        // with it, so a detached or `.ok()`ed command never fails silently.
+        let caller = std::panic::Location::caller();
         let Some(client) = self.client.clone() else {
+            tracing::warn!("herdr call from {caller} skipped: disconnected");
             return Task::ready(Err(herdr::Error::Refused(
                 "herdr is disconnected; see the connection status".into(),
             )));
         };
-        cx.background_executor().spawn(async move { call(&client) })
+        cx.background_executor().spawn(async move {
+            call(&client)
+                .inspect_err(|error| tracing::warn!("herdr call from {caller} failed: {error}"))
+        })
     }
 
     /// The user looked at `pane_id` (focused it, clicked its agent).
@@ -266,6 +274,7 @@ impl AppState {
 
     // Panes
 
+    #[track_caller]
     pub fn focus_pane(&self, pane_id: &str, cx: &App) -> Task<herdr::Result<()>> {
         let pane_id = pane_id.to_owned();
         self.call(cx, move |c| c.pane_focus(&pane_id))
@@ -273,6 +282,7 @@ impl AppState {
 
     /// Splits `pane_id` (herdr's focused pane when `None`). New panes forward
     /// right-clicks to the program in them; our context menu handles the rest.
+    #[track_caller]
     pub fn split_pane(
         &self,
         pane_id: Option<&str>,
@@ -285,16 +295,19 @@ impl AppState {
         self.call(cx, move |c| c.pane_split(&split))
     }
 
+    #[track_caller]
     pub fn close_pane(&self, pane_id: &str, cx: &App) -> Task<herdr::Result<()>> {
         let pane_id = pane_id.to_owned();
         self.call(cx, move |c| c.pane_close(&pane_id))
     }
 
+    #[track_caller]
     pub fn swap_panes(&self, source: &str, target: &str, cx: &App) -> Task<herdr::Result<()>> {
         let (source, target) = (source.to_owned(), target.to_owned());
         self.call(cx, move |c| c.pane_swap(&source, &target).map(drop))
     }
 
+    #[track_caller]
     pub fn move_pane(
         &self,
         pane_id: &str,
@@ -307,6 +320,7 @@ impl AppState {
         })
     }
 
+    #[track_caller]
     pub fn set_right_click(
         &self,
         pane_id: &str,
@@ -318,6 +332,7 @@ impl AppState {
     }
 
     /// Sends a divider's final ratio. `path` comes from `SplitTree::splits`.
+    #[track_caller]
     pub fn set_split_ratio(
         &self,
         tab_id: &str,
@@ -333,11 +348,13 @@ impl AppState {
 
     // Tabs
 
+    #[track_caller]
     pub fn focus_tab(&self, tab_id: &str, cx: &App) -> Task<herdr::Result<()>> {
         let tab_id = tab_id.to_owned();
         self.call(cx, move |c| c.tab_focus(&tab_id))
     }
 
+    #[track_caller]
     pub fn new_tab(
         &self,
         workspace_id: Option<&str>,
@@ -351,16 +368,19 @@ impl AppState {
         self.call(cx, move |c| c.tab_create(&params).map(|t| t.tab))
     }
 
+    #[track_caller]
     pub fn rename_tab(&self, tab_id: &str, label: &str, cx: &App) -> Task<herdr::Result<()>> {
         let (tab_id, label) = (tab_id.to_owned(), label.to_owned());
         self.call(cx, move |c| c.tab_rename(&tab_id, &label))
     }
 
+    #[track_caller]
     pub fn move_tab(&self, tab_id: &str, index: usize, cx: &App) -> Task<herdr::Result<()>> {
         let tab_id = tab_id.to_owned();
         self.call(cx, move |c| c.tab_move(&tab_id, index))
     }
 
+    #[track_caller]
     pub fn close_tab(&self, tab_id: &str, cx: &App) -> Task<herdr::Result<()>> {
         let tab_id = tab_id.to_owned();
         self.call(cx, move |c| c.tab_close(&tab_id))
@@ -368,11 +388,13 @@ impl AppState {
 
     // Workspaces and worktrees
 
+    #[track_caller]
     pub fn focus_workspace(&self, workspace_id: &str, cx: &App) -> Task<herdr::Result<()>> {
         let id = workspace_id.to_owned();
         self.call(cx, move |c| c.workspace_focus(&id))
     }
 
+    #[track_caller]
     pub fn new_workspace(
         &self,
         cwd: Option<PathBuf>,
@@ -390,6 +412,7 @@ impl AppState {
         })
     }
 
+    #[track_caller]
     pub fn rename_workspace(
         &self,
         workspace_id: &str,
@@ -401,6 +424,7 @@ impl AppState {
     }
 
     /// Closes immediately; confirm first if it holds running agents.
+    #[track_caller]
     pub fn close_workspace(
         &self,
         workspace_id: &str,
@@ -411,6 +435,7 @@ impl AppState {
         self.call(cx, move |c| c.workspace_close(&id, close_group))
     }
 
+    #[track_caller]
     pub fn create_worktree(
         &self,
         params: herdr::WorktreeParams,
@@ -421,15 +446,18 @@ impl AppState {
 
     // Agents and plugins
 
+    #[track_caller]
     pub fn focus_agent(&self, target: &str, cx: &App) -> Task<herdr::Result<()>> {
         let target = target.to_owned();
         self.call(cx, move |c| c.agent_focus(&target))
     }
 
+    #[track_caller]
     pub fn plugin_actions(&self, cx: &App) -> Task<herdr::Result<Vec<herdr::PluginActionInfo>>> {
         self.call(cx, |c| c.plugin_action_list(None))
     }
 
+    #[track_caller]
     pub fn invoke_plugin_action(
         &self,
         action: &herdr::PluginActionInfo,
@@ -469,8 +497,8 @@ mod tests {
 
     #[gpui::test]
     fn following_a_folder_inside_a_repo_roots_at_the_repo(cx: &mut TestAppContext) {
-        let repo = std::env::temp_dir()
-            .join(format!("rusted-tools-state-follow-{}", std::process::id()));
+        let repo =
+            std::env::temp_dir().join(format!("rusted-tools-state-follow-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&repo);
         std::fs::create_dir_all(repo.join("src")).unwrap();
         git2::Repository::init(&repo).unwrap();

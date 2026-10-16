@@ -19,7 +19,13 @@ impl FileWatcher {
     /// Changed paths are sent on `changes`, one batch per filesystem event.
     pub fn new(changes: async_channel::Sender<Vec<PathBuf>>) -> notify::Result<Self> {
         let watcher = notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
-            let Ok(event) = event else { return };
+            let event = match event {
+                Ok(event) => event,
+                Err(error) => {
+                    tracing::warn!("editor: watch error: {error}");
+                    return;
+                }
+            };
             if matches!(event.kind, EventKind::Access(_)) {
                 return;
             }
@@ -38,7 +44,7 @@ impl FileWatcher {
         if *count == 0
             && let Err(error) = self.watcher.watch(folder, RecursiveMode::NonRecursive)
         {
-            eprintln!("editor: cannot watch {}: {error}", folder.display());
+            tracing::warn!("editor: cannot watch {}: {error}", folder.display());
         }
         *count += 1;
     }
