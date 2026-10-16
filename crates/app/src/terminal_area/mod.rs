@@ -21,7 +21,7 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use crate::actions::OpenContextMenu;
-use crate::chrome::MenuTarget;
+use crate::chrome::{Confirmation, MenuTarget};
 use crate::herdr::{
     AgentStatus, PaneDirection, PaneInfo, PaneMoveDestination, RightClickTarget, Snapshot,
     SplitDirection, SplitTree, Tab,
@@ -127,6 +127,8 @@ struct Drawn {
     splits: HashMap<SplitKey, Bounds<Pixels>>,
     /// Terminal body (the native view's slot) of each visible pane.
     panes: HashMap<String, Bounds<Pixels>>,
+    /// Each tab in the tab bar (the chrome script right-clicks them).
+    tabs: HashMap<String, Bounds<Pixels>>,
 }
 
 pub struct TerminalArea {
@@ -320,9 +322,27 @@ impl TerminalArea {
                 .detach_and_log_err(cx);
             return;
         }
-        // herdr closes at once, so a running agent gets a confirmation. A
-        // native alert, so it shows above the terminals.
+        // herdr closes at once, so a running agent gets a confirmation:
+        // chrome's dialog (drawn in the overlay, above the terminals), or a
+        // native alert when there is no chrome (the terminal area alone).
         let name = pane_label(pane);
+        if let Some(chrome) = crate::chrome::get(window, cx) {
+            let confirmation = Confirmation {
+                title: format!("Close {name}?"),
+                message: "Its agent is still running; closing the pane stops it.".into(),
+                confirm_label: "Close Pane".into(),
+            };
+            let on_confirm = move |_: &mut Window, cx: &mut App| {
+                state
+                    .read(cx)
+                    .close_pane(&pane_id, cx)
+                    .detach_and_log_err(cx);
+            };
+            chrome.update(cx, |chrome, cx| {
+                chrome.confirm(confirmation, on_confirm, window, cx);
+            });
+            return;
+        }
         let answer = window.prompt(
             PromptLevel::Warning,
             &format!("Close {name}?"),
@@ -353,13 +373,28 @@ impl TerminalArea {
             state.read(cx).close_tab(&tab_id, cx).detach_and_log_err(cx);
             return;
         }
+        let message = format!(
+            "{busy} running agent{} in it will stop.",
+            if busy == 1 { "" } else { "s" }
+        );
+        if let Some(chrome) = crate::chrome::get(window, cx) {
+            let confirmation = Confirmation {
+                title: "Close this tab?".into(),
+                message,
+                confirm_label: "Close Tab".into(),
+            };
+            let on_confirm = move |_: &mut Window, cx: &mut App| {
+                state.read(cx).close_tab(&tab_id, cx).detach_and_log_err(cx);
+            };
+            chrome.update(cx, |chrome, cx| {
+                chrome.confirm(confirmation, on_confirm, window, cx);
+            });
+            return;
+        }
         let answer = window.prompt(
             PromptLevel::Warning,
             "Close this tab?",
-            Some(&format!(
-                "{busy} running agent{} in it will stop.",
-                if busy == 1 { "" } else { "s" }
-            )),
+            Some(&message),
             &["Close Tab", "Cancel"],
             cx,
         );
@@ -582,8 +617,20 @@ impl TerminalArea {
                     tab.tab_id.clone(),
                     tab.tab_id.clone(),
                 );
+                let (drawn, bounds_tab) = (self.drawn.clone(), tab.tab_id.clone());
                 h_flex()
                     .id(SharedString::from(format!("tab-{}", tab.tab_id)))
+                    .relative()
+                    .child(
+                        canvas(
+                            move |bounds, _, _| {
+                                drawn.borrow_mut().tabs.insert(bounds_tab, bounds);
+                            },
+                            |_, _, _, _| {},
+                        )
+                        .absolute()
+                        .size_full(),
+                    )
                     .group("tab")
                     .h_full()
                     .px_3()

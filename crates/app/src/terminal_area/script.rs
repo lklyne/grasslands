@@ -24,6 +24,8 @@ use std::time::{Duration, Instant};
 use gpui_kit::*;
 use serde_json::json;
 
+mod chrome;
+
 use super::{ClosePane, NewTab, SplitDown, SplitRight, TerminalArea};
 use crate::herdr::{SplitDirection, SplitTree};
 use crate::overlay::{self, Capture};
@@ -33,7 +35,7 @@ pub fn requested() -> Option<String> {
 }
 
 pub fn start(scenario: String, area: Entity<TerminalArea>, window: &mut Window, cx: &mut App) {
-    if scenario != "terminals" {
+    if scenario != "terminals" && scenario != "chrome" {
         eprintln!("script: unknown scenario {scenario:?}");
         return;
     }
@@ -44,7 +46,12 @@ pub fn start(scenario: String, area: Entity<TerminalArea>, window: &mut Window, 
                 failures: 0,
                 shot: 0,
             };
-            if let Err(error) = run.terminals(cx).await {
+            let result = if scenario == "chrome" {
+                run.chrome(cx).await
+            } else {
+                run.terminals(cx).await
+            };
+            if let Err(error) = result {
                 run.fail(&format!("script stopped: {error:#}"));
             }
             eprintln!(
@@ -159,35 +166,46 @@ impl Run {
         }
     }
 
-    /// Captures the main window's rectangle on screen, which includes the
-    /// overlay child window above it.
+    /// Captures this app's main window composited with its overlay child
+    /// window, and nothing else: other apps' windows on top are left out (a
+    /// screen-region capture would show whatever is frontmost there).
     fn shoot_with_overlay(&mut self, cx: &mut Cx, name: &str) {
         self.shot += 1;
-        let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/script-shots");
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let dir = root.join("target/script-shots");
+        let _ = std::fs::create_dir_all(&dir);
         let path = dir.join(format!("{:02}-{name}.png", self.shot));
-        let Some(region) = cx
-            .update(|window, _| {
-                let ns = overlay::ns_window(window)?;
-                let frame = ns.frame();
-                let screen = ns.screen()?.frame();
-                let top = screen.size.height - frame.origin.y - frame.size.height;
-                Some(format!(
-                    "{},{},{},{}",
-                    frame.origin.x, top, frame.size.width, frame.size.height
-                ))
+        let numbers = cx
+            .update(|window, cx| {
+                let main = overlay::ns_window(window)?.windowNumber();
+                let overlay = overlay::get(window, cx).and_then(|overlay| {
+                    let handle = overlay.read(cx).window_handle();
+                    cx.update_window(handle, |_, window, _| {
+                        overlay::ns_window(window).map(|w| w.windowNumber())
+                    })
+                    .ok()
+                    .flatten()
+                });
+                Some((main, overlay))
             })
             .ok()
-            .flatten()
-        else {
+            .flatten();
+        let Some((main, overlay)) = numbers else {
+            eprintln!("shot {name} skipped: no window");
             return;
         };
-        cx.update(|window, _| window.activate_window()).ok();
-        let output = std::process::Command::new("screencapture")
-            .args(["-x", "-R", &region])
+        let mut command = std::process::Command::new("swift");
+        command
+            .arg(root.join("scripts/capture-windows.swift"))
             .arg(&path)
-            .output();
-        match output {
-            Ok(out) if out.status.success() => eprintln!("shot {}", path.display()),
+            .arg(main.to_string());
+        if let Some(overlay) = overlay {
+            command.arg(overlay.to_string());
+        }
+        match command.output() {
+            Ok(out) if out.status.success() && path.exists() => {
+                eprintln!("shot {}", path.display());
+            }
             Ok(out) => eprintln!(
                 "shot {name} skipped: {}",
                 String::from_utf8_lossy(&out.stderr).trim()

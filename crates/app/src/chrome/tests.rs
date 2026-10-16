@@ -88,34 +88,37 @@ fn fixture(cx: &mut TestAppContext) -> Fixture {
     })
 }
 
+fn has_dialog(cx: &mut TestAppContext, f: &Fixture) -> bool {
+    cx.run_until_parked();
+    cx.update_window(f.window, |_, window, cx| window.has_active_dialog(cx))
+        .unwrap()
+}
+
 #[gpui_kit::test]
 fn closing_an_agent_pane_asks_first(cx: &mut TestAppContext) {
     let f = fixture(cx);
-    let asked = cx
-        .update_window(f.window, |_, window, cx| {
-            f.chrome.update(cx, |chrome, cx| {
-                let close = HerdrCommand::ClosePane {
-                    pane_id: "w1:p1".into(),
-                };
-                chrome.run(close, window, cx);
-            });
-            window.has_active_dialog(cx)
-        })
-        .unwrap();
-    assert!(asked);
+    cx.update_window(f.window, |_, window, cx| {
+        f.chrome.update(cx, |chrome, cx| {
+            let close = HerdrCommand::ClosePane {
+                pane_id: "w1:p1".into(),
+            };
+            chrome.run(close, window, cx);
+        });
+    })
+    .unwrap();
+    assert!(has_dialog(cx, &f));
 }
 
 #[gpui_kit::test]
 fn context_menu_opens_with_pane_actions(cx: &mut TestAppContext) {
     let f = fixture(cx);
+    let target = MenuTarget::Pane {
+        pane_id: "w1:p1".into(),
+    };
     let labels = cx
         .update_window(f.window, |_, window, cx| {
             f.chrome.update(cx, |chrome, cx| {
-                let target = MenuTarget::Pane {
-                    pane_id: "w1:p1".into(),
-                };
                 chrome.context_menu(target.clone(), Point::default(), Vec::new(), window, cx);
-                assert!(chrome.open_menu.is_some());
                 chrome
                     .default_entries(&target, cx)
                     .into_iter()
@@ -127,6 +130,9 @@ fn context_menu_opens_with_pane_actions(cx: &mut TestAppContext) {
             })
         })
         .unwrap();
+    cx.run_until_parked();
+    let open = cx.update(|cx| f.chrome.read(cx).open_menu.is_some());
+    assert!(open);
     assert_eq!(
         labels,
         [
@@ -143,7 +149,7 @@ fn context_menu_opens_with_pane_actions(cx: &mut TestAppContext) {
 #[gpui_kit::test]
 fn closing_the_menu_gives_focus_back(cx: &mut TestAppContext) {
     let f = fixture(cx);
-    let restored = cx
+    let owner = cx
         .update_window(f.window, |_, window, cx| {
             let owner = f.state.update(cx, |_, cx| cx.focus_handle());
             owner.focus(window, cx);
@@ -152,6 +158,14 @@ fn closing_the_menu_gives_focus_back(cx: &mut TestAppContext) {
                     tab_id: "w1:t1".into(),
                 };
                 chrome.context_menu(target, Point::default(), Vec::new(), window, cx);
+            });
+            owner
+        })
+        .unwrap();
+    cx.run_until_parked();
+    let restored = cx
+        .update_window(f.window, |_, window, cx| {
+            f.chrome.update(cx, |chrome, cx| {
                 let menu = chrome.open_menu.as_ref().map(|open| open.menu.clone());
                 assert!(menu.is_some_and(|menu| menu.focus_handle(cx).is_focused(window)));
                 chrome.close_context_menu(window, cx);
@@ -165,14 +179,12 @@ fn closing_the_menu_gives_focus_back(cx: &mut TestAppContext) {
 #[gpui_kit::test]
 fn palette_opens_as_a_dialog(cx: &mut TestAppContext) {
     let f = fixture(cx);
-    let open = cx
-        .update_window(f.window, |_, window, cx| {
-            f.chrome
-                .update(cx, |chrome, cx| chrome.open_command_palette(window, cx));
-            window.has_active_dialog(cx)
-        })
-        .unwrap();
-    assert!(open);
+    cx.update_window(f.window, |_, window, cx| {
+        f.chrome
+            .update(cx, |chrome, cx| chrome.open_command_palette(window, cx));
+    })
+    .unwrap();
+    assert!(has_dialog(cx, &f));
 }
 
 #[gpui_kit::test]

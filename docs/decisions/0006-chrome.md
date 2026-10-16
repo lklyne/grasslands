@@ -99,7 +99,33 @@ the live checks assert on.
 
 ## Overlay window
 
-Everything floating is drawn in-window for now (menus via `deferred`, toasts
-and dialogs in GPUI Kit's root layers), so it will be hidden behind native
-Ghostty views. When the overlay API lands, only `chrome/` changes: render the
-open menu, dialogs and toasts into the overlay instead.
+All floating UI draws in the main window's overlay (`crate::overlay`, 0008),
+so it shows above the Ghostty views:
+
+- `Chrome::floating(cx, f)` defers to the next tick, gets the overlay
+  (`overlay::get_or_open`), and runs `f` in the overlay window: toasts
+  (`push_notification`), confirmations and the rename prompt
+  (`open_alert_dialog`), the palette (`open_dialog`). Deferring keeps it out
+  of any update of either window. With no overlay (no native window, as in
+  headless tests) `f` runs in the main window instead.
+- A context menu is a `PopupMenu` built in the overlay window and shown as a
+  `Capture::Modal` layer (`MenuLayer`, anchored at the main-window point, with
+  `occlude()`). The layer makes the overlay take clicks and keys; the menu's
+  `DismissEvent` (Escape, click outside, a picked item) removes the layer and
+  gives the main window back its previous focus.
+- Callbacks fire in the overlay window, so nothing there dispatches actions
+  to the main window's views. A toast click calls `AppState::focus_pane`;
+  menu, palette and dialog callbacks go through `update_later`, which runs on
+  the chrome with the main window. `Chrome::confirm`'s `on_confirm` gets the
+  overlay window and should talk to `AppState`.
+- Views that only have the main window reach the chrome with
+  `chrome::get(window, cx)` (a per-window registry), so constructors stay
+  `View::new(state, window, cx)`. The terminal area uses it for its close
+  confirmations (native alert only when no chrome exists).
+
+Verified with `RT_SCRIPT=chrome` (in `terminal_area/script/chrome.rs`): it
+right-clicks a pane header and a tab with GPUI mouse events, opens the
+terminal area's close confirmation, raises a toast and opens the palette, and
+checks each is in the overlay and that the overlay takes and releases input.
+Screenshots of the main window composited with the overlay come from
+`scripts/capture-windows.swift` (ScreenCaptureKit, only this app's windows).

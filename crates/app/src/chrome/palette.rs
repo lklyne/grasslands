@@ -64,7 +64,7 @@ pub(super) fn open(
                 else {
                     return;
                 };
-                update_later(&chrome, window, cx, move |chrome, window, cx| {
+                update_later(&chrome, cx, move |chrome, window, cx| {
                     chrome.run_menu_command(command, window, cx);
                 });
             })

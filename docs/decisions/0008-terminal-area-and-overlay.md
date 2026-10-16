@@ -134,9 +134,8 @@ overlay.update(cx, |o, cx| o.remove_layer(id, cx));
   `WindowHandle<Root>::update`, to reach the overlay window. The typed form
   leases the `Root` entity, and `has_active_dialog` then panics reading it.
 
-Chrome still draws its menu, palette and toasts in the main window (0006). They
-are hidden wherever a terminal is. Moving them means swapping
-`window.push_notification` / `deferred(anchored())` for the calls above.
+Chrome draws its menus, palette, dialogs and toasts through these calls (0006).
+`RT_SCRIPT=chrome` checks them over real terminals.
 
 ## Verifying: `RT_SCRIPT=terminals`
 
@@ -166,6 +165,5 @@ again). Never point it at the default session; it refuses when
 - The drag preview for a dragged pane header is drawn by GPUI in the main
   window, so it is hidden while over a terminal. Drop targets still work and
   highlight the target's header.
-- Close confirmations use a native alert (`window.prompt`), not chrome's
-  `Confirmation`, because the terminal area has no handle on `Chrome`. Route
-  them through chrome once it draws in the overlay.
+- Close confirmations go through `chrome::get(window, cx)` → `Chrome::confirm`
+  (in the overlay); the native alert is only the fallback with no chrome.

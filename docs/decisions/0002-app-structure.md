@@ -85,6 +85,11 @@ in-window rendering to the overlay touches only `chrome/`:
 - `Chrome::run(HerdrCommand)` sends a herdr command, confirming closes first;
   `Chrome::confirm(Confirmation, on_confirm)` asks anything else.
 - `Chrome::toast(message)`, `Chrome::open_command_palette()`.
+- Views that only have the main window get the chrome with
+  `chrome::get(window, cx)`. The terminal area does this for its close
+  confirmations (`Chrome::confirm`). Everything chrome shows draws in the
+  overlay; `on_confirm` callbacks run in the overlay window, so they should
+  call `AppState`, not dispatch actions.
 
 Details in 0006-chrome.md.
 
@@ -95,8 +100,8 @@ The overlay window itself is `crate::overlay` (ghostty-terminals):
 Capture::Passive)` / `remove_layer` add floating views in main-window
 coordinates. It is click-through except over what it draws that occludes, and
 takes every click plus the keyboard while a modal layer, dialog or sheet is
-open. Until chrome moves its menu, palette and toasts there, they are hidden
-behind terminals. Details in 0008-terminal-area-and-overlay.md.
+open. Chrome's menus, palette, dialogs and toasts draw there. Details in
+0008-terminal-area-and-overlay.md.
 
 ## Notes
 

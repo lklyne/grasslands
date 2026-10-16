@@ -1,10 +1,10 @@
 //! App chrome: command palette, context menus, toasts and confirmations.
 //!
-//! Ghostty's native views sit above GPUI's layer, so anything that must float
-//! over a terminal is drawn in a transparent overlay window (being proven by
-//! the ghostty-terminals agent). Callers go through `Chrome`'s methods (or the
-//! `OpenContextMenu` action) so the choice of in-window vs overlay rendering
-//! stays in this module. See docs/decisions/0002-app-structure.md.
+//! Ghostty's native views sit above everything GPUI draws in the main window,
+//! so all of it (menus, palette, dialogs, toasts) draws in the main window's
+//! overlay (`crate::overlay`). Callers go through `Chrome`'s methods, the
+//! `OpenContextMenu` action, or [`get`] for views that only have the window.
+//! See docs/decisions/0002-app-structure.md and 0006-chrome.md.
 
 mod command;
 mod confirm;
@@ -13,6 +13,7 @@ mod palette;
 #[cfg(debug_assertions)]
 mod script;
 
+use std::collections::HashMap;
 use std::rc::Rc;
 
 use gpui_kit::component::WindowExt as _;
@@ -23,12 +24,12 @@ use gpui_kit::component::notification::{Notification, NotificationDelivery, Noti
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
-use crate::actions::FocusPane;
 use crate::attention::{StatusChange, find_agent};
 use crate::herdr::{
     AgentStatus, PluginActionContext, PluginActionInfo, PluginInvocationContext, Snapshot,
     SplitDirection,
 };
+use crate::overlay::{self, Capture, LayerId, Overlay};
 use crate::state::{AppEvent, AppState};
 
 pub use command::HerdrCommand;
@@ -90,16 +91,49 @@ impl MenuEntry {
 struct OpenMenu {
     position: Point<Pixels>,
     menu: Entity<PopupMenu>,
-    /// Focus to give back on close, so app key bindings keep working.
+    /// The overlay layer holding the menu; `None` when it is drawn in the
+    /// main window (no overlay, e.g. headless tests).
+    layer: Option<(Entity<Overlay>, LayerId)>,
+    /// Main-window focus to give back on close, so app key bindings keep working.
     previous_focus: Option<FocusHandle>,
     _dismiss: Subscription,
+}
+
+/// An open menu as an overlay layer: anchored at a main-window point.
+struct MenuLayer {
+    position: Point<Pixels>,
+    menu: Entity<PopupMenu>,
+}
+
+impl Render for MenuLayer {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        anchored()
+            .position(self.position)
+            .snap_to_window_with_margin(px(8.))
+            .child(div().occlude().child(self.menu.clone()))
+    }
 }
 
 /// Keys agent toasts so a newer status for the same pane replaces the older.
 struct AgentToast;
 
+/// Each main window's chrome, so views that only have the window (the
+/// terminal area) can reach it: see [`get`].
+#[derive(Default)]
+struct Chromes(HashMap<WindowId, WeakEntity<Chrome>>);
+
+impl Global for Chromes {}
+
+/// The chrome of the main window `window`, if it has one.
+pub fn get(window: &Window, cx: &App) -> Option<Entity<Chrome>> {
+    let id = window.window_handle().window_id();
+    cx.try_global::<Chromes>()?.0.get(&id)?.upgrade()
+}
+
 pub struct Chrome {
     state: Entity<AppState>,
+    /// The main window; floating UI goes to its overlay.
+    main_window: AnyWindowHandle,
     /// Every plugin action, from `plugin.action.list`; refreshed on use.
     plugin_actions: Rc<Vec<PluginActionInfo>>,
     open_menu: Option<OpenMenu>,
@@ -127,8 +161,14 @@ impl Chrome {
                 dock::set_badge(count);
             }
         });
+        let main_window = window.window_handle();
+        let weak = cx.entity().downgrade();
+        cx.default_global::<Chromes>()
+            .0
+            .insert(main_window.window_id(), weak);
         let mut chrome = Self {
             state,
+            main_window,
             plugin_actions: Rc::default(),
             open_menu: None,
             palette: None,
@@ -160,6 +200,35 @@ impl Chrome {
         .detach();
     }
 
+    /// Runs `f` in the window that draws floating UI: the main window's
+    /// overlay (above the terminals), or the main window itself when no
+    /// overlay can open. Deferred, so it never runs inside an update of
+    /// either window.
+    pub fn floating(&self, cx: &mut App, f: impl FnOnce(&mut Window, &mut App) + 'static) {
+        let main = self.main_window;
+        cx.defer(move |cx| match overlay_for(main, cx) {
+            Some(overlay) => {
+                overlay.update(cx, |overlay, cx| overlay.update_window(cx, f));
+            }
+            None => {
+                cx.update_window(main, |_, window, cx| f(window, cx)).ok();
+            }
+        });
+    }
+
+    /// Whether a context menu is open, and if so whether it is an overlay
+    /// layer (`Some(true)`) or drawn in the main window (`Some(false)`).
+    pub fn menu_open(&self) -> Option<bool> {
+        self.open_menu.as_ref().map(|open| open.layer.is_some())
+    }
+
+    /// The window floating UI is drawn in right now (for checks and
+    /// scripts); `window` is the main window.
+    pub fn floating_window(&self, window: &Window, cx: &App) -> AnyWindowHandle {
+        overlay::get(window, cx)
+            .map_or(self.main_window, |overlay| overlay.read(cx).window_handle())
+    }
+
     /// A toast and a sound for an agent that needs you (blocked) or finished.
     /// While the window is in the background the toast also goes to the OS.
     fn agent_toast(&mut self, change: &StatusChange, window: &mut Window, cx: &mut Context<Self>) {
@@ -179,42 +248,49 @@ impl Chrome {
             NotificationDelivery::InAppAndSystem
         };
         let target = change.pane_id.clone();
+        let state = self.state.clone();
         let note = Notification::new()
             .id1::<AgentToast>(SharedString::from(change.pane_id.clone()))
             .with_type(kind)
             .title(format!("{}{workspace}", change.name))
             .message(message)
             .delivery(delivery)
-            .on_click(move |_, window, cx| {
-                window.dispatch_action(
-                    Box::new(FocusPane {
-                        pane_id: target.clone(),
-                    }),
-                    cx,
-                );
+            // The toast lives in the overlay window, so it can't dispatch
+            // `FocusPane` to the main window's views; it asks herdr directly.
+            .on_click(move |_, _, cx| {
+                state.update(cx, |state, cx| {
+                    state.mark_seen(&target, cx);
+                    state.focus_pane(&target, cx).detach_and_log_err(cx);
+                });
             });
-        window.push_notification(note, cx);
+        self.floating(cx, move |window, cx| window.push_notification(note, cx));
         dock::play_for(change.status);
     }
 
     pub fn toast(
         &mut self,
         message: impl Into<SharedString>,
-        window: &mut Window,
+        _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        window.push_notification(message.into(), cx);
+        let message = message.into();
+        self.floating(cx, move |window, cx| window.push_notification(message, cx));
     }
 
     pub fn open_command_palette(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.close_context_menu(window, cx);
         self.refresh_plugin_actions(cx);
-        let palette = palette::open(cx.entity(), self.state.clone(), window, cx);
-        self.palette = Some(palette.downgrade());
+        let chrome = cx.entity();
+        let state = self.state.clone();
+        self.floating(cx, move |window, cx| {
+            let palette = palette::open(chrome.clone(), state, window, cx);
+            chrome.update(cx, |chrome, _| chrome.palette = Some(palette.downgrade()));
+        });
     }
 
-    /// Opens a context menu for `target` at `position` (window coordinates):
-    /// the target's herdr actions, then `extra`, then matching plugin actions.
+    /// Opens a context menu for `target` at `position` (main-window
+    /// coordinates): the target's herdr actions, then `extra`, then matching
+    /// plugin actions. It draws in the overlay, above the terminals.
     pub fn context_menu(
         &mut self,
         target: MenuTarget,
@@ -244,52 +320,73 @@ impl Chrome {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let chrome = cx.entity().downgrade();
-        let menu = PopupMenu::build(window, cx, move |mut menu, _, _| {
-            for entry in entries {
-                menu = match entry {
-                    MenuEntry::Separator => menu.separator(),
-                    MenuEntry::Item {
-                        label,
-                        command,
-                        disabled,
-                    } => {
-                        let chrome = chrome.clone();
-                        menu.item(PopupMenuItem::new(label).disabled(disabled).on_click(
-                            move |_, window, cx| {
-                                let command = command.clone();
-                                update_later(&chrome, window, cx, move |chrome, window, cx| {
-                                    chrome.close_context_menu(window, cx);
-                                    chrome.run_menu_command(command, window, cx);
-                                });
-                            },
-                        ))
-                    }
-                };
-            }
-            menu.min_w(px(200.))
-        });
-        let dismiss = cx.subscribe_in(&menu, window, |this, _, _: &DismissEvent, window, cx| {
-            this.close_context_menu(window, cx);
-        });
         let previous_focus = match self.open_menu.take() {
-            Some(open) => open.previous_focus,
+            Some(open) => {
+                remove_layer_later(open.layer, cx);
+                open.previous_focus
+            }
             None => window.focused(cx),
         };
-        menu.focus_handle(cx).focus(window, cx);
-        self.open_menu = Some(OpenMenu {
-            position,
-            menu,
-            previous_focus,
-            _dismiss: dismiss,
+        let chrome = cx.entity().downgrade();
+        let main = self.main_window;
+        cx.defer(move |cx| {
+            let overlay = overlay_for(main, cx);
+            let host = overlay
+                .as_ref()
+                .map_or(main, |overlay| overlay.read(cx).window_handle());
+            let Ok(menu) = cx.update_window(host, |_, window, cx| {
+                build_menu(&chrome, entries, window, cx)
+            }) else {
+                return;
+            };
+            let layer = overlay.map(|overlay| {
+                let view = cx.new(|_| MenuLayer {
+                    position,
+                    menu: menu.clone(),
+                });
+                let id = overlay.update(cx, |overlay, cx| {
+                    overlay.push_layer(view, Capture::Modal, cx)
+                });
+                (overlay, id)
+            });
+            cx.update_window(host, |_, window, cx| {
+                menu.focus_handle(cx).focus(window, cx)
+            })
+            .ok();
+            let dismiss = {
+                let chrome = chrome.clone();
+                cx.subscribe(&menu, move |_, _: &DismissEvent, cx| {
+                    update_later(&chrome, cx, |chrome, window, cx| {
+                        chrome.close_context_menu(window, cx);
+                    });
+                })
+            };
+            let open = OpenMenu {
+                position,
+                menu,
+                layer,
+                previous_focus,
+                _dismiss: dismiss,
+            };
+            let stale = chrome
+                .update(cx, |this, cx| {
+                    cx.notify();
+                    this.open_menu.replace(open)
+                })
+                .ok()
+                .flatten();
+            if let Some(stale) = stale {
+                remove_layer_later(stale.layer, cx);
+            }
         });
-        cx.notify();
     }
 
+    /// Closes the open context menu. `window` is the main window.
     fn close_context_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(open) = self.open_menu.take() else {
             return;
         };
+        remove_layer_later(open.layer, cx);
         if let Some(focus) = open.previous_focus {
             focus.focus(window, cx);
         }
@@ -419,9 +516,9 @@ impl Chrome {
             return;
         };
         let chrome = cx.entity().downgrade();
-        let send = move |window: &mut Window, cx: &mut App| {
+        let send = move |_: &mut Window, cx: &mut App| {
             let command = command.clone();
-            update_later(&chrome, window, cx, move |chrome, window, cx| {
+            update_later(&chrome, cx, move |chrome, window, cx| {
                 chrome.send(command, window, cx);
             });
         };
@@ -429,15 +526,15 @@ impl Chrome {
     }
 
     /// Sends without asking; a failure becomes an error toast.
-    fn send(&mut self, command: HerdrCommand, window: &mut Window, cx: &mut Context<Self>) {
+    fn send(&mut self, command: HerdrCommand, _window: &mut Window, cx: &mut Context<Self>) {
         let task = command.send(self.state.read(cx), cx);
-        cx.spawn_in(window, async move |_, cx| {
+        cx.spawn(async move |this, cx| {
             if let Err(error) = task.await {
-                cx.update(|window, cx| {
-                    window.push_notification(
-                        Notification::error(error.to_string()).title("herdr"),
-                        cx,
-                    );
+                let message = error.to_string();
+                this.update(cx, |chrome, cx| {
+                    chrome.floating(cx, move |window, cx| {
+                        window.push_notification(Notification::error(message).title("herdr"), cx);
+                    });
                 })
                 .ok();
             }
@@ -446,6 +543,9 @@ impl Chrome {
     }
 
     /// Asks the user to confirm, then runs `on_confirm`. Cancel does nothing.
+    /// The dialog draws in the overlay, so `on_confirm` gets the overlay
+    /// window; it should talk to `AppState` (or go through `chrome::get`), not
+    /// dispatch actions there. `window` is the main window.
     pub fn confirm(
         &mut self,
         confirmation: Confirmation,
@@ -454,10 +554,13 @@ impl Chrome {
         cx: &mut Context<Self>,
     ) {
         self.close_context_menu(window, cx);
-        confirm::open(confirmation, Rc::new(on_confirm), window, cx);
+        let on_confirm: Callback = Rc::new(on_confirm);
+        self.floating(cx, move |window, cx| {
+            confirm::open(confirmation, on_confirm, window, cx);
+        });
     }
 
-    fn prompt_rename(&mut self, target: MenuTarget, window: &mut Window, cx: &mut Context<Self>) {
+    fn prompt_rename(&mut self, target: MenuTarget, _window: &mut Window, cx: &mut Context<Self>) {
         let snapshot = &self.state.read(cx).snapshot;
         let (title, current) = match &target {
             MenuTarget::Pane { pane_id } => (
@@ -475,67 +578,132 @@ impl Chrome {
                     .map(|w| w.info.label.clone()),
             ),
         };
-        let input = cx.new(|cx| {
-            InputState::new(window, cx)
-                .placeholder("Name")
-                .default_value(current.unwrap_or_default())
-        });
-        self.rename_input = Some(input.downgrade());
-        let submit: Callback = {
-            let chrome = cx.entity().downgrade();
-            let input = input.clone();
-            Rc::new(move |window, cx| {
-                let label = input.read(cx).value().trim().to_owned();
-                if label.is_empty() {
-                    return;
-                }
-                let command = rename_command(&target, label);
-                update_later(&chrome, window, cx, move |chrome, window, cx| {
-                    chrome.send(command, window, cx);
-                });
-            })
-        };
-        self.rename = Some(cx.subscribe_in(&input, window, {
-            let submit = submit.clone();
-            move |_, _, event: &InputEvent, window, cx| {
-                if let InputEvent::PressEnter { .. } = event {
-                    submit(window, cx);
-                    window.close_dialog(cx);
-                }
-            }
-        }));
-        let first_frame = std::cell::Cell::new(true);
-        window.open_alert_dialog(cx, move |alert, window, cx| {
-            if first_frame.replace(false) {
-                input.focus_handle(cx).focus(window, cx);
-            }
-            let submit = submit.clone();
-            alert
-                .confirm()
-                .title(title)
-                .width(px(420.))
-                .child(Input::new(&input))
-                .ok_text("Rename")
-                .on_ok(move |_, window, cx| {
-                    submit(window, cx);
-                    true
+        let chrome = cx.entity();
+        self.floating(cx, move |window, cx| {
+            let input = cx.new(|cx| {
+                InputState::new(window, cx)
+                    .placeholder("Name")
+                    .default_value(current.unwrap_or_default())
+            });
+            let submit: Rc<dyn Fn(&mut App)> = {
+                let chrome = chrome.downgrade();
+                let input = input.clone();
+                Rc::new(move |cx| {
+                    let label = input.read(cx).value().trim().to_owned();
+                    if label.is_empty() {
+                        return;
+                    }
+                    let command = rename_command(&target, label);
+                    update_later(&chrome, cx, move |chrome, window, cx| {
+                        chrome.send(command, window, cx);
+                    });
                 })
+            };
+            let on_enter = cx.subscribe(&input, {
+                let submit = submit.clone();
+                let chrome = chrome.downgrade();
+                move |_, event: &InputEvent, cx| {
+                    if let InputEvent::PressEnter { .. } = event {
+                        submit(cx);
+                        update_later(&chrome, cx, |chrome, _, cx| {
+                            chrome.floating(cx, |window, cx| window.close_dialog(cx));
+                        });
+                    }
+                }
+            });
+            chrome.update(cx, |chrome, _| {
+                chrome.rename = Some(on_enter);
+                chrome.rename_input = Some(input.downgrade());
+            });
+            let first_frame = std::cell::Cell::new(true);
+            window.open_alert_dialog(cx, move |alert, window, cx| {
+                if first_frame.replace(false) {
+                    input.focus_handle(cx).focus(window, cx);
+                }
+                let submit = submit.clone();
+                alert
+                    .confirm()
+                    .title(title)
+                    .width(px(420.))
+                    .child(Input::new(&input))
+                    .ok_text("Rename")
+                    .on_ok(move |_, _, cx| {
+                        submit(cx);
+                        true
+                    })
+            });
         });
     }
 }
 
-/// Runs `f` on the chrome after the current update. Menu, dialog and palette
-/// callbacks use this: they can fire while the chrome is itself being updated
-/// (a confirm dispatched from inside it), and a nested update panics.
+/// The overlay of the main window `main`, opening it on first use; `None`
+/// when it can't open (no native window, e.g. headless tests).
+fn overlay_for(main: AnyWindowHandle, cx: &mut App) -> Option<Entity<Overlay>> {
+    cx.update_window(main, |_, window, cx| overlay::get_or_open(window, cx).ok())
+        .ok()
+        .flatten()
+}
+
+/// Removes a menu's overlay layer on the next tick (the overlay window may be
+/// mid-update when the menu dismisses itself).
+fn remove_layer_later(layer: Option<(Entity<Overlay>, LayerId)>, cx: &mut App) {
+    if let Some((overlay, id)) = layer {
+        cx.defer(move |cx| overlay.update(cx, |overlay, cx| overlay.remove_layer(id, cx)));
+    }
+}
+
+fn build_menu(
+    chrome: &WeakEntity<Chrome>,
+    entries: Vec<MenuEntry>,
+    window: &mut Window,
+    cx: &mut App,
+) -> Entity<PopupMenu> {
+    let chrome = chrome.clone();
+    PopupMenu::build(window, cx, move |mut menu, _, _| {
+        for entry in entries {
+            menu = match entry {
+                MenuEntry::Separator => menu.separator(),
+                MenuEntry::Item {
+                    label,
+                    command,
+                    disabled,
+                } => {
+                    let chrome = chrome.clone();
+                    menu.item(PopupMenuItem::new(label).disabled(disabled).on_click(
+                        move |_, _, cx| {
+                            let command = command.clone();
+                            update_later(&chrome, cx, move |chrome, window, cx| {
+                                chrome.close_context_menu(window, cx);
+                                chrome.run_menu_command(command, window, cx);
+                            });
+                        },
+                    ))
+                }
+            };
+        }
+        menu.min_w(px(200.))
+    })
+}
+
+/// Runs `f` on the chrome, with the main window, after the current update.
+/// Menu, dialog, palette and toast callbacks use this: they fire in the
+/// overlay window, or while the chrome is itself being updated (a confirm
+/// dispatched from inside it), and a nested update panics.
 fn update_later(
     chrome: &WeakEntity<Chrome>,
-    window: &mut Window,
     cx: &mut App,
     f: impl FnOnce(&mut Chrome, &mut Window, &mut Context<Chrome>) + 'static,
 ) {
     let chrome = chrome.clone();
-    window.defer(cx, move |window, cx| {
-        chrome.update(cx, |chrome, cx| f(chrome, window, cx)).ok();
+    cx.defer(move |cx| {
+        let Some(chrome) = chrome.upgrade() else {
+            return;
+        };
+        let main = chrome.read(cx).main_window;
+        cx.update_window(main, |_, window, cx| {
+            chrome.update(cx, |chrome, cx| f(chrome, window, cx));
+        })
+        .ok();
     });
 }
 
@@ -617,9 +785,10 @@ fn invocation_context(
 
 impl Render for Chrome {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-        // Toasts and dialogs render in GPUI Kit's root layers; the only
-        // floating piece drawn here is a programmatically opened menu.
-        div().when_some(self.open_menu.as_ref(), |this, open| {
+        // Everything floating draws in the overlay. Without one (headless
+        // tests) a menu draws here instead.
+        let in_window = self.open_menu.as_ref().filter(|open| open.layer.is_none());
+        div().when_some(in_window, |this, open| {
             this.child(
                 deferred(
                     anchored()

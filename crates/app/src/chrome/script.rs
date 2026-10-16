@@ -20,6 +20,7 @@ use gpui_kit::*;
 
 use super::{Chrome, HerdrCommand, MenuTarget};
 use crate::attention::{agent_name, status_label};
+use crate::overlay;
 
 /// Pause between steps so each one renders (and can be screenshotted).
 const STEP: Duration = Duration::from_millis(400);
@@ -56,10 +57,17 @@ pub(super) fn start(window: &mut Window, cx: &mut Context<Chrome>) {
                         continue;
                     }
                 };
-                if cx
-                    .update(|window, cx| window.dispatch_action(action, cx))
-                    .is_err()
-                {
+                // Menus and dialogs live in the overlay window when there is one.
+                let host = cx.update(|window, cx| {
+                    overlay::get(window, cx).map(|overlay| overlay.read(cx).window_handle())
+                });
+                let sent = match host {
+                    Ok(Some(host)) => cx.update_window(host, |_, window, cx| {
+                        window.dispatch_action(action, cx);
+                    }),
+                    _ => cx.update(|window, cx| window.dispatch_action(action, cx)),
+                };
+                if sent.is_err() {
                     return;
                 }
                 cx.background_executor().timer(STEP).await;
@@ -144,8 +152,17 @@ fn run_step(
 }
 
 fn log(chrome: &Chrome, label: &str, window: &mut Window, cx: &mut Context<Chrome>) {
-    let dialog = window.has_active_dialog(cx);
-    let toasts = window.notifications(cx).len();
+    let host = chrome.floating_window(window, cx);
+    let in_overlay = host != window.window_handle();
+    let (dialog, toasts) = if in_overlay {
+        cx.update_window(host, |_, window, cx| {
+            (window.has_active_dialog(cx), window.notifications(cx).len())
+        })
+        .unwrap_or_default()
+    } else {
+        (window.has_active_dialog(cx), window.notifications(cx).len())
+    };
+    let capturing = overlay::get(window, cx).is_some_and(|o| o.read(cx).is_capturing());
     let snapshot = &chrome.state.read(cx).snapshot;
     let panes: Vec<&str> = snapshot.panes.keys().map(String::as_str).collect();
     let agents: Vec<String> = snapshot
@@ -172,7 +189,8 @@ fn log(chrome: &Chrome, label: &str, window: &mut Window, cx: &mut Context<Chrom
         .map(|w| format!("{}={}", w.info.workspace_id, w.info.label))
         .collect();
     eprintln!(
-        "[chrome-script] log {label}: menu_open={} dialog={} toasts={} focused={:?} \
+        "[chrome-script] log {label}: in_overlay={in_overlay} capturing={capturing} \
+         menu_open={} dialog={} toasts={} focused={:?} \
          workspaces={workspaces:?} tabs={tabs:?} panes={panes:?} agents={agents:?}",
         chrome.open_menu.is_some(),
         dialog,
