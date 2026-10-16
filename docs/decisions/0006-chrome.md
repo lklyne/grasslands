@@ -1,6 +1,6 @@
 # 0006 — Chrome: agent list, menus, palette, confirmations, notifications
 
-Date: 2026-10-15. Status: accepted (chrome agent). Modules: `chrome`, `sidebar::agents`, `attention`.
+Date: 2026-10-15. Status: accepted (chrome agent). Modules: `chrome`, `sidebar::workspaces`, `attention`.
 
 ## Who needs attention (`attention`)
 
