@@ -1,0 +1,4 @@
+# Swapped onto the right terminal at runtime with load_config_file.
+font-size = 14
+background = #1d2b1f
+foreground = #b8e0b0
