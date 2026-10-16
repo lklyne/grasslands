@@ -139,31 +139,10 @@ impl Run {
         cx.update(|_, cx| f(area.read(cx), cx))
     }
 
+    /// Every screenshot goes through `scripts/capture-windows.swift`: this
+    /// app's windows only, whatever else is on screen.
     fn shoot(&mut self, cx: &mut Cx, name: &str) {
-        self.shot += 1;
-        let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/script-shots");
-        let _ = std::fs::create_dir_all(&dir);
-        let path = dir.join(format!("{:02}-{name}.png", self.shot));
-        let Some(number) = cx
-            .update(|window, _| overlay::ns_window(window).map(|w| w.windowNumber()))
-            .ok()
-            .flatten()
-        else {
-            return;
-        };
-        // Only this app's main window (-l), never the whole screen.
-        let output = std::process::Command::new("screencapture")
-            .args(["-x", "-o", "-l", &number.to_string()])
-            .arg(&path)
-            .output();
-        match output {
-            Ok(out) if out.status.success() => eprintln!("shot {}", path.display()),
-            Ok(out) => eprintln!(
-                "shot {name} skipped: {}",
-                String::from_utf8_lossy(&out.stderr).trim()
-            ),
-            Err(error) => eprintln!("shot {name} skipped: {error}"),
-        }
+        self.shoot_with_overlay(cx, name);
     }
 
     /// Captures this app's main window composited with its overlay child

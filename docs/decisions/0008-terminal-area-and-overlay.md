@@ -130,6 +130,21 @@ overlay.update(cx, |o, cx| o.remove_layer(id, cx));
     window;
   - level reset to the parent's, because GPUI opens pop-ups above every app;
   - frame matched to the parent's content rect on `observe_window_bounds`.
+- **No AppKit window changes inside a GPUI update.** `setFrame:` and
+  `setStyleMask:` resize the content view, and AppKit then calls GPUI's resize
+  callback synchronously. Inside an update the app is already borrowed, the
+  callback fails with "RefCell already borrowed" (gpui-pre `window.rs:1960`),
+  and the resize is lost. So:
+  - the overlay opens hidden;
+  - `attach_later` makes it borderless and a child window, sizes it and
+    orders it front from a foreground task (`cx.spawn`), which runs after the
+    current update ends;
+  - `set_frame_later` does the same for every parent resize.
+
+  `cx.defer` is not enough, because it still runs inside the update cycle.
+  GPUI's own `activate_window` already defers `makeKeyAndOrderFront`, so the
+  key hand-off is safe. Its failures (the window is gone) are logged rather
+  than dropped.
 - Always use `cx.update_window(handle.into(), …)`, never the typed
   `WindowHandle<Root>::update`, to reach the overlay window. The typed form
   leases the `Root` entity, and `has_active_dialog` then panics reading it.
@@ -140,7 +155,7 @@ Chrome draws its menus, palette, dialogs and toasts through these calls (0006).
 ## Verifying: `RT_SCRIPT=terminals`
 
 `RT_SCRIPT=terminals scripts/dev-run cargo run -p app` creates a `script`
-workspace in the dev session, runs 32 checks, saves window-only screenshots to
+workspace in the dev session, runs 54 checks, saves window-only screenshots (`scripts/capture-windows.swift`: this app's windows only, composited with the overlay) to
 `target/script-shots/`, closes the workspace and quits. Set `RT_SCRIPT_KEEP=1`
 to leave the app open.
 
@@ -158,12 +173,38 @@ restarts this worktree's own dev server (`server stop`; herdr-client starts it
 again). Never point it at the default session; it refuses when
 `HERDR_SESSION` is unset.
 
+What the 54 checks cover:
+- typing;
+- splits from the app's own actions;
+- a resize shortcut pressed over a focused terminal;
+- the divider following the pointer on every drag step, then `set_split_ratio`
+  on release;
+- a second tab hiding the first tab's views;
+- `pane.move` keeping its view;
+- cmd-w closing a pane;
+- cmd-alt-right/left moving herdr's focus and the keyboard;
+- a header dragged onto another pane: `pane.swap`, with the preview chip
+  present in the overlay mid-drag and removed on drop;
+- a header dragged onto a tab: `pane.move`, same view;
+- zoom on and off, hiding the other views;
+- Detached → Reattach: the script takes a terminal over with
+  `/usr/bin/script -q /dev/null sh -c 'stty rows 24 cols 80; exec herdr … attach --takeover'`
+  (herdr refuses a zero-sized pty), checks that the pane shows Detached, kills
+  that child, clicks Reattach in-app, and types into the terminal again;
+- overlay mouse capture and key status, skipped with a note when the app isn't
+  frontmost;
+- the overlay following main-window resizes;
+- theme reload;
+- a dev-server restart.
+
 ## Known gaps
 
-- No logger is installed in the app, so the terminal area's `log::` messages
-  (spawn failures, command errors) are not printed anywhere yet.
-- The drag preview for a dragged pane header is drawn by GPUI in the main
-  window, so it is hidden while over a terminal. Drop targets still work and
-  highlight the target's header.
+- The pane drag preview is a passive, non-occluding chip layer in the
+  overlay, so it shows over terminals and the drag's mouse events still reach
+  the main window's drop targets. GPUI's own preview is left empty.
+- Herdr's sidebar groups worktrees under their repo with a branch line, as in
+  the user's screenshot. Our sidebar's workspace list doesn't yet, and herdr's
+  `WorkspaceWorktreeInfo` has no branch field, so the branch would have to
+  come from git2.
 - Close confirmations go through `chrome::get(window, cx)` → `Chrome::confirm`
   (in the overlay); the native alert is only the fallback with no chrome.
