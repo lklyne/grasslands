@@ -8,6 +8,7 @@
 extern crate gpui_kit as gpui;
 
 mod actions;
+mod attention;
 mod chrome;
 mod editor;
 mod herdr;

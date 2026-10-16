@@ -8,6 +8,8 @@ use std::path::PathBuf;
 
 use gpui_kit::*;
 
+use crate::chrome::MenuTarget;
+
 actions!(app, [Quit, ToggleTheme, CommandPalette]);
 
 /// Open a file in the editor. Sent by the file tree, the command palette, and
@@ -24,6 +26,16 @@ pub struct OpenFile {
 #[action(namespace = app, no_json)]
 pub struct FocusPane {
     pub pane_id: String,
+}
+
+/// Open the chrome's context menu for a pane, tab or workspace at a window
+/// position. Sent by the terminal area (pane and tab right-clicks) and the
+/// sidebar; `Workspace` forwards it to `Chrome::context_menu`.
+#[derive(Clone, Debug, PartialEq, Action)]
+#[action(namespace = app, no_json)]
+pub struct OpenContextMenu {
+    pub target: MenuTarget,
+    pub position: Point<Pixels>,
 }
 
 pub fn init(cx: &mut App) {

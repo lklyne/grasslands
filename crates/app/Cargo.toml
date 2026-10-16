@@ -17,6 +17,11 @@ git2 = "0.21.0"
 ignore = "0.4.33"
 log = "0.4.34"
 
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6.5"
+objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSString"] }
+objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "NSApplication", "NSResponder", "NSDockTile", "NSSound"] }
+
 [dev-dependencies]
 # GPUI's own test support, not gpui-kit's: the Kit's `test-support` names
 # gpui-fast weakly, and Cargo still resolves it, which pins versions that

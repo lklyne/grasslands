@@ -9,9 +9,9 @@
 pub use herdr_client::{
     AgentInfo as Agent, AgentStatus, Client, ConnectionStatus, Error, Event, LayoutDescription,
     NewTab, NewWorkspace, PaneDirection, PaneId, PaneInfo, PaneMoveDestination, PaneSplit,
-    PluginActionInfo, PluginInvocationContext, RightClickTarget, SessionSync, SplitDirection,
-    SplitRef, SplitTree, State as Snapshot, Tab, TabId, TabInfo, Update, Workspace, WorkspaceId,
-    WorkspaceInfo, WorktreeInfo, WorktreeParams,
+    PluginActionContext, PluginActionInfo, PluginInvocationContext, RightClickTarget, SessionSync,
+    SplitDirection, SplitRef, SplitTree, State as Snapshot, Tab, TabId, TabInfo, Update, Workspace,
+    WorkspaceId, WorkspaceInfo, WorkspaceWorktreeInfo, WorktreeInfo, WorktreeParams,
 };
 
 /// Where to find herdr: `HERDR_BIN`, `HERDR_SESSION`, `HERDR_SOCKET_PATH`

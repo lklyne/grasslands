@@ -25,7 +25,12 @@ impl TerminalArea {
 
     /// Ask herdr to focus `pane_id`; the focus ring follows herdr's
     /// `pane.focused` event, not this call.
-    pub fn focus_pane(&mut self, _pane_id: &str, _window: &mut Window, _cx: &mut Context<Self>) {}
+    pub fn focus_pane(&mut self, pane_id: &str, _window: &mut Window, cx: &mut Context<Self>) {
+        self.state.update(cx, |state, cx| {
+            state.mark_seen(pane_id, cx);
+            state.focus_pane(pane_id, cx).detach_and_log_err(cx);
+        });
+    }
 }
 
 impl Render for TerminalArea {

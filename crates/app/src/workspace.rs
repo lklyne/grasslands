@@ -6,7 +6,7 @@ use gpui_kit::component::resizable::{h_resizable, resizable_panel};
 use gpui_kit::component::{ActiveTheme as _, v_flex};
 use gpui_kit::*;
 
-use crate::actions::{CommandPalette, FocusPane, OpenFile};
+use crate::actions::{CommandPalette, FocusPane, OpenContextMenu, OpenFile};
 use crate::chrome::Chrome;
 use crate::editor::Editor;
 use crate::sidebar::Sidebar;
@@ -50,6 +50,23 @@ impl Workspace {
         self.chrome
             .update(cx, |chrome, cx| chrome.open_command_palette(window, cx));
     }
+
+    fn open_context_menu(
+        &mut self,
+        action: &OpenContextMenu,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.chrome.update(cx, |chrome, cx| {
+            chrome.context_menu(
+                action.target.clone(),
+                action.position,
+                Vec::new(),
+                window,
+                cx,
+            );
+        });
+    }
 }
 
 impl Render for Workspace {
@@ -61,6 +78,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::open_file))
             .on_action(cx.listener(Self::focus_pane))
             .on_action(cx.listener(Self::command_palette))
+            .on_action(cx.listener(Self::open_context_menu))
             .size_full()
             .bg(cx.theme().background)
             .text_color(cx.theme().foreground)

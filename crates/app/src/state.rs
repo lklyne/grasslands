@@ -15,6 +15,7 @@ use std::sync::Arc;
 
 use gpui_kit::*;
 
+use crate::attention::{Attention, StatusChange};
 use crate::herdr::{self, Client, ConnectionStatus, PaneId, SessionSync, Snapshot, Update};
 
 #[derive(Debug, Clone)]
@@ -30,6 +31,8 @@ pub enum AppEvent {
     /// A herdr event as it arrived, before the cache re-read it triggers.
     /// For reactions the cache can't express (toasts, "pane just created").
     Herdr(Arc<herdr::Event>),
+    /// A known agent's status changed between two caches (chrome toasts it).
+    AgentStatusChanged(StatusChange),
 }
 
 pub struct AppState {
@@ -38,6 +41,8 @@ pub struct AppState {
     /// The latest herdr cache: workspaces → tabs → split trees, panes, agents.
     pub snapshot: Arc<Snapshot>,
     pub focused_pane: Option<PaneId>,
+    /// Status changes and unseen results, for toasts and badges.
+    pub attention: Attention,
     active_worktree: Option<PathBuf>,
     client: Client,
     _sync: Option<(SessionSync, Task<()>)>,
@@ -73,6 +78,7 @@ impl AppState {
             connection,
             snapshot: Arc::default(),
             focused_pane: None,
+            attention: Attention::default(),
             active_worktree: std::env::current_dir().ok(),
             _sync: sync,
         }
@@ -115,8 +121,12 @@ impl AppState {
 
     pub fn replace_snapshot(&mut self, snapshot: Arc<Snapshot>, cx: &mut Context<Self>) {
         let focused = snapshot.focused_pane_id.clone();
+        let changes = self.attention.update(&snapshot);
         self.snapshot = snapshot;
         cx.emit(AppEvent::SnapshotReplaced);
+        for change in changes {
+            cx.emit(AppEvent::AgentStatusChanged(change));
+        }
         if self.focused_pane != focused {
             self.focused_pane.clone_from(&focused);
             cx.emit(AppEvent::FocusedPaneChanged(focused));
@@ -133,6 +143,13 @@ impl AppState {
     ) -> Task<herdr::Result<T>> {
         let client = self.client.clone();
         cx.background_executor().spawn(async move { call(&client) })
+    }
+
+    /// The user looked at `pane_id` (focused it, clicked its agent).
+    pub fn mark_seen(&mut self, pane_id: &str, cx: &mut Context<Self>) {
+        if self.attention.mark_seen(&self.snapshot, pane_id) {
+            cx.notify();
+        }
     }
 
     // Panes
