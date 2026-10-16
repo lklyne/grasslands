@@ -605,3 +605,6 @@ impl Render for Chrome {
         })
     }
 }
+
+#[cfg(test)]
+mod tests;
