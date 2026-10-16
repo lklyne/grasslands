@@ -34,6 +34,8 @@ docs/                 spec, herdr schema, decisions (docs/decisions/NNNN-title.m
 - You work in your own git worktree on your own branch. Stay inside the files your task owns; if you need a change in someone else's area, make the smallest change possible and say so in your report.
 - The orchestrator merges branches into `main`. When told main moved, `git rebase main` (or merge) and fix conflicts in your area.
 - Commit in small, working steps with terse semantic messages. `cargo build` and `cargo clippy` must pass on every commit; `cargo test` for crates with tests.
+- Never send synthetic keyboard or mouse input through the OS (osascript/System Events, cliclick, CGEvent posting). It goes to whatever app has focus, which may be the human's terminal or another agent. Drive the app through its own script/test hooks (e.g. a `--script` mode or GPUI test harness) instead.
+- Never kill processes by broad patterns (`pkill -f target/debug/app` matches other agents' apps). Kill only PIDs you started.
 - Prove it works. Run the app through `scripts/dev-run`, drive the dev session with `scripts/herdr-dev` (split panes, create tabs, start a shell) and check the app reacts. Screenshot with `screencapture -x <file>` (or `-l <windowid>`) and look at the image. If screen recording is denied, say so and verify by logs/state instead.
 - Don't stop to ask the human; they're away. Make the call, record non-obvious decisions in `docs/decisions/`, and keep going. Stop only when your task is done or truly blocked.
 - When you finish, end with a short report: what works (and how you verified it), what doesn't, what you changed outside your area, and your branch name.
