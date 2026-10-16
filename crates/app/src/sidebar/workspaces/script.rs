@@ -74,7 +74,13 @@ pub(super) fn start(window: &mut Window, cx: &mut Context<WorkspaceList>) {
                     eprintln!("[sidebar-script] {step}: {error}");
                     Ok(())
                 }
-                None => this.update_in(cx, |this, window, cx| run_step(this, &step, window, cx)),
+                // The main window by name: `update_in` would use whichever
+                // window the list was last used in (see chrome/script.rs).
+                None => cx
+                    .update(|window, cx| {
+                        this.update(cx, |this, cx| run_step(this, &step, window, cx))
+                    })
+                    .and_then(|done| done),
             };
             if done.is_err() {
                 return;

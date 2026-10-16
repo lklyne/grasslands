@@ -75,11 +75,17 @@ pub(super) fn start(window: &mut Window, cx: &mut Context<Chrome>) {
                 cx.background_executor().timer(STEP).await;
                 continue;
             }
-            let done = this.update_in(cx, |chrome, window, cx| {
-                if let Err(error) = run_step(chrome, &step, window, cx) {
-                    eprintln!("[chrome-script] {step}: {error}");
-                }
+            // With the main window named, not `update_in`: that picks the
+            // window the chrome was last used in, which is the overlay once
+            // a palette or prompt has run there.
+            let done = cx.update(|window, cx| {
+                this.update(cx, |chrome, cx| {
+                    if let Err(error) = run_step(chrome, &step, window, cx) {
+                        eprintln!("[chrome-script] {step}: {error}");
+                    }
+                })
             });
+            let done = done.and_then(|done| done);
             if done.is_err() {
                 return;
             }
