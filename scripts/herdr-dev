@@ -1,0 +1,9 @@
+#!/bin/sh
+# herdr CLI against the isolated dev session. Starts the dev server if needed.
+. "$(dirname "$0")/dev-env.sh"
+if [ ! -S "$HERDR_SOCKET_PATH" ] || ! "$HERDR_BIN" --session "$HERDR_SESSION" workspace list >/dev/null 2>&1; then
+  mkdir -p "$XDG_CONFIG_HOME"
+  nohup "$HERDR_BIN" --session "$HERDR_SESSION" server >"$XDG_CONFIG_HOME/server.log" 2>&1 &
+  i=0; while [ ! -S "$HERDR_SOCKET_PATH" ] && [ $i -lt 50 ]; do sleep 0.1; i=$((i+1)); done
+fi
+exec "$HERDR_BIN" --session "$HERDR_SESSION" "$@"

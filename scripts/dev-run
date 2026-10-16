@@ -1,0 +1,5 @@
+#!/bin/sh
+# Run any command (cargo run, tests, the built app) inside the dev environment.
+. "$(dirname "$0")/dev-env.sh"
+"$(dirname "$0")/herdr-dev" workspace list >/dev/null
+exec "$@"
