@@ -124,11 +124,13 @@ pub fn dispatch_keystroke(keystroke: Keystroke, window: &mut Window, cx: &mut Ap
     if target == window.window_handle() {
         return window.dispatch_keystroke(keystroke, cx);
     }
-    cx.update_window(target, |_, window, cx| window.dispatch_keystroke(keystroke, cx))
-        .unwrap_or_else(|error| {
-            tracing::warn!("overlay: key target window gone: {error:#}");
-            false
-        })
+    cx.update_window(target, |_, window, cx| {
+        window.dispatch_keystroke(keystroke, cx)
+    })
+    .unwrap_or_else(|error| {
+        tracing::warn!("overlay: key target window gone: {error:#}");
+        false
+    })
 }
 
 /// Dispatches `action` from the focus of [`key_target`]. `window` is the
@@ -139,8 +141,7 @@ pub fn dispatch_action(action: Box<dyn Action>, window: &mut Window, cx: &mut Ap
         window.dispatch_action(action, cx);
         return;
     }
-    if let Err(error) =
-        cx.update_window(target, |_, window, cx| window.dispatch_action(action, cx))
+    if let Err(error) = cx.update_window(target, |_, window, cx| window.dispatch_action(action, cx))
     {
         tracing::warn!("overlay: key target window gone: {error:#}");
     }

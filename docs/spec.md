@@ -43,12 +43,14 @@ Always check crates.io for a newer patch before adding a dependency.
 
 ```
 ┌──────────────────────── GPUI app ────────────────────────┐
-│ Sidebar          │ Editor           │ Terminal area       │
-│ - Workspaces,    │ - File tabs      │ - herdr tab bar     │
-│   each with its  │ - Code editor    │ - Split tree of     │
-│   agents         │                  │   Ghostty views     │
-│ - File tree      │                  │   (focused          │
-│                  │                  │   workspace)        │
+│ ● ● ●  [herdr] [one/mod.rs ●×] [notes.md ×]   (titlebar)  │
+├──────────────────┬────────────────────────────────────────┤
+│ Sidebar          │ Main area: the selected titlebar tab    │
+│ - Workspaces,    │ herdr tab:                              │
+│   each with its  │ - herdr tab bar                         │
+│   agents         │ - Split tree of Ghostty views           │
+│ - File tree      │   (focused workspace)                   │
+│                  │ file tab: the code editor, full size    │
 └───────▲──────────────────────────────────────▲───────────┘
         │ socket: snapshot, events, commands  │ PTY: herdr terminal attach
 ┌───────┴──────────────────────────────────────┴───────────┐
@@ -112,9 +114,9 @@ This also follows agents that move into another folder, since `foreground_cwd` t
 
 ## Editor
 
-- GPUI Kit code editor with syntax highlighting, in tabs.
+- GPUI Kit code editor with syntax highlighting. Each open file is a tab in the window's titlebar, after the fixed herdr tab; selecting a file tab shows the editor in the whole main area.
 - Open, edit, save, close. Unsaved changes are marked on the tab.
-- Open files are grouped per worktree; switching worktrees swaps to that worktree's tabs.
+- Open files are grouped per worktree; switching worktrees swaps to that worktree's file tabs. With no file tab selected (or none open) the main area shows herdr.
 - When an agent changes an open file on disk, it reloads automatically. If you have unsaved edits, you're asked whether to keep yours or take the agent's.
 
 ## Workspaces and agents

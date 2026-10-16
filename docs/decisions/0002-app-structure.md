@@ -6,11 +6,11 @@ Date: 2026-10-15. Status: accepted (app-shell, Part 1).
 
 | Module | View | Owner |
 | --- | --- | --- |
-| `workspace` | `Workspace`, the window root: `h_resizable` of sidebar / editor / terminal area. Routes cross-module actions. | app-shell |
+| `workspace` | `Workspace`, the window root: the titlebar tab strip (`workspace::titlebar`) over an `h_resizable` of sidebar / main area. The main area shows the terminal area (herdr tab) or the editor (a file tab). Routes cross-module actions. | app-shell |
 | `sidebar` | `Sidebar`: `v_resizable` of `workspaces::WorkspaceList` over `files::FileTree` | app-shell |
 | `sidebar::workspaces` | `WorkspaceList`: every workspace with its agents (replaced `sidebar::agents`, see 0009) | herdr-client agent |
 | `sidebar::files` | `FileTree` | files agent |
-| `editor` | `Editor` (file tabs + code editor) | app-shell, Part 2 |
+| `editor` | `Editor` (open files per worktree + code editor; its tabs are drawn in the titlebar) | app-shell, Part 2 |
 | `terminal_area` | `TerminalArea` (herdr tab bar + split tree of Ghostty views) | ghostty-terminals agent |
 | `overlay` | the transparent overlay window above the terminals (API for chrome) | ghostty-terminals agent |
 | `chrome`, `attention` | `Chrome`: command palette, context menus, toasts, confirmations; `Attention`: status changes and unseen results (see 0006) | chrome agent (ghostty-terminals agent provides the overlay window) |
@@ -52,7 +52,7 @@ else in the module is yours.
 - A view sends one with `window.dispatch_action(Box::new(OpenFile { path }), cx)`.
   Actions bubble up the focus path, not sideways, so `Workspace` handles them
   (`on_action` in its render) and forwards to the owning view
-  (`OpenFile` → `Editor::open`, `FocusPane` → `TerminalArea::focus_pane`,
+  (`OpenFile` → `Editor::open`, `FocusPane` → select the herdr tab, then `TerminalArea::focus_pane`,
   `CommandPalette` → `Chrome::open_command_palette`).
 - To add a cross-module action: define it in `actions.rs`, add a handler in
   `Workspace`, implement the method on the target view.
@@ -60,6 +60,40 @@ else in the module is yours.
   module and handled by its own view.
 - herdr-originated changes are not actions: they come in through `AppState`.
 - Data actions use `#[action(namespace = app, no_json)]` so they need no serde.
+
+## Window layout and titlebar tabs
+
+```
+● ● ●  [herdr] [a.rs ● ×] [b.rs ×]          ← GPUI Kit TitleBar, transparent
+sidebar (workspaces / files) │ main area     ← h_resizable
+```
+
+- The window uses `TitleBar::window_options()` (transparent, unified,
+  `app_owns_titlebar_drag`); `workspace::window_options` adds the title for
+  the Window menu. Kit's `TitleBar` moves the window on drag and zooms on
+  double-click; it leaves 80px for the traffic lights.
+- Tabs stop mouse-down (no window move) and click (no zoom) propagation;
+  everywhere else in the bar drags the window.
+- The first tab is herdr: fixed, selected at start. The rest are
+  `Editor::tabs()` for the active worktree, with `Editor::active_index()`
+  marking the selected one. `Workspace` holds `MainTab::{Herdr, Files}`.
+- The editor emits `EditorEvent::Activated` when a file is opened, picked, or
+  brought forward for a close question; `Workspace` then selects `Files`.
+  When the editor has no file for the active worktree (last tab closed, or a
+  worktree switch), `Workspace` selects herdr. The editor has no empty state.
+- Selecting a file tab calls `TerminalArea::set_visible(false)`, which hides
+  every Ghostty view (native views drawn over GPUI would otherwise stay at
+  their last frames); the terminal area also leaves the element tree.
+  Selecting herdr calls `set_visible(true)`: views are placed on the next
+  frame and herdr's focused pane gets the keyboard.
+- `Workspace` forwards pointer moves to the overlay (`overlay::track_pointer`)
+  so floating UI works on both tabs; it used to live in the terminal area.
+- Keys (context `Workspace`): `ctrl-tab` / `ctrl-shift-tab` and
+  `cmd-shift-]` / `cmd-shift-[` cycle herdr plus file tabs; `cmd-1` selects
+  herdr. In the terminal area its own `cmd-shift-[ ]` (herdr's tabs) wins as
+  the deeper context, so there only `ctrl-tab` cycles the titlebar. `cmd-w`
+  closes a file tab in the editor and a pane in the terminal area.
+- `workspace::get(window, cx)` returns the window's `Workspace` (script hooks).
 
 ## Key bindings
 

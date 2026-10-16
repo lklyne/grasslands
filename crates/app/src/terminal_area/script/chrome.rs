@@ -121,7 +121,10 @@ impl Run {
                 area.terminals.focused(window, cx).is_some()
             })
             .await;
-        self.check(in_terminal, "clicking a pane gives its terminal the keyboard");
+        self.check(
+            in_terminal,
+            "clicking a pane gives its terminal the keyboard",
+        );
 
         // Right-click the first pane's header: the pane menu, in the overlay.
         let header = point(body.origin.x + px(60.), body.origin.y - HEADER_HEIGHT / 2.);
@@ -138,13 +141,19 @@ impl Run {
         let on_terminal = cx
             .update(|window, cx| area.read(cx).terminals.focused(window, cx).is_some())
             .unwrap_or(false);
-        self.check(on_terminal, "a terminal keeps main-window focus under the menu");
+        self.check(
+            on_terminal,
+            "a terminal keeps main-window focus under the menu",
+        );
         let modal = self.overlay_capturing(cx);
         self.check(
             modal,
             "the open menu makes the overlay take clicks and keys",
         );
-        self.check(self.keys_go_to_overlay(cx), "keys go to the overlay while the menu is open");
+        self.check(
+            self.keys_go_to_overlay(cx),
+            "keys go to the overlay while the menu is open",
+        );
         self.key_window(cx, true, "the open menu").await;
         Self::settle(cx).await;
         self.shoot_with_overlay(cx, "pane-menu-over-terminal");
@@ -263,7 +272,12 @@ impl Run {
         Ok(())
     }
 
-    async fn report_agent(&self, cx: &mut Cx, pane_id: &str, status: &str) -> anyhow::Result<()> {
+    pub(super) async fn report_agent(
+        &self,
+        cx: &mut Cx,
+        pane_id: &str,
+        status: &str,
+    ) -> anyhow::Result<()> {
         let params = json!({
             "pane_id": pane_id,
             "source": "chrome-script",
@@ -322,7 +336,7 @@ impl Run {
 
     /// One key press, sent where the keyboard is (the overlay while
     /// something modal is open there), never through the OS.
-    fn key(&self, cx: &mut Cx, key: &str) {
+    pub(super) fn key(&self, cx: &mut Cx, key: &str) {
         let Ok(keystroke) = Keystroke::parse(key) else {
             eprintln!("script: bad keystroke {key:?}");
             return;
@@ -343,7 +357,10 @@ impl Run {
     fn keys_go_to_overlay(&self, cx: &mut Cx) -> bool {
         let overlay = Self::overlay_handle(cx);
         overlay.is_some()
-            && cx.update(|window, cx| Some(overlay::key_target(window, cx))).ok().flatten()
+            && cx
+                .update(|window, cx| Some(overlay::key_target(window, cx)))
+                .ok()
+                .flatten()
                 == overlay
     }
 
@@ -443,7 +460,10 @@ impl Run {
             .until_overlay(cx, |window, cx| window.has_active_dialog(cx))
             .await;
         self.check(shown, "the name prompt opens in the overlay");
-        self.check(self.keys_go_to_overlay(cx), "keys go to the overlay while the prompt is open");
+        self.check(
+            self.keys_go_to_overlay(cx),
+            "keys go to the overlay while the prompt is open",
+        );
         self.key_window(cx, true, "the name prompt").await;
         self.keys(cx, "Escaped");
         Self::settle(cx).await;
@@ -454,12 +474,10 @@ impl Run {
             .await;
         self.check(shut, "Escape closes the name prompt");
         Self::sleep(cx, 300).await;
-        self.check(
-            submitted.borrow().is_empty(),
-            "Escape submits nothing",
-        );
+        self.check(submitted.borrow().is_empty(), "Escape submits nothing");
         self.key_window(cx, false, "the name prompt closed").await;
-        self.focus_back(cx, &before, "the name prompt (Escape)").await;
+        self.focus_back(cx, &before, "the name prompt (Escape)")
+            .await;
 
         open(cx, &submitted);
         let shown = self
@@ -479,7 +497,8 @@ impl Run {
             got == ["typed name"],
             &format!("Enter submits what was typed (got {got:?})"),
         );
-        self.focus_back(cx, &before, "the name prompt (Enter)").await;
+        self.focus_back(cx, &before, "the name prompt (Enter)")
+            .await;
     }
 
     /// The chrome's rename dialog: select all, type a new name, Enter; herdr
@@ -513,7 +532,10 @@ impl Run {
                     .is_some_and(|w| w.info.label == "renamed by keys")
             })
             .await;
-        self.check(renamed, "typing and Enter in the rename dialog renames in herdr");
+        self.check(
+            renamed,
+            "typing and Enter in the rename dialog renames in herdr",
+        );
         let shut = self
             .until_overlay(cx, |window, cx| !window.has_active_dialog(cx))
             .await;
@@ -532,7 +554,10 @@ impl Run {
             .until_overlay(cx, |window, cx| window.has_active_dialog(cx))
             .await;
         self.check(shown, "the command palette opens in the overlay");
-        self.check(self.keys_go_to_overlay(cx), "keys go to the overlay while the palette is open");
+        self.check(
+            self.keys_go_to_overlay(cx),
+            "keys go to the overlay while the palette is open",
+        );
         self.key_window(cx, true, "the palette").await;
         let palette = cx
             .update(|window, cx| crate::chrome::get(window, cx).and_then(|c| c.read(cx).palette()))
@@ -615,7 +640,7 @@ impl Run {
     }
 
     /// Polls a check run inside the overlay window.
-    async fn until_overlay(
+    pub(super) async fn until_overlay(
         &self,
         cx: &mut Cx,
         mut test: impl FnMut(&mut Window, &mut App) -> bool,
