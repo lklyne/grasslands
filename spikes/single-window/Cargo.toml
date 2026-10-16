@@ -1,0 +1,24 @@
+# Throwaway spike: Ghostty views below GPUI's view in one window, GPUI
+# transparent where the terminals are, menus and dialogs as ordinary GPUI
+# elements. Not a workspace member.
+# See docs/decisions/0010-single-window-terminals.md.
+[package]
+name = "single-window"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+gpui-kit = "0.7.3"
+gpui-libghostty = "0.3.1"
+anyhow = "1.0.104"
+serde_json = "1.0.154"
+raw-window-handle = "0.6.2"
+objc2 = "0.6.5"
+objc2-foundation = { version = "0.3.2", features = ["NSGeometry", "NSArray", "NSString"] }
+objc2-app-kit = { version = "0.3.2", features = ["NSApplication", "NSWindow", "NSView", "NSResponder", "NSColor", "NSGraphics"] }
+
+[patch.crates-io]
+gpui-libghostty = { path = "../../vendor/gpui-libghostty" }
