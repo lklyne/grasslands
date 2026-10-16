@@ -10,10 +10,13 @@ mod command;
 mod confirm;
 mod dock;
 mod palette;
+#[cfg(debug_assertions)]
+mod script;
 
 use std::rc::Rc;
 
 use gpui_kit::component::WindowExt as _;
+use gpui_kit::component::command::CommandState;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::menu::{PopupMenu, PopupMenuItem};
 use gpui_kit::component::notification::{Notification, NotificationDelivery, NotificationType};
@@ -100,6 +103,8 @@ pub struct Chrome {
     /// Every plugin action, from `plugin.action.list`; refreshed on use.
     plugin_actions: Rc<Vec<PluginActionInfo>>,
     open_menu: Option<OpenMenu>,
+    /// The open (or last opened) palette's state.
+    palette: Option<WeakEntity<CommandState>>,
     rename: Option<Subscription>,
     badge: usize,
     _subscriptions: Vec<Subscription>,
@@ -124,11 +129,14 @@ impl Chrome {
             state,
             plugin_actions: Rc::default(),
             open_menu: None,
+            palette: None,
             rename: None,
             badge: 0,
             _subscriptions: vec![events, badge],
         };
         chrome.refresh_plugin_actions(cx);
+        #[cfg(debug_assertions)]
+        script::start(window, cx);
         chrome
     }
 
@@ -198,7 +206,8 @@ impl Chrome {
     pub fn open_command_palette(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.close_context_menu(window, cx);
         self.refresh_plugin_actions(cx);
-        palette::open(cx.entity(), self.state.clone(), window, cx);
+        let palette = palette::open(cx.entity(), self.state.clone(), window, cx);
+        self.palette = Some(palette.downgrade());
     }
 
     /// Opens a context menu for `target` at `position` (window coordinates):
@@ -246,12 +255,10 @@ impl Chrome {
                         menu.item(PopupMenuItem::new(label).disabled(disabled).on_click(
                             move |_, window, cx| {
                                 let command = command.clone();
-                                chrome
-                                    .update(cx, |chrome, cx| {
-                                        chrome.close_context_menu(window, cx);
-                                        chrome.run_menu_command(command, window, cx);
-                                    })
-                                    .ok();
+                                update_later(&chrome, window, cx, move |chrome, window, cx| {
+                                    chrome.close_context_menu(window, cx);
+                                    chrome.run_menu_command(command, window, cx);
+                                });
                             },
                         ))
                     }
@@ -404,17 +411,18 @@ impl Chrome {
     /// agent or a whole worktree group (herdr closes immediately).
     pub fn run(&mut self, command: HerdrCommand, window: &mut Window, cx: &mut Context<Self>) {
         let confirmation = confirm::needed_for(&command, &self.state.read(cx).snapshot);
+        let Some(confirmation) = confirmation else {
+            self.send(command, window, cx);
+            return;
+        };
         let chrome = cx.entity().downgrade();
         let send = move |window: &mut Window, cx: &mut App| {
             let command = command.clone();
-            chrome
-                .update(cx, |chrome, cx| chrome.send(command, window, cx))
-                .ok();
+            update_later(&chrome, window, cx, move |chrome, window, cx| {
+                chrome.send(command, window, cx);
+            });
         };
-        match confirmation {
-            Some(confirmation) => self.confirm(confirmation, send, window, cx),
-            None => send(window, cx),
-        }
+        self.confirm(confirmation, send, window, cx);
     }
 
     /// Sends without asking; a failure becomes an error toast.
@@ -478,9 +486,9 @@ impl Chrome {
                     return;
                 }
                 let command = rename_command(&target, label);
-                chrome
-                    .update(cx, |chrome, cx| chrome.send(command, window, cx))
-                    .ok();
+                update_later(&chrome, window, cx, move |chrome, window, cx| {
+                    chrome.send(command, window, cx);
+                });
             })
         };
         self.rename = Some(cx.subscribe_in(&input, window, {
@@ -510,6 +518,23 @@ impl Chrome {
                 })
         });
     }
+}
+
+/// Runs `f` on the chrome after the current update. Menu, dialog and palette
+/// callbacks use this: they can fire while the chrome is itself being updated
+/// (a confirm dispatched from inside it), and a nested update panics.
+fn update_later(
+    chrome: &WeakEntity<Chrome>,
+    window: &mut Window,
+    cx: &mut App,
+    f: impl FnOnce(&mut Chrome, &mut Window, &mut Context<Chrome>) + 'static,
+) {
+    let chrome = chrome.clone();
+    window.defer(cx, move |window, cx| {
+        chrome
+            .update(cx, |chrome, cx| f(chrome, window, cx))
+            .ok();
+    });
 }
 
 fn rename_command(target: &MenuTarget, label: String) -> HerdrCommand {
