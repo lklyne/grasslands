@@ -222,6 +222,11 @@ impl Chrome {
         self.open_menu.as_ref().map(|open| open.layer.is_some())
     }
 
+    /// The open rename dialog's text field (for checks and scripts).
+    pub fn rename_input(&self) -> Option<Entity<InputState>> {
+        self.rename_input.as_ref().and_then(WeakEntity::upgrade)
+    }
+
     /// The open (or last opened) palette's state: its query and selection.
     pub fn palette(&self) -> Option<Entity<CommandState>> {
         self.palette.as_ref().and_then(WeakEntity::upgrade)

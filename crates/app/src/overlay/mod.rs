@@ -65,6 +65,9 @@ pub struct Overlay {
     /// The overlay's own `NSWindow`, kept so capture changes never need an
     /// update of the overlay window (which fails while it is mid-update).
     ns: objc2::rc::Retained<objc2_app_kit::NSWindow>,
+    /// GPUI's view in the overlay (`GPUIView`). It must be the overlay's first
+    /// responder, or AppKit never hands it key events (0008).
+    view: objc2::rc::Retained<objc2_app_kit::NSView>,
     content: Entity<OverlayContent>,
     next_layer: u64,
     /// Whether a GPUI Kit dialog or sheet is open in the overlay. Recorded
@@ -77,8 +80,13 @@ pub struct Overlay {
     over_content: bool,
     /// Whether the overlay window currently takes mouse events.
     capturing: bool,
-    /// Whether we made the overlay the key window (and owe it back to the parent).
+    /// Whether the overlay should be the key window (and owes key status back
+    /// to the parent once nothing is modal).
     keyed: bool,
+    /// A key hand-off task is queued; it applies whatever `keyed` is when it
+    /// runs, so a menu closing and a dialog opening in one go make a single
+    /// request instead of two racing ones.
+    key_request_pending: bool,
     last_pointer: Option<Point<Pixels>>,
     _subscriptions: Vec<Subscription>,
 }
@@ -210,13 +218,16 @@ impl Overlay {
             cx.new(|cx| Root::new(view, window, cx).bg(transparent_black()))
         })?;
         let content = content.ok_or_else(|| anyhow::anyhow!("overlay built no content"))?;
-        let child = cx.update_window(window.into(), |_, window, _| ns_window(window))?;
+        let (child, view) = cx.update_window(window.into(), |_, window, _| {
+            (ns_window(window), native::gpui_view(window))
+        })?;
         let child = child.ok_or_else(|| anyhow::anyhow!("no overlay NSWindow"))?;
+        let view = view.ok_or_else(|| anyhow::anyhow!("no overlay NSView"))?;
         // Click-through from the start. Only `sync_capture` changes it after
         // this; the deferred `attach` must not (it used to, and undid the
         // capture of the menu or dialog the overlay was opened for).
         native::set_ignores_mouse(&child, true);
-        Self::attach_later(parent_ns.clone(), child.clone(), cx);
+        Self::attach_later(parent_ns.clone(), child.clone(), view.clone(), cx);
 
         let overlay = cx.new(|cx| {
             let subscriptions =
@@ -229,12 +240,14 @@ impl Overlay {
                 parent_ns,
                 window,
                 ns: child,
+                view,
                 content: content.clone(),
                 next_layer: 0,
                 kit_modal,
                 over_content: false,
                 capturing: false,
                 keyed: false,
+                key_request_pending: false,
                 last_pointer: None,
                 _subscriptions: subscriptions,
             }
@@ -336,6 +349,15 @@ impl Overlay {
         native::is_key(&self.ns)
     }
 
+    /// The overlay's AppKit side, for checking real typing. Its methods
+    /// must run outside GPUI updates, so get it in one and use it after.
+    pub fn native_keyboard(&self) -> NativeKeyboard {
+        NativeKeyboard {
+            ns: self.ns.clone(),
+            view: self.view.clone(),
+        }
+    }
+
     fn match_parent_frame(&mut self, parent: &mut Window, cx: &mut Context<Self>) {
         let Some(parent_ns) = ns_window(parent) else {
             return;
@@ -359,17 +381,19 @@ impl Overlay {
     fn attach_later(
         parent: objc2::rc::Retained<objc2_app_kit::NSWindow>,
         child: objc2::rc::Retained<objc2_app_kit::NSWindow>,
+        view: objc2::rc::Retained<objc2_app_kit::NSView>,
         cx: &mut App,
     ) {
         cx.spawn(async move |_| {
             let before = native::ignores_mouse(&child);
-            native::attach(&parent, &child);
+            native::attach(&parent, &child, &view);
             let attached = native::ignores_mouse(&child);
             native::match_content_frame(&parent, &child);
             native::show(&child);
             tracing::debug!(
-                "overlay: attached; click-through before={before} after-attach={attached} after-show={}",
-                native::ignores_mouse(&child)
+                "overlay: attached; click-through before={before} after-attach={attached} after-show={}; first responder {}",
+                native::ignores_mouse(&child),
+                native::first_responder_class(&child)
             );
         })
         .detach();
@@ -389,21 +413,61 @@ impl Overlay {
             .detach();
     }
 
-    /// Makes `ns` the key window from a foreground task, as GPUI's own
-    /// `activate_window` does, but straight on the `NSWindow`: going through
-    /// `update_window` fails while that window is mid-update (a sync from the
-    /// main window's mouse-move handler), and the hand-off was then lost.
-    fn make_key_later(
-        ns: objc2::rc::Retained<objc2_app_kit::NSWindow>,
-        what: &'static str,
-        cx: &mut App,
-    ) {
-        cx.spawn(async move |_| {
-            native::make_key(&ns);
+    /// Hands key status to the overlay (`keyed`) or back to the main window,
+    /// from a foreground task, as GPUI's own `activate_window` does, but
+    /// straight on the `NSWindow`s: going through `update_window` fails while
+    /// that window is mid-update (a sync from the main window's mouse-move
+    /// handler), and the hand-off was then lost.
+    ///
+    /// One task at a time, reading `keyed` when it runs. A menu closing and
+    /// a dialog opening used to queue "main window" then "overlay" as two
+    /// tasks, flicking key status (and Ghostty's focus) for nothing.
+    fn request_key(&mut self, cx: &mut Context<Self>) {
+        if self.key_request_pending {
             tracing::debug!(
-                "overlay: asked {what} to become key; key now: {}, app active: {}",
-                native::is_key(&ns),
-                native::app_is_active()
+                "overlay: key request already queued; it will apply keyed={}",
+                self.keyed
+            );
+            return;
+        }
+        self.key_request_pending = true;
+        cx.spawn(async move |this, cx| {
+            let Ok((keyed, ns, parent_ns, view, window)) = this.update(cx, |this, _| {
+                this.key_request_pending = false;
+                (
+                    this.keyed,
+                    this.ns.clone(),
+                    this.parent_ns.clone(),
+                    this.view.clone(),
+                    this.window,
+                )
+            }) else {
+                return;
+            };
+            let (target, what) = if keyed {
+                (&ns, "overlay")
+            } else {
+                (&parent_ns, "main window")
+            };
+            if !native::is_key(target) {
+                native::make_key(target);
+            }
+            if keyed && !native::is_first_responder(&ns, &view) {
+                tracing::warn!(
+                    "overlay: first responder was {}, not GPUI's view; restoring it",
+                    native::first_responder_class(&ns)
+                );
+                native::make_first_responder(&ns, &view);
+            }
+            let focused = cx
+                .update_window(window.into(), |_, window, cx| window.focused(cx))
+                .ok()
+                .flatten();
+            tracing::debug!(
+                "overlay: asked {what} to become key; key now: {}, app active: {}; overlay {:?}, focused element {focused:?}",
+                native::is_key(target),
+                native::app_is_active(),
+                KeyboardPath::read(&ns, &view),
             );
         })
         .detach();
@@ -462,14 +526,71 @@ impl Overlay {
             self.capturing = capture;
             native::set_ignores_mouse(&self.ns, !capture);
         }
-        if modal && !self.keyed {
-            tracing::debug!("overlay: modal, making the overlay key");
-            self.keyed = true;
-            Self::make_key_later(self.ns.clone(), "overlay", cx);
-        } else if !modal && self.keyed {
-            tracing::debug!("overlay: nothing modal, handing key status back to the main window");
-            self.keyed = false;
-            Self::make_key_later(self.parent_ns.clone(), "main window", cx);
+        if modal != self.keyed {
+            tracing::debug!(
+                "overlay: {}",
+                if modal {
+                    "modal, making the overlay key"
+                } else {
+                    "nothing modal, handing key status back to the main window"
+                }
+            );
+            self.keyed = modal;
+            self.request_key(cx);
+        }
+    }
+}
+
+/// The overlay's `NSWindow` and GPUI view. Every method calls into GPUI
+/// synchronously, so use them outside GPUI updates.
+pub struct NativeKeyboard {
+    ns: objc2::rc::Retained<objc2_app_kit::NSWindow>,
+    view: objc2::rc::Retained<objc2_app_kit::NSView>,
+}
+
+impl NativeKeyboard {
+    /// What real typing in the overlay meets right now.
+    pub fn path(&self) -> KeyboardPath {
+        KeyboardPath::read(&self.ns, &self.view)
+    }
+
+    /// Sends a key-down to the overlay's `NSWindow` as AppKit's event loop
+    /// would (`native::send_key_down`): first responder, `keyDown:`, the
+    /// text input system. `key` is a GPUI key name (`a`, `space`,
+    /// `backspace`, `left`, `enter`, `escape`, ...), optionally with `cmd-`.
+    /// Returns false for a key it has no key code for.
+    pub fn send_key(&self, key: &str) -> bool {
+        let (command, key) = match key.strip_prefix("cmd-") {
+            Some(key) => (true, key),
+            None => (false, key),
+        };
+        let Some((characters, key_code)) = native::key_code(key) else {
+            return false;
+        };
+        native::send_key_down(&self.ns, &characters, key_code, command)
+    }
+}
+
+/// What a real key press in the overlay meets, read from AppKit.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KeyboardPath {
+    pub key: bool,
+    /// Class of the overlay's first responder; `GPUIView` when key events
+    /// reach GPUI.
+    pub first_responder: String,
+    /// GPUI's view is first responder.
+    pub view_first: bool,
+    /// A focused text field registered an input handler for typed text.
+    pub input_handler: bool,
+}
+
+impl KeyboardPath {
+    fn read(ns: &objc2_app_kit::NSWindow, view: &objc2_app_kit::NSView) -> Self {
+        Self {
+            key: native::is_key(ns),
+            first_responder: native::first_responder_class(ns),
+            view_first: native::is_first_responder(ns, view),
+            input_handler: native::has_input_handler(view),
         }
     }
 }

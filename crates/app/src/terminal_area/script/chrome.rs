@@ -495,14 +495,15 @@ impl Run {
             "keys go to the overlay while the prompt is open",
         );
         self.key_window(cx, true, "the name prompt").await;
+        self.typing_reaches(cx, None, "the name prompt").await;
         self.keys(cx, "Escaped");
         Self::settle(cx).await;
         self.shoot_with_overlay(cx, "name-prompt-typed");
-        self.key(cx, "escape");
+        self.native_keys(cx, &["escape"]).await;
         let shut = self
             .until_overlay(cx, |window, cx| !window.has_active_dialog(cx))
             .await;
-        self.check(shut, "Escape closes the name prompt");
+        self.check(shut, "Escape (AppKit key event) closes the name prompt");
         Self::sleep(cx, 300).await;
         self.check(submitted.borrow().is_empty(), "Escape submits nothing");
         self.key_window(cx, false, "the name prompt closed").await;
@@ -514,9 +515,15 @@ impl Run {
             .until_overlay(cx, |window, cx| window.has_active_dialog(cx))
             .await;
         self.check(shown, "the name prompt opens again");
-        self.keys(cx, "typed name");
-        Self::settle(cx).await;
-        self.key(cx, "enter");
+        self.typing_reaches(cx, None, "the name prompt (again)")
+            .await;
+        // Real typing: letters, backspace, arrows, Enter, all as AppKit
+        // key events. "nativx", ⌫, "e", then six lefts and "a " in front.
+        self.native_type(cx, "nativx").await;
+        self.native_keys(cx, &["backspace", "e"]).await;
+        self.native_keys(cx, &["left"; 6]).await;
+        self.native_type(cx, "a ").await;
+        self.native_keys(cx, &["enter"]).await;
         let shut = self
             .until_overlay(cx, |window, cx| !window.has_active_dialog(cx))
             .await;
@@ -524,8 +531,10 @@ impl Run {
         Self::sleep(cx, 300).await;
         let got = submitted.borrow().clone();
         self.check(
-            got == ["typed name"],
-            &format!("Enter submits what was typed (got {got:?})"),
+            got == ["a native"],
+            &format!(
+                "AppKit typing, backspace, left arrows and Enter fill and submit the prompt (got {got:?})"
+            ),
         );
         self.focus_back(cx, &before, "the name prompt (Enter)")
             .await;
@@ -550,11 +559,20 @@ impl Run {
             .until_overlay(cx, |window, cx| window.has_active_dialog(cx))
             .await;
         self.check(shown, "the rename dialog opens in the overlay");
-        self.key(cx, "cmd-a");
-        self.keys(cx, "renamed by keys");
-        Self::settle(cx).await;
+        let field = cx
+            .update(|window, cx| {
+                crate::chrome::get(window, cx)
+                    .and_then(|c| c.read(cx).rename_input())
+                    .map(|input| input.focus_handle(cx))
+            })
+            .ok()
+            .flatten();
+        self.check(field.is_some(), "the rename dialog's field is reachable");
+        self.typing_reaches(cx, field, "the rename dialog").await;
+        self.native_keys(cx, &["cmd-a"]).await;
+        self.native_type(cx, "renamed by keys").await;
         self.shoot_with_overlay(cx, "rename-typed");
-        self.key(cx, "enter");
+        self.native_keys(cx, &["enter"]).await;
         let renamed = self
             .until(cx, Duration::from_secs(5), |area, _, cx| {
                 area.snapshot(cx)
@@ -564,7 +582,7 @@ impl Run {
             .await;
         self.check(
             renamed,
-            "typing and Enter in the rename dialog renames in herdr",
+            "select-all, typing and Enter (AppKit key events) in the rename dialog rename in herdr",
         );
         let shut = self
             .until_overlay(cx, |window, cx| !window.has_active_dialog(cx))
@@ -597,16 +615,19 @@ impl Run {
             self.check(false, "the palette's state is reachable");
             return;
         };
-        self.keys(cx, "split");
-        Self::settle(cx).await;
+        let field = palette.read_with(cx, |p, cx| p.focus_handle(cx));
+        self.typing_reaches(cx, Some(field), "the palette").await;
+        self.native_type(cx, "split").await;
         let (query, matched, first) = palette.read_with(cx, |p, cx| {
             (p.query(cx), p.matched_count(), p.selected_index())
         });
         self.check(
             query == "split" && matched >= 2,
-            &format!("typing goes into the palette's query (got {query:?}, {matched} matches)"),
+            &format!(
+                "AppKit typing goes into the palette's query (got {query:?}, {matched} matches)"
+            ),
         );
-        self.key(cx, "down");
+        self.native_keys(cx, &["down"]).await;
         Self::settle(cx).await;
         let second = palette.read_with(cx, |p, _| p.selected_index());
         self.check(
@@ -642,6 +663,101 @@ impl Run {
             .await;
         self.check(shut, "Escape closes the palette");
         self.focus_back(cx, &before, "the palette (Escape)").await;
+    }
+
+    /// The overlay's AppKit side, for real-typing checks.
+    fn native_keyboard(cx: &mut Cx) -> Option<overlay::NativeKeyboard> {
+        cx.update(|window, cx| overlay::get(window, cx).map(|o| o.read(cx).native_keyboard()))
+            .ok()
+            .flatten()
+    }
+
+    /// With a text field open in the overlay: GPUI focus is on it (`field`,
+    /// when known) in the overlay window, and AppKit would deliver real
+    /// typing to it: GPUI's view is the overlay's first responder and the
+    /// field registered an input handler. Before the fix the first responder
+    /// was the panel itself, and every key press beeped (0008).
+    async fn typing_reaches(&mut self, cx: &mut Cx, field: Option<FocusHandle>, what: &str) {
+        Self::settle(cx).await;
+        let focused = Self::overlay_handle(cx).and_then(|handle| {
+            cx.update_window(handle, |_, window, cx| window.focused(cx))
+                .ok()
+                .flatten()
+        });
+        let main_focus = self.focused(cx);
+        self.check(
+            focused.is_some()
+                && field
+                    .as_ref()
+                    .is_none_or(|field| focused.as_ref() == Some(field)),
+            &format!(
+                "with {what} open its text field has focus in the overlay window ({focused:?})"
+            ),
+        );
+        self.check(
+            main_focus.is_some() && main_focus != focused,
+            &format!("with {what} open the main window keeps its own focus ({main_focus:?})"),
+        );
+        let Some(keyboard) = Self::native_keyboard(cx) else {
+            self.check(
+                false,
+                &format!("{what}: the overlay's AppKit side is reachable"),
+            );
+            return;
+        };
+        let path = keyboard.path();
+        tracing::debug!("script: {what}: overlay {path:?}, focused element {focused:?}");
+        eprintln!("script: {what}: overlay {path:?}");
+        self.check(
+            path.view_first,
+            &format!(
+                "with {what} open GPUI's view is the overlay's first responder (got {})",
+                path.first_responder
+            ),
+        );
+        self.check(
+            path.input_handler,
+            &format!("with {what} open the overlay has an input handler for typed text"),
+        );
+        if overlay::app_is_active() {
+            self.check(
+                path.key,
+                &format!("with {what} open the overlay is key in AppKit"),
+            );
+        }
+    }
+
+    /// Key presses handed to the overlay's `NSWindow` as AppKit's event loop
+    /// hands them (`sendEvent:` → first responder → `keyDown:` → text
+    /// input), the path real typing takes. In-process, never through the OS.
+    async fn native_keys(&mut self, cx: &mut Cx, keys: &[&str]) {
+        let Some(keyboard) = Self::native_keyboard(cx) else {
+            self.check(false, "the overlay's AppKit side is reachable for typing");
+            return;
+        };
+        for key in keys {
+            if !keyboard.send_key(key) {
+                self.check(false, &format!("AppKit key event for {key:?}"));
+            }
+            Self::settle(cx).await;
+        }
+    }
+
+    /// `native_keys` for each character of `text` (lowercase letters and
+    /// spaces).
+    async fn native_type(&mut self, cx: &mut Cx, text: &str) {
+        let keys: Vec<String> = text
+            .chars()
+            .map(|ch| {
+                if ch == ' ' {
+                    "space".to_owned()
+                } else {
+                    ch.to_string()
+                }
+            })
+            .collect();
+        let keys: Vec<&str> = keys.iter().map(String::as_str).collect();
+        self.native_keys(cx, &keys).await;
     }
 
     /// Polls a check on the chrome's menu state (`Chrome::menu_open`).
