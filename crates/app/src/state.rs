@@ -12,12 +12,17 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 
 use gpui_kit::*;
 
 use crate::attention::{Attention, StatusChange};
 use crate::herdr::{self, Client, ConnectionStatus, PaneId, SessionSync, Snapshot, Update};
 use crate::worktree;
+
+/// herdr 0.9.5 sends no event when a pane's folder changes, so the focused
+/// pane's folder is re-read this often (one `pane.get`).
+const CWD_POLL: Duration = Duration::from_secs(2);
 
 #[derive(Debug, Clone)]
 pub enum AppEvent {
@@ -56,6 +61,7 @@ pub struct AppState {
     /// `None` when the endpoint was refused.
     client: Option<Client>,
     _sync: Option<(SessionSync, Task<()>)>,
+    _cwd_poll: Option<Task<()>>,
 }
 
 impl EventEmitter<AppEvent> for AppState {}
@@ -97,11 +103,13 @@ impl AppState {
                 }
             }
         };
+        let cwd_poll = sync.is_some().then(|| Self::poll_focused_dir(cx));
         Self {
             client: Some(Client::new(herdr_config.clone())),
             herdr_config: Some(herdr_config),
             connection,
             _sync: sync,
+            _cwd_poll: cwd_poll,
             ..Self::disconnected(String::new())
         }
     }
@@ -117,6 +125,7 @@ impl AppState {
             focused_dir: None,
             client: None,
             _sync: None,
+            _cwd_poll: None,
         }
     }
 
@@ -125,6 +134,36 @@ impl AppState {
         cx.spawn(async move |this, cx| {
             while let Ok(update) = updates.recv().await {
                 if this.update(cx, |this, cx| this.apply(update, cx)).is_err() {
+                    break;
+                }
+            }
+        })
+    }
+
+    /// Follows the focused pane into another folder (`cd`, or an agent
+    /// changing directory), which herdr reports no event for.
+    fn poll_focused_dir(cx: &mut Context<Self>) -> Task<()> {
+        cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor().timer(CWD_POLL).await;
+                let Ok(request) = this.update(cx, |this, cx| {
+                    let pane_id = this.focused_pane.clone()?;
+                    Some(this.call(cx, move |client| client.pane_get(&pane_id)))
+                }) else {
+                    break;
+                };
+                let Some(request) = request else {
+                    continue;
+                };
+                let Ok(pane) = request.await else {
+                    continue;
+                };
+                let followed = this.update(cx, |this, cx| {
+                    if this.focused_pane.as_ref() == Some(&pane.pane_id) {
+                        this.follow_dir(pane.working_dir().map(PathBuf::from), cx);
+                    }
+                });
+                if followed.is_err() {
                     break;
                 }
             }
@@ -190,6 +229,10 @@ impl AppState {
             .focused_pane()
             .and_then(herdr::PaneInfo::working_dir)
             .map(PathBuf::from);
+        self.follow_dir(dir, cx);
+    }
+
+    fn follow_dir(&mut self, dir: Option<PathBuf>, cx: &mut Context<Self>) {
         if dir.is_none() || dir == self.focused_dir {
             return;
         }
@@ -422,6 +465,20 @@ mod tests {
 
     fn refused() -> herdr::Error {
         herdr::Error::Refused("socket outside the dev root".into())
+    }
+
+    #[gpui::test]
+    fn following_a_folder_inside_a_repo_roots_at_the_repo(cx: &mut TestAppContext) {
+        let repo = std::env::temp_dir()
+            .join(format!("rusted-tools-state-follow-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&repo);
+        std::fs::create_dir_all(repo.join("src")).unwrap();
+        git2::Repository::init(&repo).unwrap();
+        let repo = repo.canonicalize().unwrap();
+        let state = cx.new(|cx| AppState::new(Ok(offline_config()), cx));
+        state.update(cx, |state, cx| state.follow_dir(Some(repo.join("src")), cx));
+        let root = cx.read(|cx| state.read(cx).active_worktree().cloned());
+        assert_eq!(root, Some(repo));
     }
 
     #[gpui::test]
