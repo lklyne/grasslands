@@ -126,6 +126,15 @@ fn cache_should_follow_layout_commands() {
         s.pane(&p1)
             .is_some_and(|p| p.agent_status == AgentStatus::Blocked)
     });
+    let saw_status_event = std::iter::from_fn(|| updates.try_recv().ok()).any(|update| {
+        matches!(update, Update::Event(event) if matches!(&*event,
+            Event::PaneAgentStatusChanged { pane_id, agent_status: AgentStatus::Blocked, .. }
+                if *pane_id == p1))
+    });
+    assert!(
+        saw_status_event,
+        "no pane.agent_status_changed event for {p1}"
+    );
 
     // Rename and focus round trips.
     client.tab_rename(&t1, "renamed").unwrap();
