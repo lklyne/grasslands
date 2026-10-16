@@ -195,6 +195,7 @@ dependencies = [
  "async-channel",
  "git2",
  "gpui-kit",
+ "gpui-libghostty",
  "gpui-pre",
  "herdr-client",
  "ignore",
@@ -203,6 +204,7 @@ dependencies = [
  "objc2 0.6.5",
  "objc2-app-kit 0.3.2",
  "objc2-foundation 0.3.2",
+ "raw-window-handle",
  "serde_json",
  "trash",
 ]
@@ -2300,6 +2302,22 @@ dependencies = [
  "rust-embed",
  "wasm-bindgen",
  "wasm-bindgen-futures",
+]
+
+[[package]]
+name = "gpui-libghostty"
+version = "0.3.1"
+dependencies = [
+ "async-channel",
+ "image",
+ "khronos-egl",
+ "libc",
+ "libloading",
+ "raw-window-handle",
+ "tempfile",
+ "wayland-backend",
+ "wayland-client",
+ "wayland-protocols",
 ]
 
 [[package]]

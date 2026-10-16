@@ -287,6 +287,12 @@ macro_rules! bind_gpui {
                 }
             }
 
+            impl gpui::Focusable for Terminal {
+                fn focus_handle(&self, _: &gpui::App) -> FocusHandle {
+                    self.focus.clone()
+                }
+            }
+
             impl Render for Terminal {
                 fn render(
                     &mut self,

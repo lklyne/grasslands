@@ -1,9 +1,13 @@
 [workspace]
 resolver = "3"
 members = ["crates/*"]
-exclude = ["spikes"]
+exclude = ["spikes", "vendor"]
 
 [workspace.package]
 edition = "2024"
 rust-version = "1.95"
 publish = false
+
+# Per-terminal Ghostty config files; see docs/decisions/0001-ghostty-gpui-kit.md.
+[patch.crates-io]
+gpui-libghostty = { path = "vendor/gpui-libghostty" }

@@ -10,6 +10,8 @@ Vendored from crates.io and applied through `[patch.crates-io]`. See
   new config file without restarting its process.
 - `Terminal::update_theme` on a `File` surface layers the new colors over a
   copy of that file instead of dropping its settings.
+- `impl Focusable for Terminal`, so an app can tell which terminal holds
+  keyboard focus and hand focus between them.
 
 Only `src/terminal.rs` and `src/adapter.rs` change; `vendor/ghostty` and the
 shim are untouched, so the cached native Ghostty build is shared with the

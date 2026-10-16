@@ -12,6 +12,7 @@ mod attention;
 mod chrome;
 mod editor;
 mod herdr;
+mod overlay;
 mod placeholder;
 mod sidebar;
 mod state;
