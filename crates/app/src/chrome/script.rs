@@ -6,15 +6,18 @@
 //! - `run close-pane|close-tab|close-workspace|close-group <id>`: `Chrome::run`
 //! - `palette`, `query <text>`: open the palette, type into it
 //! - `type <text>`: replace the rename dialog's text
-//! - `key down|enter|escape`: dispatch `SelectDown`, `Confirm` or `Cancel` to
-//!   the focused element (the open menu or dialog)
+//! - `key <keystroke>`: one key press (`down`, `enter`, `escape`, `cmd-a`, …)
+//! - `keys <text>`: type `text` one key press at a time
+//!
+//! Key presses go to the window that owns the keyboard: the overlay while a
+//! menu, the palette or a dialog is open there, else the main window
+//! (`overlay::dispatch_keystroke`).
 //! - `log <label>`: print what is open and herdr's panes and agents to stderr
 //!
 //! e.g. `RT_CHROME_SCRIPT='menu pane w1:p1; wait 1500; key escape; log after'`.
 
 use std::time::Duration;
 
-use gpui_kit::base::actions::{Cancel, Confirm, SelectDown};
 use gpui_kit::component::WindowExt as _;
 use gpui_kit::*;
 
@@ -46,27 +49,26 @@ pub(super) fn start(window: &mut Window, cx: &mut Context<Chrome>) {
                     .await;
                 continue;
             }
-            // Keys come from the window, like real input, not from inside the chrome.
-            if let Some(key) = step.strip_prefix("key ") {
-                let action: Box<dyn Action> = match key.trim() {
-                    "down" => Box::new(SelectDown),
-                    "enter" => Box::new(Confirm { secondary: false }),
-                    "escape" => Box::new(Cancel),
-                    other => {
-                        eprintln!("[chrome-script] unknown key {other:?}");
+            // Keys come from the window, like real input, not from inside the
+            // chrome: the overlay when something modal is open there.
+            let keys = match step.split_once(' ') {
+                Some(("key", key)) => Some(Keystroke::parse(key.trim()).map(|k| vec![k])),
+                Some(("keys", text)) => Some(Ok(overlay::keystrokes(text))),
+                _ => None,
+            };
+            if let Some(keys) = keys {
+                let keys = match keys {
+                    Ok(keys) => keys,
+                    Err(error) => {
+                        eprintln!("[chrome-script] {step}: {error}");
                         continue;
                     }
                 };
-                // Menus and dialogs live in the overlay window when there is one.
-                let host = cx.update(|window, cx| {
-                    overlay::get(window, cx).map(|overlay| overlay.read(cx).window_handle())
+                let sent = cx.update(|window, cx| {
+                    for key in keys {
+                        overlay::dispatch_keystroke(key, window, cx);
+                    }
                 });
-                let sent = match host {
-                    Ok(Some(host)) => cx.update_window(host, |_, window, cx| {
-                        window.dispatch_action(action, cx);
-                    }),
-                    _ => cx.update(|window, cx| window.dispatch_action(action, cx)),
-                };
                 if sent.is_err() {
                     return;
                 }

@@ -104,6 +104,70 @@ pub fn track_pointer(position: Point<Pixels>, window: &Window, cx: &mut App) {
     }
 }
 
+/// The window that owns keyboard input for the main window `window` right
+/// now: its overlay while a modal layer, dialog or sheet is open there (that
+/// is the window AppKit makes key), otherwise the main window itself.
+pub fn key_target(window: &Window, cx: &mut App) -> AnyWindowHandle {
+    match get(window, cx) {
+        Some(overlay) if overlay.update(cx, |overlay, cx| overlay.is_modal(cx)) => {
+            overlay.read(cx).window_handle()
+        }
+        _ => window.window_handle(),
+    }
+}
+
+/// Sends `keystroke` to [`key_target`], as AppKit would deliver a key press
+/// to the key window. `window` is the main window. For scripts and tests:
+/// nothing goes through the OS. Returns whether something handled it.
+pub fn dispatch_keystroke(keystroke: Keystroke, window: &mut Window, cx: &mut App) -> bool {
+    let target = key_target(window, cx);
+    if target == window.window_handle() {
+        return window.dispatch_keystroke(keystroke, cx);
+    }
+    cx.update_window(target, |_, window, cx| window.dispatch_keystroke(keystroke, cx))
+        .unwrap_or_else(|error| {
+            tracing::warn!("overlay: key target window gone: {error:#}");
+            false
+        })
+}
+
+/// Dispatches `action` from the focus of [`key_target`]. `window` is the
+/// main window.
+pub fn dispatch_action(action: Box<dyn Action>, window: &mut Window, cx: &mut App) {
+    let target = key_target(window, cx);
+    if target == window.window_handle() {
+        window.dispatch_action(action, cx);
+        return;
+    }
+    if let Err(error) =
+        cx.update_window(target, |_, window, cx| window.dispatch_action(action, cx))
+    {
+        tracing::warn!("overlay: key target window gone: {error:#}");
+    }
+}
+
+/// One key press per character of `text`, as a keyboard sends them (for
+/// scripts typing through [`dispatch_keystroke`]).
+pub fn keystrokes(text: &str) -> Vec<Keystroke> {
+    text.chars()
+        .map(|ch| {
+            let (key, key_char) = match ch {
+                ' ' => ("space".to_owned(), Some(" ".to_owned())),
+                '\n' => ("enter".to_owned(), None),
+                ch => (ch.to_lowercase().to_string(), Some(ch.to_string())),
+            };
+            Keystroke {
+                modifiers: Modifiers {
+                    shift: ch.is_uppercase(),
+                    ..Modifiers::default()
+                },
+                key,
+                key_char,
+            }
+        })
+        .collect()
+}
+
 impl Overlay {
     fn open(parent: &mut Window, cx: &mut App) -> anyhow::Result<Entity<Self>> {
         let parent_ns = ns_window(parent).ok_or_else(|| anyhow::anyhow!("no parent NSWindow"))?;

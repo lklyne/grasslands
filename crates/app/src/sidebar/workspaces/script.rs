@@ -15,7 +15,10 @@
 //! - `repo-worktree <repo name> <branch>`: submit that prompt with `branch`
 //! - `rename <workspace>`: the menu's Rename Workspace… (chrome's prompt)
 //! - `close <workspace>`: the row's × (chrome confirms if agents run)
-//! - `key enter|escape`: `Confirm` / `Cancel` to the focused dialog
+//! - `key <keystroke>`: one key press (`enter`, `escape`, `down`, …) to the
+//!   window that owns the keyboard: the overlay while a prompt or dialog is
+//!   open there (`overlay::dispatch_keystroke`)
+//! - `keys <text>`: type `text`, one key press per character, the same way
 //! - `log <label>`: print the groups, workspaces, branches, agents and focus
 //!   to stderr
 //!
@@ -23,13 +26,13 @@
 
 use std::time::Duration;
 
-use gpui_kit::base::actions::{Cancel, Confirm};
 use gpui_kit::*;
 
 use super::git::Repo;
 use super::{WorkspaceList, close_workspace, rename_workspace};
 use crate::attention::{agent_name, status_label};
 use crate::herdr::WorkspaceInfo;
+use crate::overlay;
 
 pub(super) fn start(window: &mut Window, cx: &mut Context<WorkspaceList>) {
     if !cfg!(debug_assertions) {
@@ -53,7 +56,24 @@ pub(super) fn start(window: &mut Window, cx: &mut Context<WorkspaceList>) {
                     .await;
                 continue;
             }
-            let done = this.update_in(cx, |this, window, cx| run_step(this, &step, window, cx));
+            let keys = match step.split_once(' ') {
+                Some(("key", key)) => Some(Keystroke::parse(key.trim()).map(|k| vec![k])),
+                Some(("keys", text)) => Some(Ok(overlay::keystrokes(text))),
+                _ => None,
+            };
+            // Outside the list's update: a key may land back in it.
+            let done = match keys {
+                Some(Ok(keys)) => cx.update(|window, cx| {
+                    for key in keys {
+                        overlay::dispatch_keystroke(key, window, cx);
+                    }
+                }),
+                Some(Err(error)) => {
+                    eprintln!("[sidebar-script] {step}: {error}");
+                    Ok(())
+                }
+                None => this.update_in(cx, |this, window, cx| run_step(this, &step, window, cx)),
+            };
             if done.is_err() {
                 return;
             }
@@ -94,11 +114,6 @@ fn run_step(
         }
         "rename" => rename_workspace(arg, window, cx),
         "close" => close_workspace(arg, window, cx),
-        "key" => match arg {
-            "enter" => window.dispatch_action(Box::new(Confirm { secondary: false }), cx),
-            "escape" => window.dispatch_action(Box::new(Cancel), cx),
-            other => eprintln!("[sidebar-script] unknown key {other}"),
-        },
         "log" => log(this, arg, cx),
         other => eprintln!("[sidebar-script] unknown step {other}"),
     }

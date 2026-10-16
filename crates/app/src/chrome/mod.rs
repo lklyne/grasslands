@@ -222,6 +222,11 @@ impl Chrome {
         self.open_menu.as_ref().map(|open| open.layer.is_some())
     }
 
+    /// The open (or last opened) palette's state: its query and selection.
+    pub fn palette(&self) -> Option<Entity<CommandState>> {
+        self.palette.as_ref().and_then(WeakEntity::upgrade)
+    }
+
     /// The window floating UI is drawn in right now (for checks and
     /// scripts); `window` is the main window.
     pub fn floating_window(&self, window: &Window, cx: &App) -> AnyWindowHandle {
