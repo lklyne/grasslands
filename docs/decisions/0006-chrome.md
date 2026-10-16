@@ -92,8 +92,10 @@ these callbacks can fire while the chrome is itself being updated.
 
 `RT_CHROME_SCRIPT` runs `;`-separated steps after startup (`menu pane <id>`,
 `run close-pane <id>`, `palette`, `query <text>`, `type <text>`,
-`key down|enter|escape`, `wait <ms>`, `log <label>`); see `chrome/script.rs`.
-Keys are GPUI actions dispatched to the window, not OS input. `log` prints
+`key <keystroke>`, `keys <text>`, `wait <ms>`, `log <label>`); see
+`chrome/script.rs`. Keys are GPUI key presses (`Window::dispatch_keystroke`,
+so bindings, key-down handlers and text input all run), sent to the window
+that owns the keyboard (`overlay::dispatch_keystroke`, 0008), not OS input. `log` prints
 what is open plus herdr's workspaces, tabs, panes and agents, which is what
 the live checks assert on.
 
@@ -127,5 +129,18 @@ Verified with `RT_SCRIPT=chrome` (in `terminal_area/script/chrome.rs`): it
 right-clicks a pane header and a tab with GPUI mouse events, opens the
 terminal area's close confirmation, raises a toast and opens the palette, and
 checks each is in the overlay and that the overlay takes and releases input.
+It drives them with key presses sent where AppKit sends them (the overlay
+while it is modal): Escape closes the menus, the name prompt and the palette;
+Enter confirms the close confirmation and submits the name prompt and the
+rename dialog (herdr gets the typed label); down, down, Enter in a pane menu
+runs Split Right; typing fills the palette's query and down moves its
+selection. After each, the main window is key again and keyboard focus is on
+the terminal that had it (key status checks are skipped while another app is
+frontmost).
+
+A right-click on a pane header or tab no longer moves keyboard focus off the
+terminal (`TerminalArea::context_menu` calls `prevent_default`, which stops
+GPUI's focus-on-mouse-down). Before, the area itself got focus, the menu gave
+focus back to it on close, and typing went nowhere.
 Screenshots of the main window composited with the overlay come from
 `scripts/capture-windows.swift` (ScreenCaptureKit, only this app's windows).

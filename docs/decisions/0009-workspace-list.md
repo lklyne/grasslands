@@ -52,8 +52,6 @@ Grouping, against the dev session with rusted-tools (this worktree's own workspa
 
 ## Known gaps
 
-- The script's `key escape` doesn't reach the name prompt any more: the prompt draws in the overlay window (0008), and `Cancel` goes to the main window.
-
 - herdr 0.9.5 puts worktrees it creates under `~/.herdr/worktrees/<repo>/<branch>` even for a dev session with its own config dir. That folder is shared with the default herdr. Remove test worktrees with `scripts/herdr-dev worktree remove --workspace <id>`.
 - When herdr has no `worktree` info for a workspace, its group and branch follow the focused pane's folder, so it moves to another group if that pane `cd`s into another repo.
 - The panel is fixed at 400px tall by default (drag the split to change it); a long list scrolls.

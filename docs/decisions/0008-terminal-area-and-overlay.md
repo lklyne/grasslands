@@ -124,6 +124,17 @@ overlay.update(cx, |o, cx| o.remove_layer(id, cx));
   the palette get the keyboard. Key status goes back to the main window when
   the last modal piece closes. A menu should close itself on click-outside;
   Kit's `PopupMenu` emits `DismissEvent`.
+- **Keyboard focus.** Each window keeps its own GPUI focus. A menu or dialog
+  focuses itself inside the overlay window, so the main window's focus (the
+  terminal or editor you were typing in) is never moved; when the overlay
+  hands key status back, that view gets the keyboard again (Ghostty views
+  re-sync on window activation). A context menu additionally re-focuses the
+  main-window handle it saw on open.
+- **Scripts and tests send keys with `overlay::dispatch_keystroke` /
+  `dispatch_action`** (and `overlay::keystrokes(text)` for typing). They go
+  to `overlay::key_target`: the overlay while something modal is open there,
+  else the main window, the same window AppKit makes key. Dispatching to the
+  main window while a dialog is open in the overlay reaches nothing.
 - **AppKit setup** (in `overlay/native.rs`):
   - borderless, non-opaque, clear background, no shadow;
   - `addChildWindow:ordered:Above`, so it moves, hides and orders with the main
