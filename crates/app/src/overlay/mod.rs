@@ -111,7 +111,8 @@ impl Overlay {
             window_bounds: Some(WindowBounds::Windowed(parent.bounds())),
             titlebar: None,
             focus: false,
-            show: true,
+            // Shown by `attach_later`, once it is borderless and click-through.
+            show: false,
             kind: WindowKind::PopUp,
             is_movable: false,
             is_resizable: false,
@@ -128,11 +129,9 @@ impl Overlay {
             cx.new(|cx| Root::new(view, window, cx).bg(transparent_black()))
         })?;
         let content = content.ok_or_else(|| anyhow::anyhow!("overlay built no content"))?;
-        window.update(cx, |_, window, _| -> anyhow::Result<()> {
-            let child = ns_window(window).ok_or_else(|| anyhow::anyhow!("no overlay NSWindow"))?;
-            native::attach(&parent_ns, &child);
-            Ok(())
-        })??;
+        let child = cx.update_window(window.into(), |_, window, _| ns_window(window))?;
+        let child = child.ok_or_else(|| anyhow::anyhow!("no overlay NSWindow"))?;
+        Self::attach_later(parent_ns, child, cx);
 
         let parent_handle = parent.window_handle();
         let overlay = cx.new(|cx| {
@@ -248,12 +247,47 @@ impl Overlay {
         let Some(parent_ns) = ns_window(parent) else {
             return;
         };
-        cx.update_window(self.window.into(), |_, window, _| {
-            if let Some(child) = ns_window(window) {
-                native::match_content_frame(&parent_ns, &child);
+        let child = match cx.update_window(self.window.into(), |_, window, _| ns_window(window)) {
+            Ok(Some(child)) => child,
+            Ok(None) => return,
+            Err(error) => {
+                tracing::warn!("overlay: window gone while following the parent: {error:#}");
+                return;
             }
+        };
+        Self::set_frame_later(parent_ns, child, cx);
+    }
+
+    /// Makes the new overlay a borderless, click-through child of the parent,
+    /// sizes it and shows it, from a foreground task. Like resizing, changing
+    /// its style mask resizes its content view, and AppKit calls GPUI's resize
+    /// callback synchronously; inside a GPUI update (the overlay often opens
+    /// lazily, mid-event) that callback finds the app borrowed.
+    fn attach_later(
+        parent: objc2::rc::Retained<objc2_app_kit::NSWindow>,
+        child: objc2::rc::Retained<objc2_app_kit::NSWindow>,
+        cx: &mut App,
+    ) {
+        cx.spawn(async move |_| {
+            native::attach(&parent, &child);
+            native::match_content_frame(&parent, &child);
+            native::show(&child);
         })
-        .ok();
+        .detach();
+    }
+
+    /// Resizes the overlay to the parent's content rect from a foreground
+    /// task, i.e. after the current GPUI update has ended. Doing it inline
+    /// (from `observe_window_bounds`, mid-update) makes AppKit re-enter GPUI's
+    /// resize callback for the overlay while the app is borrowed, and that
+    /// resize is lost.
+    fn set_frame_later(
+        parent: objc2::rc::Retained<objc2_app_kit::NSWindow>,
+        child: objc2::rc::Retained<objc2_app_kit::NSWindow>,
+        cx: &mut App,
+    ) {
+        cx.spawn(async move |_| native::match_content_frame(&parent, &child))
+            .detach();
     }
 
     /// Recomputes whether the overlay takes the mouse and the keyboard.
@@ -273,22 +307,38 @@ impl Overlay {
         let capture = modal || over_content;
         if capture != self.capturing {
             self.capturing = capture;
-            cx.update_window(self.window.into(), |_, window, _| {
+            let result = cx.update_window(self.window.into(), |_, window, _| {
                 if let Some(ns) = ns_window(window) {
                     native::set_ignores_mouse(&ns, !capture);
                 }
-            })
-            .ok();
+            });
+            if let Err(error) = result {
+                tracing::warn!("overlay: could not change mouse capture: {error:#}");
+            }
         }
         if modal && !self.keyed {
             self.keyed = true;
-            cx.update_window(self.window.into(), |_, window, _| window.activate_window())
-                .ok();
+            if let Err(error) =
+                cx.update_window(self.window.into(), |_, window, _| window.activate_window())
+            {
+                tracing::warn!("overlay: could not make the overlay key: {error:#}");
+            }
         } else if !modal && self.keyed {
             self.keyed = false;
-            self.parent
+            if let Err(error) = self
+                .parent
                 .update(cx, |_, window, _| window.activate_window())
-                .ok();
+            {
+                tracing::warn!(
+                    "overlay: could not hand key status back to the main window: {error:#}"
+                );
+            }
+        }
+        if modal && !native::app_is_active() {
+            // Not an error: a window can only be key while the app is active.
+            tracing::debug!(
+                "overlay: modal while the app is in the background; it becomes key when the app is activated"
+            );
         }
     }
 }

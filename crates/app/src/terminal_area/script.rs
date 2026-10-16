@@ -720,6 +720,8 @@ impl Run {
             self.check(key, "main window is key again after the modal layer closed");
         }
 
+        self.overlay_follows_resize(cx, &overlay).await;
+
         self.theme_reload(cx).await?;
         self.server_restart(cx, &workspace.label).await?;
 
@@ -1239,6 +1241,50 @@ impl Run {
         self.check_views(cx, "after server restart");
         self.shoot(cx, "after-restart");
         Ok(())
+    }
+}
+
+impl Run {
+    /// Resizing the main window resizes the overlay with it. (The frame is
+    /// applied after GPUI's update ends; applied inline it was dropped.)
+    async fn overlay_follows_resize(&mut self, cx: &mut Cx, overlay: &Entity<overlay::Overlay>) {
+        let original = cx.update(|window, _| window.bounds().size).ok();
+        let mut ok = true;
+        for size in [size(px(1180.), px(760.)), size(px(1420.), px(900.))] {
+            cx.update(|window, _| window.resize(size)).ok();
+            Self::sleep(cx, 400).await;
+            Self::settle(cx).await;
+            let parent = cx
+                .update(|window, _| {
+                    overlay::ns_window(window).map(|ns| ns.contentRectForFrameRect(ns.frame()))
+                })
+                .ok()
+                .flatten();
+            let child = overlay.update(cx, |overlay, cx| {
+                overlay.update_window(cx, |window, _| {
+                    overlay::ns_window(window).map(|ns| ns.frame())
+                })
+            });
+            let matches = match (parent, child.flatten()) {
+                (Some(p), Some(c)) => {
+                    let near = |a: f64, b: f64| (a - b).abs() < 1.0;
+                    near(p.origin.x, c.origin.x)
+                        && near(p.origin.y, c.origin.y)
+                        && near(p.size.width, c.size.width)
+                        && near(p.size.height, c.size.height)
+                }
+                _ => false,
+            };
+            if !matches {
+                ok = false;
+                eprintln!("     overlay {child:?} vs parent content {parent:?}");
+            }
+        }
+        self.check(ok, "the overlay follows main-window resizes");
+        if let Some(original) = original {
+            cx.update(|window, _| window.resize(original)).ok();
+            Self::sleep(cx, 300).await;
+        }
     }
 }
 

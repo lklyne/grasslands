@@ -270,7 +270,7 @@ impl TerminalArea {
         let overlay = match overlay::get_or_open(window, cx) {
             Ok(overlay) => overlay,
             Err(error) => {
-                log::error!("drag preview: {error:#}");
+                tracing::error!("drag preview: {error:#}");
                 return;
             }
         };
@@ -328,7 +328,7 @@ impl TerminalArea {
         let snapshot = self.snapshot(cx);
         let changes = self.terminals.reconcile(&snapshot, window, cx);
         if !changes.spawned.is_empty() || !changes.dropped.is_empty() {
-            log::info!(
+            tracing::info!(
                 "terminals: spawned {:?}, dropped {:?}, total {}",
                 changes.spawned,
                 changes.dropped,
@@ -480,7 +480,7 @@ impl TerminalArea {
             if answer.await == Ok(0) {
                 let task = cx.update(|cx| state.read(cx).close_pane(&pane_id, cx));
                 if let Err(error) = task.await {
-                    log::error!("close pane {pane_id}: {error}");
+                    tracing::error!("close pane {pane_id}: {error}");
                 }
             }
         })
@@ -528,7 +528,7 @@ impl TerminalArea {
             if answer.await == Ok(0) {
                 let task = cx.update(|cx| state.read(cx).close_tab(&tab_id, cx));
                 if let Err(error) = task.await {
-                    log::error!("close tab {tab_id}: {error}");
+                    tracing::error!("close tab {tab_id}: {error}");
                 }
             }
         })

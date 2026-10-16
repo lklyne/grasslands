@@ -18,9 +18,10 @@ pub fn ns_window(window: &Window) -> Option<Retained<NSWindow>> {
 }
 
 /// Makes `child` a borderless, see-through, click-through window glued above
-/// `parent`'s content area. As a child window it moves, hides and orders with
-/// the parent; its level is reset to the parent's because GPUI opened it as a
-/// pop-up, which would float above every other app.
+/// `parent`. As a child window it moves, hides and orders with the parent; its
+/// level is reset to the parent's because GPUI opened it as a pop-up, which
+/// would float above every other app. Its frame is set separately, with
+/// [`match_content_frame`], outside any GPUI update.
 pub fn attach(parent: &NSWindow, child: &NSWindow) {
     child.setStyleMask(NSWindowStyleMask::Borderless);
     child.setOpaque(false);
@@ -30,12 +31,21 @@ pub fn attach(parent: &NSWindow, child: &NSWindow) {
     // SAFETY: both windows are live and this runs on the main thread.
     unsafe { parent.addChildWindow_ordered(child, NSWindowOrderingMode::Above) };
     child.setLevel(parent.level());
-    match_content_frame(parent, child);
 }
 
+/// Sizes `child` to `parent`'s content rect. AppKit calls GPUI's resize
+/// callback for `child` synchronously from here, and that callback borrows
+/// the app; call this only when no GPUI update is running (see
+/// `Overlay::match_parent_frame`), or the resize is dropped with
+/// "RefCell already borrowed".
 pub fn match_content_frame(parent: &NSWindow, child: &NSWindow) {
     let content = parent.contentRectForFrameRect(parent.frame());
     child.setFrame_display(content, true);
+}
+
+/// Orders the attached overlay in above its parent without making it key.
+pub fn show(child: &NSWindow) {
+    child.orderFront(None);
 }
 
 pub fn set_ignores_mouse(window: &NSWindow, ignores: bool) {

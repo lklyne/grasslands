@@ -305,7 +305,7 @@ impl Terminals {
             let path = match self.write_config(&id, cx) {
                 Ok(path) => path,
                 Err(error) => {
-                    log::error!("ghostty config for {id}: {error:#}");
+                    tracing::error!("ghostty config for {id}: {error:#}");
                     continue;
                 }
             };
@@ -314,7 +314,7 @@ impl Terminals {
                     .terminal
                     .update(cx, |terminal, _| terminal.load_config_file(&path));
                 if let Err(error) = result {
-                    log::error!("reload ghostty config for {id}: {error}");
+                    tracing::error!("reload ghostty config for {id}: {error}");
                 }
             }
         }
