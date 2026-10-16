@@ -670,6 +670,10 @@ impl TerminalArea {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // Keep the keyboard where it was (a terminal): without this the
+        // right-click's mouse-down focuses the terminal area itself, and
+        // that is what the menu gives focus back to when it closes.
+        window.prevent_default();
         window.dispatch_action(Box::new(OpenContextMenu { target, position }), cx);
     }
 
