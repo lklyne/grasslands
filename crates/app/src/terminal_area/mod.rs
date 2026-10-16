@@ -5,7 +5,7 @@
 //! herdr call, then re-renders from the snapshot that follows. The only local
 //! state is a divider's ratio while it is being dragged (sent on release) and
 //! until herdr's layout reflects it. See
-//! docs/decisions/0006-terminal-area-and-overlay.md.
+//! docs/decisions/0008-terminal-area-and-overlay.md.
 
 mod layout;
 pub mod script;

@@ -24,7 +24,7 @@
 //! window. While a `Capture::Modal` layer, a dialog or a sheet is open it takes
 //! every click and becomes the key window, so menus and the palette get the
 //! keyboard; focus goes back to the main window when the last one closes.
-//! See docs/decisions/0006-terminal-area-and-overlay.md.
+//! See docs/decisions/0008-terminal-area-and-overlay.md.
 
 mod native;
 

@@ -12,6 +12,7 @@ Date: 2026-10-15. Status: accepted (app-shell, Part 1).
 | `sidebar::files` | `FileTree` | files agent |
 | `editor` | `Editor` (file tabs + code editor) | app-shell, Part 2 |
 | `terminal_area` | `TerminalArea` (herdr tab bar + split tree of Ghostty views) | ghostty-terminals agent |
+| `overlay` | the transparent overlay window above the terminals (API for chrome) | ghostty-terminals agent |
 | `chrome`, `attention` | `Chrome`: command palette, context menus, toasts, confirmations; `Attention`: status changes and unseen results (see 0006) | chrome agent (ghostty-terminals agent provides the overlay window) |
 | `state` | `AppState`, the shared model | shared, small edits |
 | `herdr` | the only module that names herdr-client types | herdr-client integration |
@@ -86,6 +87,16 @@ in-window rendering to the overlay touches only `chrome/`:
 - `Chrome::toast(message)`, `Chrome::open_command_palette()`.
 
 Details in 0006-chrome.md.
+
+The overlay window itself is `crate::overlay` (ghostty-terminals):
+`overlay::get_or_open(window, cx)` returns the main window's overlay;
+`Overlay::update_window` runs GPUI Kit window UI in it (`push_notification`,
+`open_dialog`, `open_sheet`) and `Overlay::push_layer(view, Capture::Modal |
+Capture::Passive)` / `remove_layer` add floating views in main-window
+coordinates. It is click-through except over what it draws that occludes, and
+takes every click plus the keyboard while a modal layer, dialog or sheet is
+open. Until chrome moves its menu, palette and toasts there, they are hidden
+behind terminals. Details in 0008-terminal-area-and-overlay.md.
 
 ## Notes
 
