@@ -11,7 +11,7 @@ mod mixer;
 mod render;
 
 pub use mixer::{Cues, Error, PlayOptions};
-pub use render::{Request, Stereo, handoff, has_release, render, walk_len};
+pub use render::{Request, Stereo, handoff, has_release, reference_seed, render, walk_len};
 
 /// The rate [`render`] writes at unless asked otherwise.
 pub const SAMPLE_RATE: u32 = 48_000;
