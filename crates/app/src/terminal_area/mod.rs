@@ -1102,6 +1102,7 @@ impl TerminalArea {
                     })),
             )
             .on_drag(dragged, move |dragged, _, window, cx| {
+                crate::workspace::keep_terminals_during_drag(cx);
                 let label = dragged.label.clone();
                 let position = window.mouse_position();
                 area.update(cx, |area, cx| {

@@ -625,7 +625,10 @@ fn render_row(ix: usize, entry: &TreeEntry, this: &WeakEntity<FileTree>, cx: &Ap
                 path: path.clone(),
                 name: item.label.clone(),
             },
-            |dragged, _, _, cx| cx.new(|_| dragged.clone()),
+            |dragged, _, _, cx| {
+                crate::workspace::keep_terminals_during_drag(cx);
+                cx.new(|_| dragged.clone())
+            },
         )
         .drag_over::<DraggedPath>(move |style, _, _, _| style.bg(drop_bg))
         .on_drop({

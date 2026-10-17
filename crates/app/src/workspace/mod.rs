@@ -58,6 +58,19 @@ struct Workspaces(HashMap<WindowId, WeakEntity<Workspace>>);
 
 impl Global for Workspaces {}
 
+/// Set when the active drag can leave the terminals on screen: its drop
+/// targets aren't under them, unlike a dock panel's. Cleared when it ends.
+#[derive(Default)]
+struct KeepTerminalsDuringDrag(bool);
+
+impl Global for KeepTerminalsDuringDrag {}
+
+/// Called from an `on_drag` constructor (file rows, pane headers) so the
+/// terminals don't blank for that drag.
+pub fn keep_terminals_during_drag(cx: &mut App) {
+    cx.set_global(KeepTerminalsDuringDrag(true));
+}
+
 /// The workspace of the main window `window`, if it has one.
 pub fn get(window: &Window, cx: &App) -> Option<Entity<Workspace>> {
     let id = window.window_handle().window_id();
@@ -69,7 +82,8 @@ pub struct Workspace {
     docks: Entity<Docks>,
     main_panel: Entity<MainPanel>,
     /// A panel drag is under way, so the terminals are hidden to show where
-    /// it will land (native views would cover the drop indicator).
+    /// it will land (native views would cover the drop indicator). Drags
+    /// marked with [`keep_terminals_during_drag`] don't count.
     dragging: bool,
     editor: Entity<Editor>,
     terminal_area: Entity<TerminalArea>,
@@ -225,7 +239,14 @@ impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // Every frame renders this view, so a drag starting or ending shows
         // up here. Hiding can't happen mid-render; defer it.
-        let dragging = cx.has_active_drag();
+        let active = cx.has_active_drag();
+        let keep = cx
+            .try_global::<KeepTerminalsDuringDrag>()
+            .is_some_and(|keep| keep.0);
+        if !active && keep {
+            cx.set_global(KeepTerminalsDuringDrag(false));
+        }
+        let dragging = active && !keep;
         if dragging != self.dragging {
             self.dragging = dragging;
             let visible = self.selected == MainTab::Herdr && !dragging;
