@@ -9,7 +9,7 @@ close panes.
 
 - `herdr_client::Endpoint::from_env` returns `Result`. In debug and test
   builds it refuses any socket that is not lexically under
-  `$HOME/.local/share/rusted-tools-herdr` (relative paths and `..` refused),
+  `$HOME/.local/share/grasslands-herdr` (relative paths and `..` refused),
   with `Error::Refused` naming the socket and the fix.
   `Endpoint::start_server` re-checks, so no herdr server is started outside
   that root either. `RT_ALLOW_LIVE_HERDR=1` overrides. Release builds are

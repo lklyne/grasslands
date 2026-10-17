@@ -1,4 +1,4 @@
-# rusted-tools
+# grasslands
 
 A native macOS app for [herdr](https://herdr.dev). herdr keeps running your agents, terminals, worktrees and session restore as a headless server. This app replaces herdr's terminal UI with a real window: workspaces and tabs, a split layout you can drag, a real Ghostty terminal in every pane, a file tree and code editor that follow whichever worktree the focused agent is working in, and an agent list with live status.
 
@@ -52,7 +52,7 @@ delivery = "system"
 scripts/dev-run cargo run -p app
 ```
 
-`scripts/dev-run` sets `HERDR_BIN`, `HERDR_SESSION`, `HERDR_SOCKET_PATH` and `ZIG` for an isolated dev session, then runs the command. The session is named after the checkout's folder (`dev-<dir>`), lives under `~/.local/share/rusted-tools-herdr`, and runs herdr 0.9.5. The app starts that session's server if it isn't running.
+`scripts/dev-run` sets `HERDR_BIN`, `HERDR_SESSION`, `HERDR_SOCKET_PATH` and `ZIG` for an isolated dev session, then runs the command. The session is named after the checkout's folder (`dev-<dir>`), lives under `~/.local/share/grasslands-herdr`, and runs herdr 0.9.5. The app starts that session's server if it isn't running.
 
 Drive the dev session from a terminal with `scripts/herdr-dev`, which is the herdr CLI pointed at the same session:
 
@@ -64,7 +64,7 @@ scripts/herdr-dev pane list
 
 One leak: herdr 0.9.5 creates worktrees under `~/.herdr/worktrees/`, the same folder your default herdr uses, even for a dev session. Remove test worktrees with `scripts/herdr-dev worktree remove --workspace <id>` ([0009](docs/decisions/0009-workspace-list.md)).
 
-Debug builds refuse to talk to any herdr socket outside `~/.local/share/rusted-tools-herdr` ([decision 0007](docs/decisions/0007-dev-herdr-guard.md)). A plain `cargo run -p app` from a shell inside your real herdr would inherit your live `HERDR_SOCKET_PATH`, so it shows "Disconnected" and does nothing instead. `RT_ALLOW_LIVE_HERDR=1` overrides the guard. Don't.
+Debug builds refuse to talk to any herdr socket outside `~/.local/share/grasslands-herdr` ([decision 0007](docs/decisions/0007-dev-herdr-guard.md)). A plain `cargo run -p app` from a shell inside your real herdr would inherit your live `HERDR_SOCKET_PATH`, so it shows "Disconnected" and does nothing instead. `RT_ALLOW_LIVE_HERDR=1` overrides the guard. Don't.
 
 Tests:
 
@@ -84,7 +84,7 @@ Build the app bundle:
 
 ```sh
 scripts/bundle.sh
-open target/bundle/rusted-tools.app
+open target/bundle/grasslands.app
 ```
 
 The bundle is unsigned. If macOS blocks it the first time, right-click it in Finder and choose Open. Its launcher adds `/opt/homebrew/bin`, `/usr/local/bin`, `~/.local/bin` and `~/.cargo/bin` to `PATH`, because apps started from Finder don't get your shell's `PATH` and wouldn't find `herdr`.
@@ -100,10 +100,10 @@ Start it from a terminal that is not itself a herdr pane. Otherwise the app take
 To try a release build against the dev session instead of your real one:
 
 ```sh
-scripts/dev-run target/bundle/rusted-tools.app/Contents/MacOS/rusted-tools
+scripts/dev-run target/bundle/grasslands.app/Contents/MacOS/grasslands
 ```
 
-Per-terminal Ghostty settings (font, size, anything Ghostty accepts) go in `~/.config/rusted-tools/ghostty.conf`. The app layers its theme colors on top.
+Per-terminal Ghostty settings (font, size, anything Ghostty accepts) go in `~/.config/grasslands/ghostty.conf`. The app layers its theme colors on top.
 
 ## Keys
 

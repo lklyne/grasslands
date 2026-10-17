@@ -43,7 +43,7 @@ Always check crates.io for a newer patch before adding a dependency.
 
 ```
 ┌──────────────────────── GPUI app ────────────────────────┐
-│ ● ● ●  rusted-tools (focused space)           (titlebar)  │
+│ ● ● ●  grasslands (focused space)           (titlebar)  │
 ├──────────────────┬────────────────────────────────────────┤
 │ Dock panels      │ Main area                               │
 │ (draggable):     │ [1] [2] [one/mod.rs ●×] [notes.md ×] [+]│

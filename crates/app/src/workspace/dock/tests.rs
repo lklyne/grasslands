@@ -44,7 +44,7 @@ fn home(
 #[gpui::test]
 fn agents_dropped_beside_the_main_area_stay_there_after_a_restart(cx: &mut TestAppContext) {
     cx.update(gpui_kit::init);
-    let file = std::env::temp_dir().join(format!("rusted-tools-dock-{}.json", std::process::id()));
+    let file = std::env::temp_dir().join(format!("grasslands-dock-{}.json", std::process::id()));
     let _ = std::fs::remove_file(&file);
     let state = cx.new(|cx| AppState::new(Ok(offline_config()), cx));
 

@@ -46,11 +46,11 @@ pub fn init(cx: &mut App) {
     ]);
     cx.set_menus(vec![
         Menu {
-            name: "rusted-tools".into(),
+            name: "grasslands".into(),
             items: vec![
                 MenuItem::action("Command Palette", CommandPalette),
                 MenuItem::separator(),
-                MenuItem::action("Quit rusted-tools", Quit),
+                MenuItem::action("Quit grasslands", Quit),
             ],
             disabled: false,
         },

@@ -24,7 +24,7 @@ fn offline() -> herdr::Config {
     herdr::Config {
         bin: "/nonexistent/herdr".into(),
         session: None,
-        socket_path: std::env::temp_dir().join("rusted-tools-chrome-test-no-herdr.sock"),
+        socket_path: std::env::temp_dir().join("grasslands-chrome-test-no-herdr.sock"),
         auto_start: false,
     }
 }

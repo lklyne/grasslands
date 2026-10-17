@@ -308,7 +308,7 @@ fn folding_a_group_hides_its_linked_worktrees_only(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn workspace_in_a_git_folder_shows_its_branch(cx: &mut TestAppContext) {
-    let dir = std::env::temp_dir().join(format!("rusted-tools-ws-branch-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("grasslands-ws-branch-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     git2::Repository::init_opts(

@@ -194,7 +194,7 @@ pub fn layout_path() -> Option<PathBuf> {
     };
     Some(
         PathBuf::from(home)
-            .join("Library/Application Support/rusted-tools")
+            .join("Library/Application Support/grasslands")
             .join(name),
     )
 }

@@ -1,4 +1,4 @@
-//! The rusted-tools desktop app: a GPUI Kit window over a headless herdr.
+//! The grasslands desktop app: a GPUI Kit window over a headless herdr.
 
 // The module seams are filled by parallel work; drop this once they are.
 #![allow(dead_code)]
@@ -30,7 +30,7 @@ use crate::workspace::Workspace;
 fn main() {
     let _log_guard = logging::init();
     tracing::info!(
-        "rusted-tools starting; logs in {}",
+        "grasslands starting; logs in {}",
         logging::log_dir()
             .map_or_else(|| "stderr only".to_owned(), |dir| dir.display().to_string())
     );

@@ -1,5 +1,5 @@
 //! Logging: `tracing` to stderr and to a daily file under
-//! `~/Library/Logs/rusted-tools/`, filtered by `RUST_LOG`.
+//! `~/Library/Logs/grasslands/`, filtered by `RUST_LOG`.
 //!
 //! `log` records (herdr-client, GPUI, `detach_and_log_err`) are bridged in,
 //! so everything lands in the same two places.
@@ -51,7 +51,7 @@ pub fn init() -> Option<WorkerGuard> {
 }
 
 pub fn log_dir() -> Option<PathBuf> {
-    std::env::var_os("HOME").map(|home| PathBuf::from(home).join("Library/Logs/rusted-tools"))
+    std::env::var_os("HOME").map(|home| PathBuf::from(home).join("Library/Logs/grasslands"))
 }
 
 fn file_writer() -> anyhow::Result<(tracing_appender::non_blocking::NonBlocking, WorkerGuard)> {
@@ -59,7 +59,7 @@ fn file_writer() -> anyhow::Result<(tracing_appender::non_blocking::NonBlocking,
     std::fs::create_dir_all(&dir)?;
     let appender = Builder::new()
         .rotation(Rotation::DAILY)
-        .filename_prefix("rusted-tools")
+        .filename_prefix("grasslands")
         .filename_suffix("log")
         .max_log_files(KEEP_FILES)
         .build(&dir)?;

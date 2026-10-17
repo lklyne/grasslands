@@ -98,7 +98,7 @@ pub struct Reconciled {
 impl Terminals {
     pub fn new(launch: Option<Launch>) -> Self {
         let config_dir = std::env::temp_dir()
-            .join(format!("rusted-tools-{}", std::process::id()))
+            .join(format!("grasslands-{}", std::process::id()))
             .join("ghostty");
         Self {
             launch,
@@ -360,11 +360,11 @@ fn sanitize(id: &str) -> String {
         .collect()
 }
 
-/// `~/.config/rusted-tools/ghostty.conf`: Ghostty settings for every terminal
+/// `~/.config/grasslands/ghostty.conf`: Ghostty settings for every terminal
 /// in the app (font, cursor, ...). Not under `XDG_CONFIG_HOME`, which the dev
 /// scripts point at herdr's isolated config.
 pub fn user_config_path() -> Option<PathBuf> {
-    std::env::var_os("HOME").map(|home| Path::new(&home).join(".config/rusted-tools/ghostty.conf"))
+    std::env::var_os("HOME").map(|home| Path::new(&home).join(".config/grasslands/ghostty.conf"))
 }
 
 fn theme_config(cx: &App) -> String {

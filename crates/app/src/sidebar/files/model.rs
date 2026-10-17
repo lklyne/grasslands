@@ -176,7 +176,7 @@ mod tests {
 
     fn temp_dir(name: &str) -> PathBuf {
         let dir =
-            std::env::temp_dir().join(format!("rusted-tools-files-{name}-{}", std::process::id()));
+            std::env::temp_dir().join(format!("grasslands-files-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir.canonicalize().unwrap()
@@ -215,7 +215,7 @@ mod tests {
 
     #[test]
     fn read_dir_should_fail_for_missing_folder() {
-        assert!(read_dir(Path::new("/no/such/rusted-tools-dir")).is_err());
+        assert!(read_dir(Path::new("/no/such/grasslands-dir")).is_err());
     }
 
     fn entry(path: &str, is_dir: bool) -> Entry {

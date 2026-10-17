@@ -30,7 +30,7 @@ pub const ALLOW_LIVE_ENV: &str = "RT_ALLOW_LIVE_HERDR";
 /// Debug and test builds only talk to herdr sessions under `$HOME/` + this.
 /// Agent panes inherit `HERDR_SOCKET_PATH` for the user's live herdr, so a
 /// bare `cargo run`/`cargo test` would otherwise drive it.
-pub const DEV_ROOT: &str = ".local/share/rusted-tools-herdr";
+pub const DEV_ROOT: &str = ".local/share/grasslands-herdr";
 
 /// How to reach (and if needed start) a herdr server.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -52,7 +52,7 @@ impl Endpoint {
     /// `$XDG_CONFIG_HOME/herdr[/sessions/<name>]/herdr.sock`, with
     /// `XDG_CONFIG_HOME` defaulting to `~/.config`.
     ///
-    /// Debug and test builds refuse a socket outside `$HOME/.local/share/rusted-tools-herdr`
+    /// Debug and test builds refuse a socket outside `$HOME/.local/share/grasslands-herdr`
     /// unless `RT_ALLOW_LIVE_HERDR=1` (see [`check_dev_socket`]). Release builds don't.
     pub fn from_env() -> Result<Self> {
         let var = |name: &str| env::var(name).ok().filter(|v| !v.is_empty());
@@ -300,7 +300,7 @@ mod tests {
 
     #[test]
     fn dev_guard_should_accept_socket_under_dev_root() {
-        let socket = "/Users/u/.local/share/rusted-tools-herdr/herdr/sessions/dev-x/herdr.sock";
+        let socket = "/Users/u/.local/share/grasslands-herdr/herdr/sessions/dev-x/herdr.sock";
         assert!(check(socket, false).is_ok());
     }
 
@@ -312,7 +312,7 @@ mod tests {
 
     #[test]
     fn dev_guard_should_refuse_dot_dot_escape() {
-        let socket = "/Users/u/.local/share/rusted-tools-herdr/../../../.config/herdr/herdr.sock";
+        let socket = "/Users/u/.local/share/grasslands-herdr/../../../.config/herdr/herdr.sock";
         assert!(check(socket, false).is_err());
     }
 
@@ -323,13 +323,13 @@ mod tests {
 
     #[test]
     fn dev_guard_should_refuse_lookalike_prefix() {
-        let socket = "/Users/u/.local/share/rusted-tools-herdr-live/herdr.sock";
+        let socket = "/Users/u/.local/share/grasslands-herdr-live/herdr.sock";
         assert!(check(socket, false).is_err());
     }
 
     #[test]
     fn dev_guard_should_refuse_without_home() {
-        let socket = "/Users/u/.local/share/rusted-tools-herdr/herdr.sock";
+        let socket = "/Users/u/.local/share/grasslands-herdr/herdr.sock";
         assert!(check_dev_socket(Path::new(socket), None, false).is_err());
     }
 

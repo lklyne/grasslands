@@ -32,9 +32,9 @@ Background and spike results are in 0001.
 - **When the attach dies** (another client took the terminal over), the view is
   kept and the pane shows "Detached" with a Reattach button. Respawning on its
   own would fight the other client.
-- **One Ghostty config file per terminal**, in `$TMPDIR/rusted-tools-<pid>/ghostty/`.
+- **One Ghostty config file per terminal**, in `$TMPDIR/grasslands-<pid>/ghostty/`.
   Each is built from three parts, in order:
-  1. `~/.config/rusted-tools/ghostty.conf`, if present.
+  1. `~/.config/grasslands/ghostty.conf`, if present.
   2. Colors from the GPUI Kit theme.
   3. Per-terminal overrides (`Terminals::set_overrides`, the hook for status
      shaders later).

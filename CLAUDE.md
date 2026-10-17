@@ -1,4 +1,4 @@
-# rusted-tools
+# grasslands
 
 A native Rust desktop GUI for herdr: GPUI Kit for the UI, gpui-libghostty for terminals, herdr 0.9.5 as the headless engine. Read `docs/spec.md` in full before starting; it is the product spec. The herdr socket API schema is `docs/herdr-api-0.9.5.schema.json`; the docs are at herdr.dev/docs/socket-api and herdr.dev/docs/cli-reference.
 

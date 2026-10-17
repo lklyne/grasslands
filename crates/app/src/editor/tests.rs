@@ -23,8 +23,7 @@ struct Fixture {
 }
 
 fn temp_dir(name: &str) -> PathBuf {
-    let dir =
-        std::env::temp_dir().join(format!("rusted-tools-editor-{name}-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("grasslands-editor-{name}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     dir.canonicalize().unwrap()

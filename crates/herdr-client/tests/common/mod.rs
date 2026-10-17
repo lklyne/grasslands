@@ -25,7 +25,7 @@ pub fn dev_endpoint() -> Option<Endpoint> {
         && endpoint
             .socket_path
             .to_string_lossy()
-            .contains("rusted-tools-herdr");
+            .contains("grasslands-herdr");
     if !isolated {
         eprintln!(
             "skipping: run through scripts/dev-run so herdr points at an isolated dev-* session"

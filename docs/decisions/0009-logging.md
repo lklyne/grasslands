@@ -4,7 +4,7 @@ Date: 2026-10-15. Status: accepted.
 
 - `tracing` + `tracing-subscriber` (`logging.rs`, installed first thing in
   `main`). Two outputs: stderr, and a daily file
-  `~/Library/Logs/rusted-tools/rusted-tools.YYYY-MM-DD.log` (7 kept, no ANSI)
+  `~/Library/Logs/grasslands/grasslands.YYYY-MM-DD.log` (7 kept, no ANSI)
   via `tracing-appender`'s non-blocking writer. Lines carry file and line.
 - `RUST_LOG` filters both; default `warn,app=info,herdr_client=info`.
 - `log` records are bridged in (tracing-subscriber's `tracing-log`), so

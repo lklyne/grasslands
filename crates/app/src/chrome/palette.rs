@@ -141,10 +141,7 @@ fn groups(state: &AppState, plugin_actions: &[PluginActionInfo]) -> Vec<Group> {
         "View: Toggle Light/Dark".into(),
         MenuCommand::Action(Rc::new(ToggleTheme)),
     ));
-    app.push((
-        "Quit rusted-tools".into(),
-        MenuCommand::Action(Rc::new(Quit)),
-    ));
+    app.push(("Quit grasslands".into(), MenuCommand::Action(Rc::new(Quit))));
 
     let agents = snapshot
         .agents

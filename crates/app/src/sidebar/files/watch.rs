@@ -40,8 +40,7 @@ mod tests {
 
     #[test]
     fn watcher_should_report_new_file_in_subfolder() {
-        let dir =
-            std::env::temp_dir().join(format!("rusted-tools-rootwatch-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("grasslands-rootwatch-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("a/b")).unwrap();
         let dir = dir.canonicalize().unwrap();

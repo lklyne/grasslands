@@ -24,10 +24,8 @@ struct Fixture {
 
 /// A git repo with `src/main.rs`, `a.txt`, an ignored `target/` and `.gitignore`.
 fn repo(name: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!(
-        "rusted-tools-filetree-{name}-{}",
-        std::process::id()
-    ));
+    let dir =
+        std::env::temp_dir().join(format!("grasslands-filetree-{name}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(dir.join("src")).unwrap();
     std::fs::create_dir_all(dir.join("target")).unwrap();

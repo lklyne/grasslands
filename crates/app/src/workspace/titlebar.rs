@@ -22,7 +22,7 @@ pub fn window_options() -> WindowOptions {
     let mut options = TitleBar::window_options();
     if let Some(titlebar) = options.titlebar.as_mut() {
         // Shown in the Window menu and Mission Control, not drawn.
-        titlebar.title = Some("rusted-tools".into());
+        titlebar.title = Some("grasslands".into());
     }
     options
 }

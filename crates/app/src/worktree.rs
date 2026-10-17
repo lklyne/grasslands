@@ -19,10 +19,8 @@ mod tests {
     use super::*;
 
     fn temp_dir(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!(
-            "rusted-tools-worktree-{name}-{}",
-            std::process::id()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("grasslands-worktree-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir.canonicalize().unwrap()
@@ -72,6 +70,6 @@ mod tests {
 
     #[test]
     fn resolve_root_should_return_none_for_missing_folder() {
-        assert_eq!(resolve_root(Path::new("/no/such/dir/rusted-tools")), None);
+        assert_eq!(resolve_root(Path::new("/no/such/dir/grasslands")), None);
     }
 }

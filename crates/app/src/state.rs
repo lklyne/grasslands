@@ -479,7 +479,7 @@ pub fn offline_config() -> herdr::Config {
     herdr::Config {
         bin: "/nonexistent/herdr".into(),
         session: None,
-        socket_path: std::env::temp_dir().join("rusted-tools-test-no-herdr.sock"),
+        socket_path: std::env::temp_dir().join("grasslands-test-no-herdr.sock"),
         auto_start: false,
     }
 }
@@ -498,7 +498,7 @@ mod tests {
     #[gpui::test]
     fn following_a_folder_inside_a_repo_roots_at_the_repo(cx: &mut TestAppContext) {
         let repo =
-            std::env::temp_dir().join(format!("rusted-tools-state-follow-{}", std::process::id()));
+            std::env::temp_dir().join(format!("grasslands-state-follow-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&repo);
         std::fs::create_dir_all(repo.join("src")).unwrap();
         git2::Repository::init(&repo).unwrap();
