@@ -797,11 +797,11 @@ impl TerminalArea {
             .map(|w| w.tabs.iter().map(|tab| tab.info.clone()).collect())
             .unwrap_or_default();
         let active_id = active.map(|tab| tab.info.tab_id.clone());
-        // The strip wears the panel headers' background, so the selected tab
-        // is marked by an accent line rather than a fill.
-        let (strip_bg, accent, muted, border, drop) = (
+        // The strip wears the panel headers' background; the selected tab
+        // takes a neutral fill.
+        let (strip_bg, active_bg, muted, border, drop) = (
             theme.background,
-            theme.primary,
+            theme.secondary,
             theme.muted_foreground,
             theme.border,
             theme.drop_target,
@@ -839,7 +839,7 @@ impl TerminalArea {
                     .border_color(border)
                     .map(|el| {
                         if is_active {
-                            el.child(active_tab_line(accent))
+                            el.bg(active_bg)
                         } else {
                             el.text_color(muted)
                         }
@@ -1292,18 +1292,6 @@ fn pane_label(pane: &PaneInfo) -> String {
             Some(dir.file_name()?.to_string_lossy().into_owned())
         })
         .unwrap_or_else(|| "Terminal".to_owned())
-}
-
-/// The selected tab's marker in the titlebar strip: a line along its bottom
-/// edge, over the strip's border. The tab must be `relative`.
-pub fn active_tab_line(accent: Hsla) -> impl IntoElement {
-    div()
-        .absolute()
-        .left_0()
-        .right_0()
-        .bottom_0()
-        .h(px(2.))
-        .bg(accent)
 }
 
 fn status_dot(status: AgentStatus, cx: &App) -> impl IntoElement {
