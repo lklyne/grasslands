@@ -137,15 +137,7 @@ pub fn init(cx: &mut App) {
         }
     }
     let defaults = ThemeSettings::defaults(cx);
-    let settings = match settings_path().map(|path| read_json(&path)) {
-        Some(Ok(json)) => ThemeSettings::from_json(&json, defaults),
-        Some(Err(error)) => {
-            tracing::warn!("settings: {error:#}");
-            defaults
-        }
-        None => defaults,
-    };
-    cx.set_global(settings);
+    cx.set_global(ThemeSettings::from_json(&read_settings_file(), defaults));
 
     cx.on_action(|_: &ToggleTheme, cx| {
         let appearance = if cx.theme().is_dark() {
@@ -221,9 +213,27 @@ fn read_json(path: &Path) -> anyhow::Result<Map<String, Value>> {
 }
 
 /// Writes the theme keys into the settings file, keeping any other keys.
-/// Script runs toggle the theme to check terminals follow; they must not
-/// change the user's saved choice.
 fn save(settings: &ThemeSettings) {
+    write_settings_file(|json| settings.write_json(json));
+}
+
+/// The settings file's object, for modules that keep their own keys in it.
+/// Empty when there is no file or it can't be read (logged).
+pub fn read_settings_file() -> Map<String, Value> {
+    match settings_path().map(|path| read_json(&path)) {
+        Some(Ok(json)) => json,
+        Some(Err(error)) => {
+            tracing::warn!("settings: {error:#}");
+            Map::new()
+        }
+        None => Map::new(),
+    }
+}
+
+/// Lets `write` set its keys in the settings file, keeping any other keys.
+/// Script runs toggle settings to check the app follows; they must not
+/// change the user's saved choices.
+pub fn write_settings_file(write: impl FnOnce(&mut Map<String, Value>)) {
     if std::env::var_os("RT_SCRIPT").is_some() {
         return;
     }
@@ -232,7 +242,7 @@ fn save(settings: &ThemeSettings) {
     };
     let result = (|| -> anyhow::Result<()> {
         let mut json = read_json(&path)?;
-        settings.write_json(&mut json);
+        write(&mut json);
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir)?;
         }

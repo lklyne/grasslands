@@ -215,6 +215,7 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "async-channel",
+ "cues",
  "git2",
  "gpui-kit",
  "gpui-libghostty",
