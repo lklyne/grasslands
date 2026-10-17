@@ -1,9 +1,76 @@
 ---
 import Base from '../layouts/Base.astro'
+import { GITHUB_URL, HERDR_URL, HERDR_VERSION, INSTALL_COMMAND, LICENSE_URL } from '../lib/site'
 ---
 
 <Base>
   <main>
     <h1>grasslands</h1>
+    <p class="lede">
+      A native macOS app for <a href={HERDR_URL}>herdr</a>. It gives your agents a real window:
+      workspaces, tabs and splits, a Ghostty terminal in every pane, a file tree and editor that
+      follow the focused agent's worktree, and live agent status.
+    </p>
+    <p class="muted">
+      herdr keeps running the agents, terminals and sessions as a headless server. grasslands
+      replaces its terminal UI and talks to it over the socket API.
+    </p>
+
+    <h2>Install</h2>
+    <div class="install">
+      <pre id="install-command">{INSTALL_COMMAND}</pre>
+      <button type="button" data-copy="install-command" hidden>Copy</button>
+    </div>
+    <p class="muted">Needs macOS and herdr {HERDR_VERSION}.</p>
+
+    <h2>What it does</h2>
+    <ul>
+      <li>
+        Mirrors herdr's workspaces, tabs and split layouts both ways. Splitting, closing, moving
+        panes and dragging dividers all go through herdr.
+      </li>
+      <li>Runs a real Ghostty terminal for each herdr pane.</li>
+      <li>
+        Follows the focused pane to its git worktree, even after an agent runs <code>cd</code>. The file
+        tree re-roots there, respects <code>.gitignore</code> and updates as agents write files.
+      </li>
+      <li>
+        Opens files in a tabbed editor. Files an agent changes on disk reload, and it asks first if
+        you have unsaved edits.
+      </li>
+      <li>
+        Lists every workspace in the sidebar with its agents, blocked ones first. Create, rename and
+        close workspaces and worktrees from there.
+      </li>
+      <li>A command palette for app commands and herdr plugin actions.</li>
+    </ul>
+
+    <h2>Status</h2>
+    <p>
+      Alpha. This is v0. It sends real commands to herdr, so closing a pane kills its process. It
+      asks first when an agent is working. Expect rough edges. The <a
+        href={`${GITHUB_URL}#known-gaps`}>known gaps</a
+      > are listed in the README.
+    </p>
+
+    <h2>Links</h2>
+    <ul class="links">
+      <li><a href={GITHUB_URL}>GitHub</a></li>
+      <li><a href={HERDR_URL}>herdr.dev</a></li>
+      <li><a href={LICENSE_URL}>MIT license</a></li>
+    </ul>
   </main>
+
+  <script>
+    for (const button of document.querySelectorAll<HTMLButtonElement>('[data-copy]')) {
+      const source = document.getElementById(button.dataset.copy ?? '')
+      if (!source || !navigator.clipboard) continue
+      button.hidden = false
+      button.addEventListener('click', async () => {
+        await navigator.clipboard.writeText(source.textContent ?? '')
+        button.textContent = 'Copied'
+        setTimeout(() => (button.textContent = 'Copy'), 1500)
+      })
+    }
+  </script>
 </Base>
