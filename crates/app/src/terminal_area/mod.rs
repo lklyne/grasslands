@@ -928,7 +928,9 @@ impl TerminalArea {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         match node {
-            SplitTree::Pane(pane_id) => self.render_pane(pane_id, frame, cx),
+            // A pane alone in its tab (or zoomed) needs no header: the tab
+            // already shows its status, label and close button.
+            SplitTree::Pane(pane_id) => self.render_pane(pane_id, !path.is_empty(), frame, cx),
             SplitTree::Split {
                 direction,
                 ratio,
@@ -1037,7 +1039,13 @@ impl TerminalArea {
             .into_any_element()
     }
 
-    fn render_pane(&self, pane_id: &str, frame: &mut Frame, cx: &mut Context<Self>) -> AnyElement {
+    fn render_pane(
+        &self,
+        pane_id: &str,
+        with_header: bool,
+        frame: &mut Frame,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let snapshot = &frame.snapshot;
         let theme = cx.theme();
         let Some(pane) = snapshot.pane(pane_id) else {
@@ -1208,7 +1216,7 @@ impl TerminalArea {
             .size_full()
             .min_w_0()
             .min_h_0()
-            .child(header)
+            .when(with_header, |el| el.child(header))
             .child(body)
             .into_any_element()
     }
