@@ -9,12 +9,11 @@ use std::cmp::Reverse;
 
 use gpui_kit::component::button::Button;
 use gpui_kit::component::dock::{BasePanel, Panel, PanelControl, PanelEvent};
-use gpui_kit::component::tag::Tag;
-use gpui_kit::component::{ActiveTheme as _, Sizable as _, StyledExt as _, h_flex, v_flex};
+use gpui_kit::component::{ActiveTheme as _, StyledExt as _, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
-use super::{AgentSort, LINE, dim_text, glyph, priority, status_color, text};
+use super::{AgentSort, LINE, dim_text, priority, status_icon, text};
 use crate::actions::OpenContextMenu;
 use crate::chrome::MenuTarget;
 use crate::herdr::{Agent, AgentStatus, Snapshot};
@@ -147,7 +146,7 @@ impl AgentList {
                     .h(LINE)
                     .pr_1()
                     .child(text(" "))
-                    .child(text(glyph(status)).text_color(status_color(status, cx)))
+                    .child(status_icon(status, cx))
                     .child(text(" "))
                     .child(
                         div()
@@ -161,16 +160,7 @@ impl AgentList {
                                 dim_text(cx)
                             })
                             .child(place),
-                    )
-                    .map(|this| match status {
-                        AgentStatus::Blocked => {
-                            this.child(Tag::danger().outline().xsmall().text_xs().child("blocked"))
-                        }
-                        AgentStatus::Done => {
-                            this.child(Tag::info().outline().xsmall().text_xs().child("done"))
-                        }
-                        _ => this,
-                    }),
+                    ),
             )
             .child(
                 h_flex().h(LINE).pr_1().child(text("   ")).child(

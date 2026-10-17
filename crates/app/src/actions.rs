@@ -10,7 +10,18 @@ use gpui_kit::*;
 
 use crate::chrome::MenuTarget;
 
-actions!(app, [Quit, ToggleTheme, CommandPalette]);
+actions!(
+    app,
+    [
+        Quit,
+        ToggleTheme,
+        CommandPalette,
+        OpenSettings,
+        /// Show the active worktree's diff in the Changes tab. Sent by the
+        /// file tree's git footer.
+        OpenChanges
+    ]
+);
 
 /// Open a file in the editor. Sent by the file tree, the command palette, and
 /// anything else that wants a file on screen.
@@ -18,6 +29,14 @@ actions!(app, [Quit, ToggleTheme, CommandPalette]);
 #[action(namespace = app, no_json)]
 pub struct OpenFile {
     pub path: PathBuf,
+}
+
+/// Open a file with the cursor on `line` (0-based). Sent by the file search.
+#[derive(Clone, Debug, PartialEq, Action)]
+#[action(namespace = app, no_json)]
+pub struct OpenFileAt {
+    pub path: PathBuf,
+    pub line: u32,
 }
 
 /// Focus a herdr pane: the app sends `pane.focus` and herdr's `pane.focused`
@@ -42,12 +61,14 @@ pub fn init(cx: &mut App) {
     cx.on_action(|_: &Quit, cx| cx.quit());
     cx.bind_keys([
         KeyBinding::new("cmd-q", Quit, None),
-        KeyBinding::new("cmd-shift-p", CommandPalette, None),
+        KeyBinding::new("cmd-k", CommandPalette, None),
+        KeyBinding::new("cmd-,", OpenSettings, None),
     ]);
     cx.set_menus(vec![
         Menu {
             name: "grasslands".into(),
             items: vec![
+                MenuItem::action("Settings…", OpenSettings),
                 MenuItem::action("Command Palette", CommandPalette),
                 MenuItem::separator(),
                 MenuItem::action("Quit grasslands", Quit),

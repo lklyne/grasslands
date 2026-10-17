@@ -6,7 +6,7 @@ Load the `rust-best-practices` skill before writing Rust.
 
 ## Never touch the user's live herdr
 
-The user runs many real agents on the default herdr session (0.7.4, `~/.config/herdr/herdr.sock`). Your shell inherits `HERDR_SOCKET_PATH` pointing at it. The app takes over terminals and closes panes, so pointing it at the live session would wreck real work.
+The user runs many real agents on the default herdr session (`~/.config/herdr/herdr.sock`). Your shell inherits `HERDR_SOCKET_PATH` pointing at it. The app takes over terminals and closes panes, so pointing it at the live session would wreck real work.
 
 - Run every herdr command as `scripts/herdr-dev <args>` (herdr 0.9.5, isolated per-checkout `dev-<worktree dir>` session, own config dir). Never run bare `herdr` for testing the app.
 - Run the app, its tests and examples through `scripts/dev-run <command>`, e.g. `scripts/dev-run cargo run -p app`. It sets `HERDR_BIN`, `HERDR_SESSION`, `HERDR_SOCKET_PATH` and `ZIG` for the dev session.

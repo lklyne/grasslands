@@ -13,7 +13,9 @@ mod terminals;
 
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
 use std::rc::Rc;
+use std::slice;
 use std::time::{Duration, Instant};
 
 use gpui_kit::component::{ActiveTheme as _, h_flex, v_flex};
@@ -27,6 +29,7 @@ use crate::herdr::{
     SplitDirection, SplitTree, Tab,
 };
 use crate::overlay;
+use crate::sidebar::files::DraggedPath;
 use crate::state::{AppEvent, AppState};
 
 use self::terminals::{Launch, Terminals};
@@ -196,6 +199,12 @@ pub struct TerminalArea {
     /// False while the window shows something else in its place (a file
     /// tab); every native view is hidden then.
     visible: bool,
+    /// The tab on screen at the last sync, to notice tab switches.
+    shown_tab: Option<String>,
+    /// A tab the user picked from the tab bar: its pane takes keyboard focus
+    /// once herdr shows it. The bar is outside the area, so a click there
+    /// takes focus out of it.
+    focus_on_show: Option<String>,
     _subscriptions: Vec<Subscription>,
     _liveness: Task<()>,
 }
@@ -227,6 +236,8 @@ impl TerminalArea {
             attached: HashSet::new(),
             right_click_set: HashSet::new(),
             visible: true,
+            shown_tab: None,
+            focus_on_show: None,
             _subscriptions: subscriptions,
             _liveness: Self::watch_liveness(cx),
         };
@@ -370,6 +381,24 @@ impl TerminalArea {
             let caught_up = herdr_ratio.is_none_or(|ratio| (ratio - local.ratio).abs() < 0.005);
             !caught_up && local.since.elapsed() < OVERRIDE_TIMEOUT
         });
+
+        // A tab switch hides the terminal holding keyboard focus; the focus
+        // moves to the new tab's pane, unless it is elsewhere (the editor).
+        let shown_tab = Self::active_tab(&snapshot).map(|tab| tab.info.tab_id.clone());
+        let picked = shown_tab.is_some() && self.focus_on_show == shown_tab;
+        if picked {
+            self.focus_on_show = None;
+        }
+        if shown_tab != self.shown_tab || picked {
+            let follow = picked || self.owns_keyboard_focus(window, cx);
+            self.shown_tab = shown_tab;
+            if self.visible
+                && follow
+                && let Some(pane_id) = self.target_pane(cx)
+            {
+                self.focus_terminal(&pane_id, window, cx);
+            }
+        }
         cx.notify();
     }
 
@@ -561,6 +590,22 @@ impl TerminalArea {
             }
         })
         .detach();
+    }
+
+    /// Shows `tab_id` and gives its pane keyboard focus, now if it is
+    /// already on screen, else when herdr's snapshot shows it.
+    fn pick_tab(&mut self, tab_id: &str, window: &mut Window, cx: &mut Context<Self>) {
+        if self.shown_tab.as_deref() == Some(tab_id) {
+            if let Some(pane_id) = self.target_pane(cx) {
+                self.focus_terminal(&pane_id, window, cx);
+            }
+            return;
+        }
+        self.focus_on_show = Some(tab_id.to_owned());
+        self.state
+            .read(cx)
+            .focus_tab(tab_id, cx)
+            .detach_and_log_err(cx);
     }
 
     fn cycle_tab(&mut self, step: isize, cx: &mut Context<Self>) {
@@ -755,9 +800,11 @@ impl TerminalArea {
             .map(|w| w.tabs.iter().map(|tab| tab.info.clone()).collect())
             .unwrap_or_default();
         let active_id = active.map(|tab| tab.info.tab_id.clone());
-        let (tab_bar, active_bg, muted, border, drop) = (
-            theme.tab_bar,
-            theme.tab_active,
+        // The strip wears the panel headers' background; the selected tab
+        // takes a neutral fill.
+        let (strip_bg, active_bg, muted, border, drop) = (
+            theme.background,
+            theme.secondary,
             theme.muted_foreground,
             theme.border,
             theme.drop_target,
@@ -768,7 +815,7 @@ impl TerminalArea {
             // the strip's bottom line meets theirs.
             .h(px(31.))
             .flex_shrink_0()
-            .bg(tab_bar)
+            .bg(strip_bg)
             .border_b_1()
             .border_color(border)
             .text_sm()
@@ -793,7 +840,13 @@ impl TerminalArea {
                     .items_center()
                     .border_r_1()
                     .border_color(border)
-                    .when(is_active, |tab| tab.bg(active_bg))
+                    .map(|el| {
+                        if is_active {
+                            el.bg(active_bg)
+                        } else {
+                            el.text_color(muted)
+                        }
+                    })
                     .child(status_dot(tab.agent_status, cx))
                     .child(if tab.label.is_empty() {
                         tab.number.to_string()
@@ -814,10 +867,7 @@ impl TerminalArea {
                     )
                     .on_click(cx.listener(move |this, _, window, cx| {
                         window.dispatch_action(Box::new(crate::workspace::ShowHerdr), cx);
-                        this.state
-                            .read(cx)
-                            .focus_tab(&focus_id, cx)
-                            .detach_and_log_err(cx);
+                        this.pick_tab(&focus_id, window, cx);
                     }))
                     .on_mouse_down(
                         MouseButton::Right,
@@ -889,7 +939,9 @@ impl TerminalArea {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         match node {
-            SplitTree::Pane(pane_id) => self.render_pane(pane_id, frame, cx),
+            // A pane alone in its tab (or zoomed) needs no header: the tab
+            // already shows its status, label and close button.
+            SplitTree::Pane(pane_id) => self.render_pane(pane_id, !path.is_empty(), frame, cx),
             SplitTree::Split {
                 direction,
                 ratio,
@@ -998,7 +1050,13 @@ impl TerminalArea {
             .into_any_element()
     }
 
-    fn render_pane(&self, pane_id: &str, frame: &mut Frame, cx: &mut Context<Self>) -> AnyElement {
+    fn render_pane(
+        &self,
+        pane_id: &str,
+        with_header: bool,
+        frame: &mut Frame,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let snapshot = &frame.snapshot;
         let theme = cx.theme();
         let Some(pane) = snapshot.pane(pane_id) else {
@@ -1067,6 +1125,7 @@ impl TerminalArea {
             pane_id.to_owned(),
             pane_id.to_owned(),
         );
+        let (paste_pane, paste_file_pane) = (pane_id.to_owned(), pane_id.to_owned());
         let drawn = self.drawn.clone();
         let bounds_pane = pane_id.to_owned();
         let area = cx.entity().downgrade();
@@ -1102,6 +1161,7 @@ impl TerminalArea {
                     })),
             )
             .on_drag(dragged, move |dragged, _, window, cx| {
+                crate::workspace::keep_terminals_during_drag(cx);
                 let label = dragged.label.clone();
                 let position = window.mouse_position();
                 area.update(cx, |area, cx| {
@@ -1151,6 +1211,13 @@ impl TerminalArea {
             .on_drop(cx.listener(move |this, dragged: &DraggedPane, _, cx| {
                 this.swap(&dragged.pane_id, &drop_body, cx);
             }))
+            .drag_over::<ExternalPaths>(move |style, _, _, _| style.bg(drop))
+            .on_drop(cx.listener(move |this, paths: &ExternalPaths, window, cx| {
+                this.paste_paths(&paste_pane, paths.paths(), window, cx);
+            }))
+            .on_drop(cx.listener(move |this, dragged: &DraggedPath, window, cx| {
+                this.paste_paths(&paste_file_pane, slice::from_ref(&dragged.path), window, cx);
+            }))
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |this, _: &MouseDownEvent, _, cx| {
@@ -1168,9 +1235,42 @@ impl TerminalArea {
             .size_full()
             .min_w_0()
             .min_h_0()
-            .child(header)
+            .when(with_header, |el| el.child(header))
             .child(body)
             .into_any_element()
+    }
+
+    /// Types dropped files' paths into the pane's terminal as one paste,
+    /// shell-escaped and space-separated like Ghostty does, then focuses it.
+    fn paste_paths(
+        &mut self,
+        pane_id: &str,
+        paths: &[PathBuf],
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let snapshot = self.snapshot(cx);
+        let Some(pane) = snapshot.pane(pane_id) else {
+            return;
+        };
+        let Some(view) = self.terminals.get(&pane.terminal_id) else {
+            return;
+        };
+        let text = paths
+            .iter()
+            .map(|path| shell_escape(&path.to_string_lossy()))
+            .collect::<Vec<_>>()
+            .join(" ");
+        view.terminal.update(cx, |terminal, cx| {
+            terminal.paste_text(&text);
+            terminal.focus(window, cx);
+        });
+        if snapshot.focused_pane_id.as_deref() != Some(pane_id) {
+            self.state
+                .read(cx)
+                .focus_pane(pane_id, cx)
+                .detach_and_log_err(cx);
+        }
     }
 
     fn swap(&mut self, source: &str, target: &str, cx: &mut Context<Self>) {
@@ -1406,8 +1506,37 @@ impl Render for TerminalArea {
     }
 }
 
+/// Backslash-escapes the characters a shell would split or expand, matching
+/// what Ghostty and Terminal.app paste for a dropped file.
+fn shell_escape(path: &str) -> String {
+    const SPECIAL: &str = "\\ ()[]{}<>\"'`!#$&;|*?\t";
+    let mut escaped = String::with_capacity(path.len());
+    for c in path.chars() {
+        if SPECIAL.contains(c) {
+            escaped.push('\\');
+        }
+        escaped.push(c);
+    }
+    escaped
+}
+
 impl Focusable for TerminalArea {
     fn focus_handle(&self, _: &App) -> FocusHandle {
         self.focus.clone()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::shell_escape;
+
+    #[test]
+    fn shell_escape_backslashes_shell_specials() {
+        assert_eq!(shell_escape("/tmp/plain.png"), "/tmp/plain.png");
+        assert_eq!(
+            shell_escape("/Users/me/Screenshot 2026-10-17 at 9.41 (2).png"),
+            r"/Users/me/Screenshot\ 2026-10-17\ at\ 9.41\ \(2\).png"
+        );
+        assert_eq!(shell_escape("it's$x"), r"it\'s\$x");
     }
 }

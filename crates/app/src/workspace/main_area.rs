@@ -1,8 +1,9 @@
 //! The main area: one tab strip (herdr's tabs for the focused space, then
-//! the open files, then +) over the terminals or the editor.
+//! the open files, then Changes, then +) over the terminals, the editor or
+//! the diff.
 
 use gpui_kit::component::button::{Button, ButtonVariants as _};
-use gpui_kit::component::{ActiveTheme as _, IconName, Sizable as _, h_flex, v_flex};
+use gpui_kit::component::{ActiveTheme as _, Icon, IconName, Sizable as _, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
@@ -46,14 +47,16 @@ impl Workspace {
             drawn.closes.clear();
         }
         let herdr = self.selected == MainTab::Herdr;
-        let files = self.render_file_tabs(cx);
+        let mut files = self.render_file_tabs(cx);
+        files.extend(self.render_changes_tab(cx));
         let drawn = self.drawn_tabs.clone();
         let strip = self
             .terminal_area
             .update(cx, |area, cx| area.render_tab_bar(herdr, files, cx));
-        let body: AnyView = match self.selected {
-            MainTab::Herdr => self.terminal_area.clone().into(),
-            MainTab::Files => self.editor.clone().into(),
+        let body: AnyView = match (self.selected, &self.changes) {
+            (MainTab::Changes, Some(changes)) => changes.clone().into(),
+            (MainTab::Files, _) => self.editor.clone().into(),
+            _ => self.terminal_area.clone().into(),
         };
         v_flex()
             .size_full()
@@ -82,64 +85,93 @@ impl Workspace {
 
     /// The editor's open files as strip tabs; clicking one shows it.
     fn render_file_tabs(&self, cx: &mut Context<Self>) -> Vec<AnyElement> {
-        let selected = self.selected_index(cx);
-        let theme = cx.theme();
-        let (active_bg, muted, border) = (theme.tab_active, theme.muted_foreground, theme.border);
-        let warning = theme.warning;
+        let warning = cx.theme().warning;
         self.editor
             .read(cx)
             .tabs()
             .into_iter()
             .enumerate()
             .map(|(file, tab)| {
-                let index = file + 1;
-                let (tabs, closes) = (self.drawn_tabs.clone(), self.drawn_tabs.clone());
-                h_flex()
-                    .id(("file-tab", index))
-                    .relative()
-                    .child(record(move |bounds| tabs.borrow_mut().tabs.push(bounds)))
-                    .h_full()
-                    .pl_3()
-                    .pr_1()
-                    .gap_1()
-                    .items_center()
-                    .border_r_1()
-                    .border_color(border)
-                    .map(|this| {
-                        if selected == index {
-                            this.bg(active_bg)
-                        } else {
-                            this.text_color(muted)
-                        }
-                    })
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        this.select_index(index, window, cx);
-                    }))
-                    .child(tab.title)
-                    .when(tab.dirty, |this| {
-                        this.child(div().text_color(warning).child("●"))
-                    })
-                    .child(
-                        div()
-                            .relative()
-                            .child(
-                                Button::new(("close-file-tab", index))
-                                    .ghost()
-                                    .xsmall()
-                                    .icon(IconName::Close)
-                                    .on_click(cx.listener(move |this, _, window, cx| {
-                                        cx.stop_propagation();
-                                        this.editor.update(cx, |editor, cx| {
-                                            editor.request_close(file, window, cx)
-                                        });
-                                    })),
-                            )
-                            .child(record(move |bounds| {
-                                closes.borrow_mut().closes.push((index, bounds))
-                            })),
-                    )
-                    .into_any_element()
+                let label = h_flex().gap_1().child(tab.title).when(tab.dirty, |this| {
+                    this.child(div().text_color(warning).child("●"))
+                });
+                self.render_tab(file + 1, label, cx, move |this, window, cx| {
+                    this.editor
+                        .update(cx, |editor, cx| editor.request_close(file, window, cx));
+                })
             })
             .collect()
+    }
+
+    /// The Changes tab, while it is open.
+    fn render_changes_tab(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let index = self.changes_index(cx)?;
+        let muted = cx.theme().muted_foreground;
+        let label = h_flex()
+            .gap_1()
+            .child(
+                Icon::new(assets::IconName::GitCompare)
+                    .xsmall()
+                    .text_color(muted),
+            )
+            .child("Changes");
+        Some(self.render_tab(index, label, cx, |this, window, cx| {
+            this.close_changes(window, cx)
+        }))
+    }
+
+    /// One strip tab at titlebar `index`: clicking shows it, its close
+    /// button runs `close`.
+    fn render_tab(
+        &self,
+        index: usize,
+        label: impl IntoElement,
+        cx: &mut Context<Self>,
+        close: impl Fn(&mut Self, &mut Window, &mut Context<Self>) + 'static,
+    ) -> AnyElement {
+        let selected = self.selected_index(cx) == index;
+        let theme = cx.theme();
+        let (active_bg, muted, border) = (theme.secondary, theme.muted_foreground, theme.border);
+        let (tabs, closes) = (self.drawn_tabs.clone(), self.drawn_tabs.clone());
+        h_flex()
+            .id(("file-tab", index))
+            .relative()
+            .child(record(move |bounds| tabs.borrow_mut().tabs.push(bounds)))
+            .h_full()
+            .pl_3()
+            .pr_1()
+            .gap_1()
+            .items_center()
+            .border_r_1()
+            .border_color(border)
+            .map(|this| {
+                if selected {
+                    this.bg(active_bg)
+                } else {
+                    this.text_color(muted)
+                }
+            })
+            .on_click(cx.listener(move |this, _, window, cx| {
+                this.select_index(index, window, cx);
+            }))
+            .child(label)
+            .child(
+                div()
+                    .relative()
+                    .child(
+                        Button::new(("close-file-tab", index))
+                            .ghost()
+                            .xsmall()
+                            .icon(IconName::Close)
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                cx.stop_propagation();
+                                close(this, window, cx);
+                            })),
+                    )
+                    .child(record(move |bounds| {
+                        closes.borrow_mut().closes.push((index, bounds))
+                    })),
+            )
+            .into_any_element()
     }
 }

@@ -25,6 +25,7 @@ use gpui_kit::*;
 use serde_json::json;
 
 mod chrome;
+mod settings;
 mod titlebar;
 
 use super::{ClosePane, NewTab, SplitDown, SplitRight, TerminalArea};
@@ -36,7 +37,7 @@ pub fn requested() -> Option<String> {
 }
 
 pub fn start(scenario: String, area: Entity<TerminalArea>, window: &mut Window, cx: &mut App) {
-    if !["terminals", "chrome", "titlebar"].contains(&scenario.as_str()) {
+    if !["terminals", "chrome", "titlebar", "settings"].contains(&scenario.as_str()) {
         eprintln!("script: unknown scenario {scenario:?}");
         return;
     }
@@ -50,6 +51,7 @@ pub fn start(scenario: String, area: Entity<TerminalArea>, window: &mut Window, 
             let result = match scenario.as_str() {
                 "chrome" => run.chrome(cx).await,
                 "titlebar" => run.titlebar(cx).await,
+                "settings" => run.settings(cx).await,
                 _ => run.terminals(cx).await,
             };
             if let Err(error) = result {
@@ -379,6 +381,38 @@ impl Run {
             "keys typed in the app reach the pane (herdr reads typed-42)",
         );
 
+        // A file dropped from Finder pastes its shell-escaped path.
+        self.type_text(cx, "echo dropped:");
+        let center = self.read(cx, |area, _| {
+            area.drawn.borrow().panes.get(&first).map(|b| b.center())
+        })?;
+        if let Some(position) = center {
+            let paths = ExternalPaths(vec![PathBuf::from("/tmp/drop me (1).png")].into());
+            self.mouse(
+                cx,
+                FileDropEvent::Entered { position, paths }.to_platform_input(),
+            );
+            Self::settle(cx).await;
+            self.mouse(cx, FileDropEvent::Pending { position }.to_platform_input());
+            Self::settle(cx).await;
+            self.mouse(cx, FileDropEvent::Submit { position }.to_platform_input());
+        }
+        Self::settle(cx).await;
+        self.type_text(cx, "\n");
+        let mut dropped = false;
+        for _ in 0..30 {
+            Self::sleep(cx, 150).await;
+            if self
+                .read_pane_text(cx, &first)
+                .await
+                .contains("dropped:/tmp/drop me (1).png")
+            {
+                dropped = true;
+                break;
+            }
+        }
+        self.check(dropped, "a dropped file pastes its escaped path");
+
         // Split right and down through the app's own actions.
         self.dispatch(cx, Box::new(SplitRight));
         let two = self
@@ -553,6 +587,7 @@ impl Run {
         Self::settle(cx).await;
         self.check_views(cx, "new tab: other tab's views hidden");
         self.shoot(cx, "second-tab");
+        self.tab_switch_focus(cx, &tab_id).await?;
 
         // Move the new tab's pane into the first tab: same terminal, same view.
         let Some((_, SplitTree::Pane(moving))) = self.tab(cx)? else {
@@ -913,6 +948,49 @@ impl Run {
             })
             .await;
         self.check(back, "cmd-alt-left moves it back");
+        Ok(())
+    }
+
+    /// Switching tabs moves keyboard focus to the new tab's terminal, so
+    /// typing goes there without a click.
+    async fn tab_switch_focus(&mut self, cx: &mut Cx, first_tab: &str) -> anyhow::Result<()> {
+        let typing_in_active_tab = |area: &TerminalArea, window: &Window, cx: &App| {
+            let snapshot = area.snapshot(cx);
+            let want = area
+                .target_pane(cx)
+                .and_then(|p| snapshot.pane(&p).map(|p| p.terminal_id.clone()));
+            want.is_some() && area.terminals.focused(window, cx).map(str::to_owned) == want
+        };
+        let on_new = self
+            .until(cx, Duration::from_secs(5), typing_in_active_tab)
+            .await;
+        self.check(on_new, "a new tab takes keyboard focus");
+
+        let second_tab = self.tab(cx)?.map(|(id, _)| id);
+        let first_strip = self.drawn(cx, |d| d.tabs.get(first_tab).copied())?;
+        let Some(first_strip) = first_strip else {
+            self.fail("tab switch: first tab not drawn in the strip");
+            return Ok(());
+        };
+        self.click(cx, center(first_strip)).await;
+        let clicked = self
+            .until(cx, Duration::from_secs(5), |area, window, cx| {
+                TerminalArea::active_tab(&area.snapshot(cx))
+                    .is_some_and(|t| t.info.tab_id == first_tab)
+                    && typing_in_active_tab(area, window, cx)
+            })
+            .await;
+        self.check(clicked, "clicking a tab focuses its terminal");
+
+        self.dispatch(cx, Box::new(super::NextTab));
+        let cycled = self
+            .until(cx, Duration::from_secs(5), |area, window, cx| {
+                TerminalArea::active_tab(&area.snapshot(cx)).map(|t| &t.info.tab_id)
+                    == second_tab.as_ref()
+                    && typing_in_active_tab(area, window, cx)
+            })
+            .await;
+        self.check(cycled, "cmd-shift-] focuses the next tab's terminal");
         Ok(())
     }
 

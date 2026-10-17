@@ -114,6 +114,14 @@ macro_rules! bind_gpui {
                     self.surface.set_hidden_rendering(rendered);
                 }
 
+                /// Inserts `text` the way a paste does, so programs with bracketed
+                /// paste on see it as one paste rather than typed keys.
+                pub fn paste_text(&mut self, text: &str) {
+                    if let Ok(text) = std::ffi::CString::new(text) {
+                        self.surface.text(&text);
+                    }
+                }
+
                 pub fn focus<T>(&mut self, window: &mut Window, cx: &mut Context<T>) {
                     self.set_visible(true);
                     self.focus.focus(window, cx);

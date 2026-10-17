@@ -18,7 +18,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use gpui_kit::component::button::{Button, ButtonVariants as _};
-use gpui_kit::component::input::{Editor as CodeEditor, InputEvent};
+use gpui_kit::component::input::{Editor as CodeEditor, InputEvent, Position};
 use gpui_kit::component::notification::Notification;
 use gpui_kit::component::{ActiveTheme as _, Sizable as _, WindowExt as _, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
@@ -219,6 +219,21 @@ impl Editor {
         group.buffers.push(buffer);
         let index = group.buffers.len() - 1;
         self.activate(index, window, cx);
+    }
+
+    /// Open `path` with the cursor at the start of `line` (0-based).
+    pub fn open_at(&mut self, path: &Path, line: u32, window: &mut Window, cx: &mut Context<Self>) {
+        self.open(path, window, cx);
+        let Ok(path) = path.canonicalize() else {
+            return;
+        };
+        if let Some(buffer) = self.group().and_then(Group::active)
+            && buffer.path == path
+        {
+            buffer.state.update(cx, |state, cx| {
+                state.set_cursor_position(Position::new(line, 0), window, cx)
+            });
+        }
     }
 
     /// Selects tab `index` of the visible group and focuses it.

@@ -5,6 +5,11 @@ edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
 
+# The executable name is the macOS menu bar name when run unbundled.
+[[bin]]
+name = "grasslands"
+path = "src/main.rs"
+
 [dependencies]
 # All grammars. `tree-sitter-sequel` (SQL) pins `cc ~1.2.1`, so Cargo.lock
 # keeps cc at 1.2.x; see docs/decisions/0003-editor.md.
@@ -26,8 +31,8 @@ raw-window-handle = "0.6.2"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6.5"
-objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSString", "NSGeometry", "NSArray", "NSObjCRuntime", "NSDate"] }
-objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "NSApplication", "NSResponder", "NSDockTile", "NSSound", "NSWindow", "NSView", "NSColor", "NSGraphics", "NSEvent", "NSGraphicsContext"] }
+objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSString", "NSGeometry", "NSArray", "NSObjCRuntime", "NSDate", "NSData"] }
+objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "NSApplication", "NSResponder", "NSDockTile", "NSSound", "NSWindow", "NSView", "NSColor", "NSGraphics", "NSEvent", "NSGraphicsContext", "NSImage"] }
 
 [dev-dependencies]
 serde_json = "1.0.154"

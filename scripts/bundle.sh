@@ -23,12 +23,13 @@ if [ "${1:-}" != "--no-build" ]; then
   cargo build --release -p app --manifest-path "$root/Cargo.toml"
 fi
 
-bin="$root/target/release/app"
+bin="$root/target/release/grasslands"
 [ -x "$bin" ] || { echo "bundle: $bin missing; run without --no-build" >&2; exit 1; }
 
 rm -rf "$app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 cp "$bin" "$app/Contents/MacOS/grasslands-bin"
+"$root/scripts/compile-icon.sh" "$app/Contents/Resources"
 
 # Apps started from Finder or the Dock get launchd's minimal PATH, so `herdr`
 # from Homebrew or ~/.local/bin wouldn't be found. The launcher adds the usual
@@ -50,6 +51,8 @@ cat > "$app/Contents/Info.plist" <<EOF
   <key>CFBundleDisplayName</key><string>grasslands</string>
   <key>CFBundleIdentifier</key><string>dev.lklyne.grasslands</string>
   <key>CFBundleExecutable</key><string>grasslands</string>
+  <key>CFBundleIconFile</key><string>AppIcon</string>
+  <key>CFBundleIconName</key><string>AppIcon</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleShortVersionString</key><string>$version</string>
   <key>CFBundleVersion</key><string>$version</string>

@@ -25,19 +25,10 @@ This is v0 and alpha software. gpui-libghostty is itself alpha.
 
 Two herdr installs exist side by side, on purpose.
 
-- `/opt/homebrew/bin/herdr` is 0.7.4, from Homebrew. Your default session (`~/.config/herdr/herdr.sock`) runs on it, with your real agents.
+- `/opt/homebrew/bin/herdr`, from Homebrew. Your default session (`~/.config/herdr/herdr.sock`) runs on it, with your real agents.
 - `~/.local/herdr-0.9.5/herdr` is 0.9.5. The dev scripts use it, with a separate config dir and a separate session per checkout. It never touches your default session.
 
-The dev build works today without upgrading anything. To use the app for real you need your default session on 0.9.5.
-
-### Upgrading your default herdr to 0.9.5
-
-Homebrew already has 0.9.5. Upgrading the client is harmless. Restarting the server is the part that costs something, because stopping a herdr server ends every process in its panes. herdr restores the layout afterwards, and agents that registered a native session through a current herdr integration resume their conversations. Shells, dev servers and test runs in panes do not come back.
-
-1. Let your agents reach a stopping point. `herdr integration status` shows which agent integrations can resume.
-2. `brew upgrade herdr`. The client is now 0.9.5. The running 0.7.4 server keeps going.
-3. `herdr server stop`, then start herdr again (`herdr`, or `herdr server` for headless). A 0.7.4 server is most likely older than herdr's "endpoint generation 1", and the docs say that one-time jump needs a stop. `herdr update --handoff`, which can keep processes alive, is disabled for Homebrew installs.
-4. `herdr integration install <agent>` for anything step 1 listed as outdated.
+Upgrading herdr only replaces the client; a running server keeps its old version until it's stopped and started again, which ends every process in its panes.
 
 Optional, but the app expects it: add this to `~/.config/herdr/config.toml` so herdr's own notifications reach macOS when no herdr TUI is attached.
 

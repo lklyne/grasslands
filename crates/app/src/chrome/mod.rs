@@ -35,7 +35,9 @@ use crate::state::{AppEvent, AppState};
 pub use command::HerdrCommand;
 pub use confirm::Confirmation;
 
-pub fn init(_cx: &mut App) {}
+pub fn init(_cx: &mut App) {
+    dock::set_icon();
+}
 
 /// What a context menu is about. The terminal area opens one per pane and
 /// tab, the sidebar per workspace and agent.
@@ -435,11 +437,9 @@ impl Chrome {
                 ]
             }
             MenuTarget::Tab { tab_id } => {
-                let workspace_id = snapshot
-                    .tab(tab_id)
-                    .map(|t| t.info.workspace_id.clone())
-                    .unwrap_or_default();
-                vec![
+                let tab = snapshot.tab(tab_id);
+                let workspace_id = tab.map(|t| t.info.workspace_id.clone()).unwrap_or_default();
+                let mut entries = vec![
                     MenuEntry::herdr(
                         "Focus Tab",
                         C::FocusTab {
@@ -447,6 +447,24 @@ impl Chrome {
                         },
                     ),
                     MenuEntry::herdr("New Tab", C::NewTab { workspace_id }),
+                ];
+                // A pane alone in its tab has no header to right-click, so
+                // the tab offers splitting its focused pane.
+                if let Some(pane_id) = tab.and_then(|t| t.focused_pane_id.clone()) {
+                    for (label, direction) in [
+                        ("Split Right", SplitDirection::Right),
+                        ("Split Down", SplitDirection::Down),
+                    ] {
+                        entries.push(MenuEntry::herdr(
+                            label,
+                            C::SplitPane {
+                                pane_id: pane_id.clone(),
+                                direction,
+                            },
+                        ));
+                    }
+                }
+                entries.extend([
                     MenuEntry::item("Rename Tab…", MenuCommand::Rename(target.clone())),
                     MenuEntry::Separator,
                     MenuEntry::herdr(
@@ -455,7 +473,8 @@ impl Chrome {
                             tab_id: tab_id.clone(),
                         },
                     ),
-                ]
+                ]);
+                entries
             }
             MenuTarget::Workspace { workspace_id } => {
                 let id = || workspace_id.clone();
