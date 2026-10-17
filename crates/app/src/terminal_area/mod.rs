@@ -764,7 +764,9 @@ impl TerminalArea {
         );
 
         h_flex()
-            .h(px(32.))
+            // The dock's 30px title bar plus its panels' 1px top border, so
+            // the strip's bottom line meets theirs.
+            .h(px(31.))
             .flex_shrink_0()
             .bg(tab_bar)
             .border_b_1()

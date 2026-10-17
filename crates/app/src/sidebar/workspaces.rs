@@ -749,6 +749,9 @@ impl Render for WorkspaceList {
             .id("workspace-rows")
             .track_focus(&self.focus)
             .size_full()
+            // Under the dock's title bar, like the main area's tab strip.
+            .border_t_1()
+            .border_color(theme.border)
             .overflow_y_scroll()
             .font_family(theme.mono_font_family.clone())
             .text_size(TEXT)

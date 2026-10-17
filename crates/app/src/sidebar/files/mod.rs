@@ -34,7 +34,11 @@ use crate::state::{AppEvent, AppState};
 
 /// Watcher events arriving within this window are folded into one re-list.
 const FS_DEBOUNCE: Duration = Duration::from_millis(75);
-const INDENT: f32 = 14.;
+const INDENT: f32 = 12.;
+const ROW_HEIGHT: Pixels = px(24.);
+const TEXT: Pixels = px(13.);
+/// The chevron's column; files leave it empty so names line up.
+const CHEVRON: Pixels = px(12.);
 
 /// A deferred operation on the tree, run from a menu item or prompt.
 type TreeOp = Rc<dyn Fn(&mut FileTree, &mut Window, &mut Context<FileTree>)>;
@@ -436,31 +440,52 @@ impl FileTree {
     }
 }
 
+/// One compact row: a chevron on folders, the icon, then the name.
 fn render_row(ix: usize, entry: &TreeEntry, cx: &App) -> ListItem {
     let item = entry.item();
-    let indent = px(8. + INDENT * entry.depth() as f32);
+    let indent = px(6. + INDENT * entry.depth() as f32);
+    let muted = cx.theme().muted_foreground;
+    let row = ListItem::new(ix)
+        .h(ROW_HEIGHT)
+        .py_0()
+        .pl(indent)
+        .pr_2()
+        .rounded_sm()
+        .text_size(TEXT);
     if model::is_placeholder(&item.id) {
-        return ListItem::new(ix).pl(indent + px(INDENT + 6.)).child(
+        return row.child(
             div()
-                .text_sm()
-                .text_color(cx.theme().muted_foreground)
+                .pl(CHEVRON + px(4.))
+                .text_color(muted)
                 .child(item.label.clone()),
         );
     }
+    let chevron = entry.is_folder().then(|| {
+        let icon = if entry.is_expanded() {
+            IconName::ChevronDown
+        } else {
+            IconName::ChevronRight
+        };
+        Icon::new(icon).xsmall().text_color(muted)
+    });
     let icon = match (entry.is_folder(), entry.is_expanded()) {
         (true, true) => IconName::FolderOpen,
         (true, false) => IconName::Folder,
         (false, _) => IconName::File,
     };
-    let row = ListItem::new(ix).pl(indent).child(
+    let row = row.child(
         h_flex()
-            .gap_1p5()
-            .text_sm()
+            .gap_1()
+            .min_w_0()
             .child(
-                Icon::new(icon)
-                    .small()
-                    .text_color(cx.theme().muted_foreground),
+                div()
+                    .flex_shrink_0()
+                    .w(CHEVRON)
+                    .flex()
+                    .justify_center()
+                    .children(chevron),
             )
+            .child(Icon::new(icon).small().text_color(muted))
             .child(
                 div()
                     .overflow_hidden()
@@ -496,6 +521,8 @@ impl Render for FileTree {
         if self.root().is_none() {
             return v_flex()
                 .size_full()
+                .border_t_1()
+                .border_color(cx.theme().border)
                 .items_center()
                 .justify_center()
                 .text_sm()
@@ -507,11 +534,15 @@ impl Render for FileTree {
         v_flex()
             .track_focus(&self.focus)
             .size_full()
+            // Under the dock's title bar, like the main area's tab strip.
+            .border_t_1()
+            .border_color(cx.theme().border)
             .child(
                 tree(&self.tree, |ix, entry, _selected, _window, cx| {
                     render_row(ix, entry, cx)
                 })
                 .flex_1()
+                .p_1()
                 .context_menu(move |_ix, entry, menu, _window, _cx| {
                     Self::context_menu(&this, entry, menu)
                 }),
