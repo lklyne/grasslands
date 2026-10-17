@@ -50,7 +50,7 @@ pub fn init(cx: &mut App) {
     cx.on_action(|_: &Quit, cx| cx.quit());
     cx.bind_keys([
         KeyBinding::new("cmd-q", Quit, None),
-        KeyBinding::new("cmd-shift-p", CommandPalette, None),
+        KeyBinding::new("cmd-k", CommandPalette, None),
     ]);
     cx.set_menus(vec![
         Menu {

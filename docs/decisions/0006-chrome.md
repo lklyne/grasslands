@@ -56,7 +56,7 @@ Date: 2026-10-15. Status: accepted (chrome agent). Modules: `chrome`, `sidebar::
   worktree it closes just that workspace, so the entry isn't offered there.
 - The menu is a GPUI Kit `PopupMenu` placed with `deferred(anchored())`. On
   close it gives focus back to whatever had it; without that, app key
-  bindings (cmd-shift-p) stopped reaching `Workspace` after a menu.
+  bindings (cmd-k) stopped reaching `Workspace` after a menu.
 
 ## Confirmations
 
