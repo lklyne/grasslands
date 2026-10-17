@@ -338,15 +338,15 @@ impl TabGroupSkin {
                         menu.when_some(panel.clone(), |menu, panel| {
                             panel.dropdown_menu(menu, window, cx)
                         })
-                        .separator()
-                        .menu_with_disabled(
-                            match zoomed {
-                                true => t!("Dock.Zoom Out"),
-                                false => t!("Dock.Zoom In"),
-                            },
-                            Box::new(ToggleZoom),
-                            !menu_zoom,
-                        )
+                        .when(menu_zoom, |menu| {
+                            menu.separator().menu(
+                                match zoomed {
+                                    true => t!("Dock.Zoom Out"),
+                                    false => t!("Dock.Zoom In"),
+                                },
+                                Box::new(ToggleZoom),
+                            )
+                        })
                         .when(closable, |menu| {
                             menu.separator()
                                 .menu(t!("Dock.Close"), Box::new(ClosePanel))

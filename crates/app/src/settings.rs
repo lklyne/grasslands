@@ -3,12 +3,13 @@
 //! One window at a time; opening it again brings the open one forward.
 
 use gpui_kit::component::setting::{
-    SettingField, SettingGroup, SettingItem, SettingPage, Settings,
+    NumberFieldOptions, SettingField, SettingGroup, SettingItem, SettingPage, Settings,
 };
 use gpui_kit::component::{ActiveTheme as _, IconName, ThemeMode, ThemeRegistry, TitleBar, v_flex};
 use gpui_kit::*;
 
 use crate::actions::OpenSettings;
+use crate::sounds;
 use crate::theme::{self, Appearance};
 
 /// The open Settings window, if any.
@@ -38,8 +39,20 @@ fn open(cx: &mut App) -> anyhow::Result<()> {
     if let Some(titlebar) = options.titlebar.as_mut() {
         titlebar.title = Some("Settings".into());
     }
+    // Open on the display the user is working on, not the main one.
+    let display_id = cx.active_window().and_then(|window| {
+        window
+            .update(cx, |_, window, cx| window.display(cx).map(|display| display.id()))
+            .ok()
+            .flatten()
+    });
     let options = WindowOptions {
-        window_bounds: Some(WindowBounds::centered(size(px(760.), px(520.)), cx)),
+        window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
+            display_id,
+            size(px(760.), px(520.)),
+            cx,
+        ))),
+        display_id,
         window_min_size: Some(size(px(520.), px(360.))),
         ..options
     };
@@ -68,7 +81,8 @@ impl Render for SettingsView {
                 div().flex_1().min_h_0().child(
                     Settings::new("settings")
                         .sidebar_width(px(180.))
-                        .page(appearance_page(cx)),
+                        .page(appearance_page(cx))
+                        .page(sounds_page()),
                 ),
             )
     }
@@ -123,6 +137,54 @@ fn appearance_page(cx: &App) -> SettingPage {
                     .description("Used in dark mode."),
                 ),
         )
+}
+
+fn sounds_page() -> SettingPage {
+    let themes = sounds::THEMES
+        .iter()
+        .map(|(_, key, label)| ((*key).into(), (*label).into()))
+        .collect();
+    let percent = NumberFieldOptions {
+        min: 0.,
+        max: 100.,
+        step: 10.,
+    };
+    SettingPage::new("Sounds").icon(IconName::Bell).group(
+        SettingGroup::new()
+            .item(
+                SettingItem::new(
+                    "Sound",
+                    SettingField::switch(|cx| sounds::settings(cx).enabled, sounds::set_enabled),
+                )
+                .description("Interface and agent sounds."),
+            )
+            .item(
+                SettingItem::new(
+                    "Theme",
+                    SettingField::dropdown(
+                        themes,
+                        |cx| sounds::theme_key(sounds::settings(cx).theme).into(),
+                        |key: SharedString, cx| {
+                            if let Some(theme) = sounds::theme_from_key(&key) {
+                                sounds::set_theme(theme, cx);
+                            }
+                        },
+                    ),
+                )
+                .description("The material the sounds are made of."),
+            )
+            .item(
+                SettingItem::new(
+                    "Volume",
+                    SettingField::number_input(
+                        percent,
+                        |cx| (f64::from(sounds::settings(cx).volume) * 100.).round(),
+                        |percent, cx| sounds::set_volume((percent / 100.) as f32, cx),
+                    ),
+                )
+                .description("Percent."),
+            ),
+    )
 }
 
 /// Every registered theme of `mode`, the Kit's default first, then by name.

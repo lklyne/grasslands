@@ -37,6 +37,14 @@ pub trait WindowExt: Sized {
     /// Closes the active Sheet.
     fn close_sheet(&mut self, cx: &mut App);
 
+    /// This window's own tooltip overlay, to host another window's tooltips.
+    fn own_tooltip_overlay(&self, cx: &App) -> Entity<gpui_base::TooltipOverlay>;
+
+    /// Shows this window's tooltips in `host` (another window's
+    /// [`WindowExt::own_tooltip_overlay`]) instead of its own, or in its own
+    /// again with `None`. The two windows must share content coordinates.
+    fn host_tooltips_in(&mut self, host: Option<Entity<gpui_base::TooltipOverlay>>, cx: &mut App);
+
     /// Opens a Dialog.
     ///
     /// The builder is a render closure, not a one-shot constructor. It may
@@ -139,6 +147,17 @@ pub trait WindowExt: Sized {
 }
 
 impl WindowExt for Window {
+    fn own_tooltip_overlay(&self, cx: &App) -> Entity<gpui_base::TooltipOverlay> {
+        WindowState::read(self, cx).tooltip_overlay.clone()
+    }
+
+    fn host_tooltips_in(&mut self, host: Option<Entity<gpui_base::TooltipOverlay>>, cx: &mut App) {
+        WindowState::update(self, cx, |root, _, cx| {
+            root.tooltip_overlay.update(cx, |overlay, cx| overlay.hide(cx));
+            root.tooltip_host = host;
+        })
+    }
+
     #[inline]
     fn open_sheet<F>(&mut self, cx: &mut App, build: F)
     where

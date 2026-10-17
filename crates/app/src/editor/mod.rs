@@ -376,6 +376,7 @@ impl Editor {
         };
         if buffer.is_dirty() {
             buffer.prompt = Some(Prompt::CloseUnsaved);
+            crate::sounds::play(cues::Cue::Attention, crate::sounds::subtle());
             self.activate(index, window, cx);
         } else {
             self.close(index, window, cx);
@@ -490,6 +491,7 @@ pub enum Answer {
 
 fn notify_error(message: String, window: &mut Window, cx: &mut App) {
     tracing::error!("editor: {message}");
+    crate::sounds::play(cues::Cue::Error, crate::sounds::subtle());
     window.push_notification(Notification::error(message), cx);
 }
 

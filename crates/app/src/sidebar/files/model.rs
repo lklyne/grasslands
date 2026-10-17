@@ -107,10 +107,6 @@ impl FileModel {
         }
     }
 
-    pub fn loaded_dirs(&self) -> Vec<PathBuf> {
-        self.listings.keys().cloned().collect()
-    }
-
     /// Which loaded folders to re-list after the watcher reported `changed`.
     pub fn dirs_to_rescan(&self, changed: &[PathBuf]) -> BTreeSet<PathBuf> {
         let mut dirs = BTreeSet::new();

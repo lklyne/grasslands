@@ -419,6 +419,19 @@ impl Client {
         )
     }
 
+    /// Moves `workspace_ids`, in that order, to just before
+    /// `before_workspace_id`, or to the end when `None`.
+    pub fn workspace_move_block(
+        &self,
+        workspace_ids: &[String],
+        before_workspace_id: Option<&str>,
+    ) -> Result<()> {
+        self.ok(
+            "workspace.move_block",
+            &json!({ "workspace_ids": workspace_ids, "before_workspace_id": before_workspace_id }),
+        )
+    }
+
     /// Closes a workspace; `close_group` also closes its worktree group.
     pub fn workspace_close(&self, workspace_id: &str, close_group: bool) -> Result<()> {
         self.ok(

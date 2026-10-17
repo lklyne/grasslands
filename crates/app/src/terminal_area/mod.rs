@@ -1161,6 +1161,7 @@ impl TerminalArea {
                     })),
             )
             .on_drag(dragged, move |dragged, _, window, cx| {
+                crate::sounds::play(cues::Cue::Select, cues::PlayOptions::default());
                 crate::workspace::keep_terminals_during_drag(cx);
                 let label = dragged.label.clone();
                 let position = window.mouse_position();
@@ -1249,6 +1250,7 @@ impl TerminalArea {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        crate::sounds::play(cues::Cue::Tap, cues::PlayOptions::default());
         let snapshot = self.snapshot(cx);
         let Some(pane) = snapshot.pane(pane_id) else {
             return;

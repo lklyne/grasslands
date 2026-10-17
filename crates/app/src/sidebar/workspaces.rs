@@ -1,8 +1,8 @@
 //! The spaces panel, laid out like herdr's own TUI sidebar: one compact row
-//! per workspace (status glyph and label, then the branch and its
-//! ahead/behind counts). The agents panel ([`AgentList`]) lists every agent,
-//! grouped by workspace or by priority. Both draw their rows in the monospace
-//! font at terminal density and sit in the sidebar's dock, which draws their
+//! per workspace (status glyph, label, then the branch and its ahead/behind
+//! counts). The agents panel ([`AgentList`]) lists every agent,
+//! grouped by workspace or by priority. Both draw one-line rows in the file
+//! tree's type and row height and sit in the sidebar's dock, which draws their
 //! title bars. The rules (glyphs, colors, grouping, ordering) follow herdr
 //! 0.9.5's `client/shell/sidebar.rs` and `agent_sidebar.rs`; see
 //! docs/decisions/0009-workspace-list.md.
@@ -12,7 +12,8 @@
 //! Right-click or "…" opens the chrome's workspace menu (rename, new tab,
 //! close, close group); × closes through the chrome (`chrome::get`), which
 //! asks first when agents are running. + on a repo's row makes a worktree of
-//! that repo.
+//! that repo. Drag a row to reorder (`workspace.move_block`): a repo group
+//! moves as one block, a linked worktree only within its group.
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -24,7 +25,7 @@ use gpui_kit::component::menu::{PopupMenu, PopupMenuItem};
 use gpui_kit::component::notification::Notification;
 use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::{
-    ActiveTheme as _, Icon, IconName, Sizable as _, StyledExt as _, WindowExt as _, h_flex, v_flex,
+    ActiveTheme as _, Icon, IconName, Sizable as _, WindowExt as _, h_flex, v_flex,
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
@@ -34,14 +35,18 @@ use crate::chrome::{self, HerdrCommand, MenuCommand, MenuTarget};
 use crate::herdr::{Agent, AgentStatus, Snapshot, WorkspaceInfo, WorktreeParams};
 use crate::state::{AppEvent, AppState};
 use git::{Checkout, HeadWatcher, Placement, Repo};
-use groups::{Entry, Kind};
+use groups::{Entry, Kind, Slot};
 
 pub use agents::AgentList;
 
 pub fn init(_cx: &mut App) {}
 
-/// Line height: one herdr cell row per line, for the theme's mono size.
-const LINE: Pixels = px(17.);
+/// Row height: every row is one line of `text_sm`.
+const ROW: Pixels = px(20.);
+/// One hover action (+, …, ×) on a workspace row.
+const ACTION: Pixels = px(14.);
+/// The fold chevron's column; rows without one leave it empty.
+const CHEVRON: Pixels = px(12.);
 /// How often every cached checkout is re-read, for what the `HEAD` watcher
 /// can't see (commits, fetches and pushes move ahead/behind).
 const GIT_REFRESH: Duration = Duration::from_secs(5);
@@ -64,10 +69,36 @@ pub struct WorkspaceList {
     /// Folders being read for the first time.
     reading: HashSet<PathBuf>,
     heads: Option<HeadWatcher>,
+    /// The dragged row and the row the drag last ticked over, so each new
+    /// row ticks once.
+    drag_tick: Option<(usize, usize)>,
     focus: FocusHandle,
     _observe: Subscription,
     _subscribe: Subscription,
     _tasks: Vec<Task<()>>,
+}
+
+/// A workspace row being dragged to a new place in the list.
+#[derive(Clone)]
+struct DraggedWorkspace {
+    slot: Slot,
+    /// Its row in the list, to show which side of a target it will land on.
+    row: usize,
+    label: SharedString,
+}
+
+impl Render for DraggedWorkspace {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .px_2()
+            .py_0p5()
+            .rounded_sm()
+            .bg(cx.theme().popover)
+            .border_1()
+            .border_color(cx.theme().border)
+            .text_sm()
+            .child(self.label.clone())
+    }
 }
 
 /// herdr's `status_priority`: what needs you most ranks highest.
@@ -89,26 +120,47 @@ fn rolled_up(statuses: impl IntoIterator<Item = AgentStatus>) -> AgentStatus {
         .unwrap_or(AgentStatus::Unknown)
 }
 
-/// herdr's dot glyphs, with icons for the states that want the user: a
-/// question for blocked (herdr's "waiting for input"), a check for done.
-/// Every status gets the same slot so labels line up.
+/// herdr's dots, with icons for the states that want the user: a question
+/// for blocked (herdr's "waiting for input"), a solid badge with a check for
+/// done. Every status gets the same slot so labels line up.
 fn status_icon(status: AgentStatus, cx: &App) -> Div {
     let color = status_color(status, cx);
     let slot = div()
         .flex_shrink_0()
-        .w(px(12.))
+        .size(px(12.))
         .flex()
-        .justify_center()
-        .text_color(color);
-    let icon = |name: assets::IconName| Icon::new(name).xsmall().text_color(color);
+        .items_center()
+        .justify_center();
+    let dot = || div().size(px(7.)).rounded_full();
     match status {
-        AgentStatus::Blocked => slot.child(icon(assets::IconName::CircleQuestionMark)),
-        AgentStatus::Done => slot.child(icon(assets::IconName::CircleCheck)),
-        AgentStatus::Working => slot.child("●"),
-        AgentStatus::Idle => slot.child("○"),
-        AgentStatus::Unknown => slot.child("·"),
+        AgentStatus::Blocked => slot.child(
+            Icon::new(assets::IconName::CircleQuestionMark)
+                .xsmall()
+                .text_color(color),
+        ),
+        AgentStatus::Done => slot.child(
+            div()
+                .size(px(10.))
+                .rounded_full()
+                .bg(color)
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(
+                    Icon::default()
+                        .data(BOLD_CHECK)
+                        .with_size(px(7.))
+                        .text_color(cx.theme().background),
+                ),
+        ),
+        AgentStatus::Working => slot.child(dot().bg(color)),
+        AgentStatus::Idle => slot.child(dot().border_1().border_color(color)),
+        AgentStatus::Unknown => slot.child(div().size(px(3.)).rounded_full().bg(color)),
     }
 }
+
+/// Lucide's check at a heavier stroke, legible at badge size.
+const BOLD_CHECK: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>"#;
 
 /// herdr's `status_color`, mapped onto the theme's status colors.
 fn status_color(status: AgentStatus, cx: &App) -> Hsla {
@@ -197,6 +249,7 @@ impl WorkspaceList {
             checkouts: HashMap::new(),
             reading: HashSet::new(),
             heads,
+            drag_tick: None,
             focus: cx.focus_handle(),
             _observe: observe,
             _subscribe: subscribe,
@@ -352,10 +405,52 @@ impl WorkspaceList {
 
     /// Folds or unfolds a repo group, by repo key.
     pub fn toggle_group(&mut self, repo_key: &str, cx: &mut Context<Self>) {
-        if !self.folded.remove(repo_key) {
+        let opened = self.folded.remove(repo_key);
+        if !opened {
             self.folded.insert(repo_key.to_owned());
         }
+        let cue = if opened {
+            cues::Cue::Open
+        } else {
+            cues::Cue::Close
+        };
+        crate::sounds::play(cue, crate::sounds::subtle());
         cx.notify();
+    }
+
+    /// Ticks as a drag from row `from` enters row `over`, a semitone lower
+    /// for each row further down the list than where it started (higher going
+    /// up). The first move only notes where the drag is.
+    fn drag_tick_over(&mut self, from: usize, over: usize) {
+        let last = match self.drag_tick {
+            Some((origin, last)) if origin == from => last,
+            _ => {
+                self.drag_tick = Some((from, over));
+                return;
+            }
+        };
+        if last == over {
+            return;
+        }
+        self.drag_tick = Some((from, over));
+        let rows = from as f64 - over as f64;
+        let options = cues::PlayOptions::default().pitch(2f64.powf(rows / 12.0));
+        crate::sounds::play(cues::Cue::Select, options);
+    }
+
+    /// Drops `dragged` where `target` is; see [`groups::reordered`].
+    fn reorder(&mut self, dragged: &Slot, target: &Slot, cx: &mut Context<Self>) {
+        let state = self.state.read(cx);
+        let snapshot = &state.snapshot;
+        let infos: Vec<&WorkspaceInfo> = snapshot.workspaces.iter().map(|w| &w.info).collect();
+        let entries = groups::entries(
+            &infos,
+            |info| self.placement(snapshot, info),
+            &HashSet::new(),
+        );
+        if let Some(order) = groups::reordered(&entries, dragged, target) {
+            state.reorder_workspaces(order, cx).detach_and_log_err(cx);
+        }
     }
 
     /// A new workspace in the active worktree's folder, focused. herdr names
@@ -416,7 +511,14 @@ impl WorkspaceList {
         };
         let task = state.create_worktree(params, cx);
         cx.spawn_in(window, async move |_, cx| {
-            if let Err(error) = task.await {
+            let result = task.await;
+            let cue = if result.is_ok() {
+                cues::Cue::Success
+            } else {
+                cues::Cue::Error
+            };
+            crate::sounds::play(cue, cues::PlayOptions::default());
+            if let Err(error) = result {
                 cx.update(|window, cx| {
                     window.push_notification(
                         Notification::error(error.to_string()).title("New worktree"),
@@ -429,10 +531,11 @@ impl WorkspaceList {
         .detach();
     }
 
-    /// One workspace: status glyph and label, then (except for a group's
-    /// linked worktrees, as in herdr) its branch and ahead/behind counts.
+    /// One workspace on one line: status glyph and label, then (except for a
+    /// group's linked worktrees, as in herdr) its branch and ahead/behind.
     fn render_space(
         &self,
+        row: usize,
         entry: &Entry,
         snapshot: &Snapshot,
         cx: &mut Context<Self>,
@@ -474,42 +577,40 @@ impl WorkspaceList {
                         let name = repo.name.clone();
                         move || format!("fold-{name}")
                     })
-                    .flex_shrink_0()
-                    .whitespace_nowrap()
-                    .text_color(theme.blue)
                     .cursor_pointer()
-                    .child(if open { "▾ " } else { "▸ " })
+                    .child(
+                        Icon::new(if open {
+                            IconName::ChevronDown
+                        } else {
+                            IconName::ChevronRight
+                        })
+                        .xsmall()
+                        .text_color(theme.muted_foreground),
+                    )
                     .on_click(cx.listener(move |this, _, _, cx| {
                         cx.stop_propagation();
                         this.toggle_group(&key, cx);
                     }))
                     .into_any_element()
             }
-            (Kind::Child, _) => text("   ").into_any_element(),
-            _ => text(" ").into_any_element(),
+            _ => div().into_any_element(),
         };
-        let first = h_flex()
-            .h(LINE)
-            .child(lead)
-            .child(status_icon(status, cx))
-            .child(text(" "))
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .truncate()
-                    .when(focused, |this| {
-                        this.font_bold().text_color(theme.foreground)
-                    })
-                    .when(!focused, |this| this.text_color(dim_text(cx)))
-                    .child(info.label.clone()),
-            );
-        let second = branch_line.map(|(branch, ahead_behind)| {
+        let indent = if entry.kind == Kind::Child {
+            CHEVRON
+        } else {
+            px(0.)
+        };
+        let label = div()
+            .min_w_0()
+            .truncate()
+            .when(focused, |this| this.text_color(theme.foreground))
+            .when(!focused, |this| this.text_color(dim_text(cx)))
+            .child(info.label.clone());
+        let branch = branch_line.map(|(branch, ahead_behind)| {
             let (ahead, behind) = ahead_behind.unwrap_or_default();
             h_flex()
-                .h(LINE)
-                .pr_1()
-                .child(text("   "))
+                .min_w_0()
+                .gap_1()
                 .child(
                     div()
                         .min_w_0()
@@ -522,24 +623,29 @@ impl WorkspaceList {
                         .child(branch),
                 )
                 .when(ahead > 0, |this| {
-                    this.child(text(format!(" ↑{ahead}")).text_color(theme.success))
+                    this.child(text(format!("↑{ahead}")).text_color(theme.success))
                 })
                 .when(behind > 0, |this| {
-                    this.child(text(format!(" ↓{behind}")).text_color(theme.danger))
+                    this.child(text(format!("↓{behind}")).text_color(theme.danger))
                 })
         });
 
-        // Hover actions sit over the row's right end, so they never move it.
+        // Hover actions sit over the row's right end; while hovered the row
+        // pads its text clear of them, so labels truncate instead of running
+        // underneath.
         let new_in = entry
             .repo
             .as_ref()
             .filter(|_| entry.kind != Kind::Child)
             .map(|r| r.root.clone());
+        let actions_width = ACTION * if new_in.is_some() { 3. } else { 2. } + px(4.);
         let (more_id, close_id) = (id.clone(), id.clone());
         let action = |label: &'static str, name: String| {
             div()
                 .id(SharedString::from(name))
-                .px_1()
+                .w(ACTION)
+                .flex()
+                .justify_center()
                 .text_color(theme.muted_foreground)
                 .hover(|this| this.text_color(theme.foreground))
                 .cursor_pointer()
@@ -549,8 +655,8 @@ impl WorkspaceList {
             .absolute()
             .top_0()
             .right_0()
-            .h(LINE)
-            .bg(theme.sidebar_accent)
+            .h(ROW)
+            .pr_1()
             .invisible()
             .group_hover(row_group.clone(), |this| this.visible())
             .when_some(new_in, |this, root| {
@@ -577,22 +683,69 @@ impl WorkspaceList {
             );
 
         let (row_id, menu_id) = (id.clone(), id.clone());
-        v_flex()
+        let slot = Slot::of(entry);
+        let dragged = DraggedWorkspace {
+            slot: slot.clone(),
+            row,
+            label: info.label.clone().into(),
+        };
+        let (accept_slot, drop_slot) = (slot.clone(), slot);
+        let drag_border = theme.drag_border;
+        h_flex()
             .id(SharedString::from(format!("ws-{id}")))
             .debug_selector(move || format!("ws-{id}"))
             .group(row_group)
             .relative()
-            // Inset inside the highlight, which spans the panel like herdr's.
-            .px_1()
+            .flex_shrink_0()
+            .h(ROW)
+            .pl(px(6.) + indent)
+            .pr_2()
+            .gap_1()
+            .rounded_sm()
             .cursor_pointer()
             .when(focused, |this| this.bg(theme.sidebar_accent))
-            .hover(|this| this.bg(theme.sidebar_accent.opacity(0.6)))
+            .hover(|this| {
+                this.bg(theme.sidebar_accent.opacity(0.6))
+                    .pr(actions_width)
+            })
             .on_click(cx.listener(move |this, _, _, cx| this.activate_workspace(&row_id, cx)))
             .on_mouse_down(MouseButton::Right, move |event, window, cx| {
                 open_workspace_menu(&menu_id, event.position, window, cx);
             })
-            .child(first)
-            .children(second)
+            .on_drag(dragged, |dragged, _, _, cx| {
+                crate::sounds::play(cues::Cue::Select, cues::PlayOptions::default());
+                crate::workspace::keep_terminals_during_drag(cx);
+                cx.new(|_| dragged.clone())
+            })
+            .can_drop(move |dragged, _, _| {
+                dragged
+                    .downcast_ref::<DraggedWorkspace>()
+                    .is_some_and(|d| groups::accepts(&d.slot, &accept_slot))
+            })
+            // The line marks the side the row will land on.
+            .drag_over::<DraggedWorkspace>(move |style, dragged, _, _| {
+                let style = style.border_color(drag_border);
+                if dragged.row < row {
+                    style.border_b_2()
+                } else {
+                    style.border_t_2()
+                }
+            })
+            .on_drag_move(cx.listener(
+                move |this, event: &DragMoveEvent<DraggedWorkspace>, _, cx| {
+                    if event.bounds.contains(&event.event.position) {
+                        this.drag_tick_over(event.drag(cx).row, row);
+                    }
+                },
+            ))
+            .on_drop(cx.listener(move |this, dragged: &DraggedWorkspace, _, cx| {
+                this.drag_tick = None;
+                this.reorder(&dragged.slot, &drop_slot, cx);
+            }))
+            .child(div().flex_shrink_0().w(CHEVRON).child(lead))
+            .child(status_icon(status, cx))
+            .child(label)
+            .children(branch)
             .child(actions)
             .into_any_element()
     }
@@ -660,7 +813,7 @@ impl BasePanel for WorkspaceList {
 
 impl Panel for WorkspaceList {
     fn title(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-        div().text_sm().child("Spaces")
+        div().text_sm().child("Workspaces")
     }
 
     fn toolbar_buttons(&mut self, _: &mut Window, cx: &mut Context<Self>) -> Option<Vec<Button>> {
@@ -706,12 +859,15 @@ impl Render for WorkspaceList {
         let entries = self.entries(&snapshot);
         let rows: Vec<AnyElement> = entries
             .iter()
-            .map(|entry| self.render_space(entry, &snapshot, cx))
+            .enumerate()
+            .map(|(row, entry)| self.render_space(row, entry, &snapshot, cx))
             .collect();
         let theme = cx.theme();
-        let empty = rows
-            .is_empty()
-            .then(|| text(" no workspaces").text_color(theme.muted_foreground));
+        let empty = rows.is_empty().then(|| {
+            text("No workspaces")
+                .px_2()
+                .text_color(theme.muted_foreground)
+        });
         v_flex()
             .id("workspace-rows")
             .track_focus(&self.focus)
@@ -719,12 +875,9 @@ impl Render for WorkspaceList {
             // Under the dock's title bar, like the main area's tab strip.
             .border_t_1()
             .border_color(theme.border)
-            // herdr leaves a blank row under " spaces".
-            .pt(LINE)
+            .p_1()
             .overflow_y_scroll()
-            .font_family(theme.mono_font_family.clone())
-            .text_size(theme.mono_font_size)
-            .line_height(LINE)
+            .text_sm()
             .children(rows)
             .children(empty)
     }

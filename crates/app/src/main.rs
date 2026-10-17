@@ -19,6 +19,7 @@ mod overlay;
 mod prompt;
 mod settings;
 mod sidebar;
+mod sounds;
 mod state;
 mod terminal_area;
 mod theme;
@@ -43,6 +44,7 @@ fn main() {
             gpui_kit::init(cx);
             actions::init(cx);
             theme::init(cx);
+            sounds::init(cx);
             settings::init(cx);
             editor::init(cx);
             terminal_area::init(cx);

@@ -1,7 +1,8 @@
-//! The dock icon, badge and alert sounds. GPUI has none of them, so this
-//! calls AppKit.
+//! The dock icon, badge and alert sounds. GPUI has no dock, so this calls
+//! AppKit; the sounds are cues, with AppKit's system sounds as a fallback.
 
 use crate::herdr::AgentStatus;
+use crate::sounds;
 
 /// Gives an unbundled run (`cargo run`, `scripts/relaunch-main`) the app icon
 /// in the dock. A bundle's own icon is left alone: macOS draws its Assets.car
@@ -55,8 +56,29 @@ pub fn set_badge(count: usize) {
     let _ = count;
 }
 
-/// Plays the system sound for an agent that just reached `status`.
-pub fn play_for(status: AgentStatus) {
+/// Plays the sound for an agent that just reached `status`: `Attention` when
+/// it's blocked, `Ready` when it's done (strong while the app is in the
+/// background, since it finished while you were away).
+pub fn play_for(status: AgentStatus, background: bool) {
+    let cue = match status {
+        AgentStatus::Blocked => cues::Cue::Attention,
+        AgentStatus::Done => cues::Cue::Ready,
+        _ => return,
+    };
+    let options = if background && cue == cues::Cue::Ready {
+        sounds::strong()
+    } else {
+        cues::PlayOptions::default()
+    };
+    match sounds::cues() {
+        Some(_) => sounds::play(cue, options),
+        None if sounds::enabled() => play_system(status),
+        None => {}
+    }
+}
+
+/// The system sound for `status`, for when cues couldn't start.
+fn play_system(status: AgentStatus) {
     #[cfg(target_os = "macos")]
     {
         use objc2_app_kit::NSSound;

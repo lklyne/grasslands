@@ -12,3 +12,7 @@ publish = false
 [patch.crates-io]
 gpui-libghostty = { path = "vendor/gpui-libghostty" }
 gpui-component = { path = "vendor/gpui-component" }
+
+# Synthesis runs per play; unoptimized it takes ~50 ms, optimized ~4 ms. See docs/decisions/0017-cues.md.
+[profile.dev.package.cues]
+opt-level = 3

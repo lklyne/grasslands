@@ -1,6 +1,7 @@
 #import <AppKit/AppKit.h>
 #import <CoreVideo/CoreVideo.h>
 #import <IOSurface/IOSurface.h>
+#import <QuartzCore/QuartzCore.h>
 #import <objc/runtime.h>
 #import <stdatomic.h>
 #import <stdlib.h>
@@ -392,6 +393,16 @@ void gpui_ghostty_surface_set_frame(
     double parent_height = NSHeight(state->parent.bounds);
     [state->view setFrame:NSMakeRect(x, parent_height - y - height, width, height)];
     double scale = state->parent.window.backingScaleFactor ?: NSScreen.mainScreen.backingScaleFactor;
+    // The renderer's layer keeps the scale it was created with, so after a move
+    // to a display with a different scale it would composite the new surface at
+    // the old one's size.
+    CALayer *layer = state->view.layer;
+    if (layer != nil && layer.contentsScale != scale) {
+        [CATransaction begin];
+        [CATransaction setDisableActions:YES];
+        layer.contentsScale = scale;
+        [CATransaction commit];
+    }
     ghostty_surface_set_content_scale(state->surface, scale, scale);
     ghostty_surface_set_size(state->surface, (uint32_t)(width * scale), (uint32_t)(height * scale));
     ghostty_surface_refresh(state->surface);

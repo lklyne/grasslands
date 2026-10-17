@@ -28,6 +28,8 @@ pub(crate) struct WindowState {
     pub(super) focused_input: Option<AnyInputState>,
     pub notification: Entity<NotificationList>,
     pub(crate) tooltip_overlay: Entity<gpui_base::TooltipOverlay>,
+    /// Another window's tooltip overlay that shows this window's tooltips.
+    pub(crate) tooltip_host: Option<Entity<gpui_base::TooltipOverlay>>,
     pub(crate) native_menu_overlay: Entity<FallbackMenuOverlay>,
     touch_selection_overlay: Entity<WindowTouchSelectionOverlay>,
     sheet_size: Option<DefiniteLength>,
@@ -78,6 +80,7 @@ impl WindowState {
             notification: cx.new(|cx| NotificationList::new(window, cx)),
             tooltip_overlay: cx
                 .new(|_| gpui_base::TooltipOverlay::new().render_with(render_tooltip)),
+            tooltip_host: None,
             native_menu_overlay: cx.new(|_| FallbackMenuOverlay::new()),
             touch_selection_overlay: cx.new(|cx| WindowTouchSelectionOverlay::new(window, cx)),
             sheet_size: None,
@@ -416,13 +419,14 @@ impl WindowState {
         cx.notify();
     }
 
-    /// Get the tooltip overlay entity for this window.
+    /// Get the tooltip overlay entity that shows this window's tooltips: its
+    /// host's if it has one, else its own.
     pub(crate) fn tooltip_overlay(
         window: &Window,
         cx: &App,
     ) -> Option<Entity<gpui_base::TooltipOverlay>> {
-        let root = Self::entity(window, cx)?;
-        Some(root.read(cx).tooltip_overlay.clone())
+        let root = Self::entity(window, cx)?.read(cx);
+        Some(root.tooltip_host.as_ref().unwrap_or(&root.tooltip_overlay).clone())
     }
 
     /// Get the fallback native-menu overlay entity for this window.

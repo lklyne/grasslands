@@ -1,0 +1,15 @@
+[package]
+name = "cues"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+description = "Interaction and status sounds synthesized at play time: a port of cuelume (MIT, github.com/danielwh2/cuelume)"
+
+[dependencies]
+cpal = "0.18.2"
+log = "0.4.34"
+thiserror = "2.0.21"
+
+[dev-dependencies]
+serde_json = "1.0.154"

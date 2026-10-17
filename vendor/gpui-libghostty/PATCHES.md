@@ -15,6 +15,9 @@ Vendored from crates.io and applied through `[patch.crates-io]`. See
 - `impl Focusable for Terminal`, so an app can tell which terminal holds
   keyboard focus and hand focus between them.
 
-Only `src/terminal.rs` and `src/adapter.rs` change; `vendor/ghostty` and the
-shim are untouched, so the cached native Ghostty build is shared with the
-unpatched crate.
+- The macOS shim's `set_frame` also updates the renderer layer's
+  `contentsScale`, so a terminal moved to a display with a different scale
+  isn't composited at the old scale (tiny or oversized text).
+
+`vendor/ghostty` is untouched, so the cached native Ghostty build is shared
+with the unpatched crate.

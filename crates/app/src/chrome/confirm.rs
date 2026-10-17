@@ -25,6 +25,8 @@ pub(super) fn open(
     window: &mut Window,
     cx: &mut App,
 ) {
+    // OK plays the confirmed action's own cue.
+    crate::sounds::play(cues::Cue::Open, cues::PlayOptions::default());
     window.open_alert_dialog(cx, move |alert, _, cx| {
         let on_confirm = on_confirm.clone();
         alert
@@ -36,6 +38,10 @@ pub(super) fn open(
             .ok_variant(ButtonVariant::Danger)
             .on_ok(move |_, window, cx| {
                 on_confirm(window, cx);
+                true
+            })
+            .on_cancel(|_, _, _| {
+                crate::sounds::play(cues::Cue::Close, crate::sounds::subtle());
                 true
             })
     });

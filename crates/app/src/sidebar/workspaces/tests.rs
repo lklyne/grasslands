@@ -16,7 +16,7 @@ use std::collections::HashSet;
 
 use super::agents::ordered;
 use super::git::Placement;
-use super::groups::{Kind, entries};
+use super::groups::{Kind, Slot, entries, reordered};
 use super::{AgentList, AgentSort, WorkspaceList, rolled_up};
 use crate::herdr::{Agent, AgentStatus, Snapshot, WorkspaceInfo};
 use crate::state::{AppState, offline_config};
@@ -71,6 +71,68 @@ fn rows(infos: &[WorkspaceInfo], folded: &[&str]) -> Vec<String> {
         format!("{lead}{}", e.info.workspace_id)
     })
     .collect()
+}
+
+/// herdr's order after dropping row `dragged` on row `target`, nothing folded.
+fn drop_on(infos: &[WorkspaceInfo], dragged: &str, target: &str) -> Option<Vec<String>> {
+    let infos: Vec<&WorkspaceInfo> = infos.iter().collect();
+    let rows = entries(
+        &infos,
+        |i| i.worktree.as_ref().map(Placement::from_herdr),
+        &HashSet::new(),
+    );
+    let slot = |id: &str| {
+        rows.iter()
+            .find(|e| e.info.workspace_id == id)
+            .map(Slot::of)
+            .unwrap()
+    };
+    reordered(&rows, &slot(dragged), &slot(target))
+}
+
+/// w1 plain, then alpha's group (w2 main, w3 and w4 linked), then w5 plain.
+fn reorder_fixture() -> [WorkspaceInfo; 5] {
+    [
+        info("w1", 1, json!(null)),
+        info("w2", 2, main_checkout("alpha")),
+        info("w3", 3, linked("alpha", "/wt/three")),
+        info("w4", 4, linked("alpha", "/wt/four")),
+        info("w5", 5, json!(null)),
+    ]
+}
+
+#[test]
+fn dragging_plain_row_down_should_land_after_target() {
+    let order = drop_on(&reorder_fixture(), "w1", "w5").unwrap();
+    assert_eq!(order, ["w2", "w3", "w4", "w5", "w1"]);
+}
+
+#[test]
+fn dragging_group_parent_should_move_whole_group() {
+    let order = drop_on(&reorder_fixture(), "w2", "w1").unwrap();
+    assert_eq!(order, ["w2", "w3", "w4", "w1", "w5"]);
+}
+
+#[test]
+fn dragging_plain_row_onto_linked_worktree_should_pass_whole_group() {
+    let order = drop_on(&reorder_fixture(), "w1", "w4").unwrap();
+    assert_eq!(order, ["w2", "w3", "w4", "w1", "w5"]);
+}
+
+#[test]
+fn dragging_linked_worktree_should_reorder_within_group() {
+    let order = drop_on(&reorder_fixture(), "w4", "w3").unwrap();
+    assert_eq!(order, ["w1", "w2", "w4", "w3", "w5"]);
+}
+
+#[test]
+fn linked_worktree_should_not_drop_outside_its_group() {
+    assert_eq!(drop_on(&reorder_fixture(), "w3", "w5"), None);
+}
+
+#[test]
+fn group_parent_should_not_drop_inside_its_own_group() {
+    assert_eq!(drop_on(&reorder_fixture(), "w2", "w3"), None);
 }
 
 #[test]
