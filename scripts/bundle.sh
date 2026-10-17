@@ -23,7 +23,7 @@ if [ "${1:-}" != "--no-build" ]; then
   cargo build --release -p app --manifest-path "$root/Cargo.toml"
 fi
 
-bin="$root/target/release/app"
+bin="$root/target/release/grasslands"
 [ -x "$bin" ] || { echo "bundle: $bin missing; run without --no-build" >&2; exit 1; }
 
 rm -rf "$app"

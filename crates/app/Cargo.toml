@@ -5,6 +5,11 @@ edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
 
+# The executable name is the macOS menu bar name when run unbundled.
+[[bin]]
+name = "grasslands"
+path = "src/main.rs"
+
 [dependencies]
 # All grammars. `tree-sitter-sequel` (SQL) pins `cc ~1.2.1`, so Cargo.lock
 # keeps cc at 1.2.x; see docs/decisions/0003-editor.md.
