@@ -683,7 +683,7 @@ impl BasePanel for WorkspaceList {
 
 impl Panel for WorkspaceList {
     fn title(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-        "Spaces"
+        div().text_xs().child("Spaces")
     }
 
     fn title_suffix(&mut self, _: &mut Window, cx: &mut Context<Self>) -> Option<impl IntoElement> {

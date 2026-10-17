@@ -1,26 +1,28 @@
-//! The window's root view: the titlebar tab strip over a resizable split of
-//! the sidebar and the main area. The main area shows the terminal area (the
-//! herdr tab) or the editor (a file tab). Also routes cross-module actions to
+//! The window's root view: the titlebar tab strip over the dock, which holds
+//! the main area in its center and the sidebar panels in its left dock. The
+//! main area shows the terminal area (the herdr tab) or the editor (a file
+//! tab). Also routes cross-module actions to
 //! the view that owns them (actions bubble up the focus path to here, not
 //! sideways).
 
+pub mod dock;
 mod titlebar;
 
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use gpui_kit::component::resizable::{h_resizable, resizable_panel};
 use gpui_kit::component::{ActiveTheme as _, v_flex};
 use gpui_kit::*;
 
+use self::dock::{Docks, MainPanel};
 use self::titlebar::DrawnTabs;
 pub use self::titlebar::window_options;
 use crate::actions::{CommandPalette, FocusPane, OpenContextMenu, OpenFile};
 use crate::chrome::Chrome;
 use crate::editor::{Editor, EditorEvent};
 use crate::overlay;
-use crate::sidebar::Sidebar;
+use crate::sidebar::SidebarPanels;
 use crate::state::AppState;
 use crate::terminal_area::TerminalArea;
 
@@ -62,7 +64,11 @@ pub fn get(window: &Window, cx: &App) -> Option<Entity<Workspace>> {
 
 pub struct Workspace {
     pub state: Entity<AppState>,
-    sidebar: Entity<Sidebar>,
+    docks: Entity<Docks>,
+    main_panel: Entity<MainPanel>,
+    /// A panel drag is under way, so the terminals are hidden to show where
+    /// it will land (native views would cover the drop indicator).
+    dragging: bool,
     editor: Entity<Editor>,
     terminal_area: Entity<TerminalArea>,
     chrome: Entity<Chrome>,
@@ -94,10 +100,21 @@ impl Workspace {
         let id = window.window_handle().window_id();
         let this = cx.entity().downgrade();
         cx.default_global::<Workspaces>().0.insert(id, this);
+        let terminal_area = cx.new(|cx| TerminalArea::new(state.clone(), window, cx));
+        let main_panel = cx.new(|cx| {
+            let mut panel = MainPanel::new(cx);
+            panel.set_content(terminal_area.clone().into(), cx);
+            panel
+        });
+        let sidebar = SidebarPanels::new(state.clone(), window, cx);
+        let docks =
+            cx.new(|cx| Docks::new(main_panel.clone(), sidebar, dock::layout_path(), window, cx));
         Self {
-            sidebar: cx.new(|cx| Sidebar::new(state.clone(), window, cx)),
+            docks,
+            main_panel,
+            dragging: false,
             editor,
-            terminal_area: cx.new(|cx| TerminalArea::new(state.clone(), window, cx)),
+            terminal_area,
             chrome: cx.new(|cx| Chrome::new(state.clone(), window, cx)),
             state,
             selected: MainTab::Herdr,
@@ -125,8 +142,15 @@ impl Workspace {
         let changed = self.selected != tab;
         self.selected = tab;
         let herdr = tab == MainTab::Herdr;
-        self.terminal_area
-            .update(cx, |area, cx| area.set_visible(herdr, window, cx));
+        self.terminal_area.update(cx, |area, cx| {
+            area.set_visible(herdr && !self.dragging, window, cx)
+        });
+        let content: AnyView = match tab {
+            MainTab::Herdr => self.terminal_area.clone().into(),
+            MainTab::Files => self.editor.clone().into(),
+        };
+        self.main_panel
+            .update(cx, |panel, cx| panel.set_content(content, cx));
         if changed && !herdr {
             self.editor
                 .update(cx, |editor, cx| editor.focus_active(window, cx));
@@ -194,11 +218,18 @@ impl Workspace {
 }
 
 impl Render for Workspace {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let main: AnyView = match self.selected {
-            MainTab::Herdr => self.terminal_area.clone().into(),
-            MainTab::Files => self.editor.clone().into(),
-        };
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Every frame renders this view, so a drag starting or ending shows
+        // up here. Hiding can't happen mid-render; defer it.
+        let dragging = cx.has_active_drag();
+        if dragging != self.dragging {
+            self.dragging = dragging;
+            let visible = self.selected == MainTab::Herdr && !dragging;
+            let area = self.terminal_area.clone();
+            window.defer(cx, move |window, cx| {
+                area.update(cx, |area, cx| area.set_visible(visible, window, cx));
+            });
+        }
         v_flex()
             .id("workspace")
             .key_context(CONTEXT)
@@ -218,16 +249,7 @@ impl Render for Workspace {
             .bg(cx.theme().background)
             .text_color(cx.theme().foreground)
             .child(self.render_titlebar(cx))
-            .child(
-                h_resizable("workspace-columns")
-                    .child(
-                        resizable_panel()
-                            .size(px(260.))
-                            .size_range(px(160.)..px(600.))
-                            .child(self.sidebar.clone()),
-                    )
-                    .child(resizable_panel().child(main)),
-            )
+            .child(div().flex_1().min_h_0().child(self.docks.clone()))
             .child(self.chrome.clone())
             .child(
                 // The overlay lets clicks through, so it can't see the

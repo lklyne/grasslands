@@ -541,13 +541,14 @@ impl BasePanel for FileTree {
 impl Panel for FileTree {
     /// The active worktree's folder name.
     fn title(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-        match self.root() {
+        let name = match self.root() {
             Some(root) => root.file_name().map_or_else(
                 || root.display().to_string(),
                 |n| n.to_string_lossy().into_owned(),
             ),
             None => "Files".to_owned(),
-        }
+        };
+        div().text_xs().child(name)
     }
 
     fn toolbar_buttons(&mut self, _: &mut Window, cx: &mut Context<Self>) -> Option<Vec<Button>> {
