@@ -4,6 +4,7 @@ version = "0.1.0"
 edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
+license.workspace = true
 description = "Interaction and status sounds synthesized at play time: a port of cuelume (MIT, github.com/danielwh2/cuelume)"
 
 [dependencies]
