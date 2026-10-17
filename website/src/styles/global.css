@@ -1,0 +1,166 @@
+:root {
+  color-scheme: light dark;
+  --bg: #faf9f5;
+  --fg: #1d1d1b;
+  --muted: #6b6a63;
+  --rule: #e2e0d8;
+  --code-bg: #efede6;
+  --accent: #3d6b2a;
+  --mono: ui-monospace, 'SF Mono', SFMono-Regular, Menlo, Consolas, monospace;
+  --measure: 41rem;
+  --sans: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #151614;
+    --fg: #e6e5df;
+    --muted: #9a998f;
+    --rule: #2c2d29;
+    --code-bg: #20211e;
+    --accent: #a7c97a;
+  }
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html {
+  -webkit-text-size-adjust: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font: 17px/1.65 var(--sans);
+}
+
+main,
+footer {
+  max-width: var(--measure);
+  margin: 0 auto;
+  padding: 0 20px;
+}
+
+main {
+  padding-top: 12vh;
+  padding-bottom: 48px;
+}
+
+h1 {
+  font: 600 1.6rem/1.2 var(--mono);
+  letter-spacing: -0.01em;
+  margin: 0 0 12px;
+}
+
+h2 {
+  font: 600 0.8rem/1.4 var(--mono);
+  text-transform: lowercase;
+  color: var(--muted);
+  margin: 48px 0 12px;
+}
+
+p,
+ul {
+  margin: 0 0 16px;
+}
+
+ul {
+  padding-left: 1.2em;
+}
+
+li + li {
+  margin-top: 8px;
+}
+
+a {
+  color: var(--accent);
+  text-underline-offset: 3px;
+  text-decoration-thickness: 1px;
+}
+
+a:hover {
+  text-decoration-thickness: 2px;
+}
+
+code {
+  font-family: var(--mono);
+  font-size: 0.88em;
+  background: var(--code-bg);
+  padding: 1px 5px;
+  border-radius: 4px;
+}
+
+.lede {
+  font-size: 1.1rem;
+}
+
+.muted {
+  color: var(--muted);
+}
+
+.install {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--code-bg);
+  border-radius: 8px;
+  padding: 12px 12px 12px 16px;
+  margin: 0 0 12px;
+}
+
+.install pre {
+  flex: 1;
+  margin: 0;
+  white-space: pre-wrap;
+  font: 0.9rem/1.5 var(--mono);
+}
+
+.install pre::before {
+  content: '$ ';
+  color: var(--muted);
+  user-select: none;
+}
+
+.install button {
+  flex: none;
+  font: 0.8rem var(--mono);
+  color: var(--fg);
+  background: var(--bg);
+  border: 1px solid var(--rule);
+  border-radius: 6px;
+  padding: 4px 10px;
+  cursor: pointer;
+}
+
+.install button:hover {
+  border-color: var(--muted);
+}
+
+.links {
+  list-style: none;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 24px;
+}
+
+.links li + li {
+  margin-top: 0;
+}
+
+footer {
+  border-top: 1px solid var(--rule);
+  padding-top: 16px;
+  padding-bottom: 32px;
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+
+footer a {
+  color: inherit;
+}

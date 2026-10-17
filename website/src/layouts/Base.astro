@@ -1,12 +1,20 @@
 ---
+import '../styles/global.css'
+import { GITHUB_URL, LICENSE_URL } from '../lib/site'
+
 interface Props {
   title?: string
   description?: string
+  noindex?: boolean
 }
+
 const {
-  title = 'grasslands',
-  description = 'A native macOS app for herdr.',
+  title = 'grasslands, a native macOS app for herdr',
+  description = 'A native macOS app for herdr: workspaces, tabs, splits, real Ghostty terminals, and a file tree and editor that follow the focused agent.',
+  noindex = false,
 } = Astro.props
+
+const canonical = new URL(Astro.url.pathname, Astro.site).toString()
 ---
 
 <!doctype html>
@@ -14,10 +22,25 @@ const {
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#faf9f5" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#151614" media="(prefers-color-scheme: dark)" />
     <title>{title}</title>
     <meta name="description" content={description} />
+    <link rel="canonical" href={canonical} />
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link rel="sitemap" href="/sitemap-index.xml" />
+    {noindex && <meta name="robots" content="noindex" />}
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="grasslands" />
+    <meta property="og:url" content={canonical} />
+    <meta property="og:title" content={title} />
+    <meta property="og:description" content={description} />
+    <meta name="twitter:card" content="summary" />
   </head>
   <body>
     <slot />
+    <footer>
+      <a href="/">grasslands</a> · <a href={GITHUB_URL}>source</a> · <a href={LICENSE_URL}>MIT</a>
+    </footer>
   </body>
 </html>
