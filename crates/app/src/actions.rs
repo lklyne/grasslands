@@ -20,6 +20,14 @@ pub struct OpenFile {
     pub path: PathBuf,
 }
 
+/// Open a file with the cursor on `line` (0-based). Sent by the file search.
+#[derive(Clone, Debug, PartialEq, Action)]
+#[action(namespace = app, no_json)]
+pub struct OpenFileAt {
+    pub path: PathBuf,
+    pub line: u32,
+}
+
 /// Focus a herdr pane: the app sends `pane.focus` and herdr's `pane.focused`
 /// event moves the focus ring. Sent by the agent list and the terminal area.
 #[derive(Clone, Debug, PartialEq, Action)]

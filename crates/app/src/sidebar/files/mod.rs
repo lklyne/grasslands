@@ -4,9 +4,11 @@
 //! background executor. A recursive watcher on the root re-lists any loaded
 //! folder whose contents change, so files agents create, edit and delete show
 //! up live. Clicking a file sends `OpenFile`; the context menu creates,
-//! renames, trashes and reveals.
+//! renames, trashes and reveals. Rows drag onto folders to move them. The
+//! search box above swaps the tree for name and content matches.
 
 mod model;
+mod search;
 mod watch;
 
 #[cfg(test)]
@@ -14,10 +16,13 @@ mod tests;
 
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use gpui_kit::component::button::Button;
 use gpui_kit::component::dock::{BasePanel, Panel, PanelControl, PanelEvent};
+use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::list::ListItem;
 use gpui_kit::component::menu::{PopupMenu, PopupMenuItem};
 use gpui_kit::component::notification::Notification;
@@ -29,11 +34,13 @@ use gpui_kit::*;
 
 use self::model::FileModel;
 use self::watch::RootWatcher;
-use crate::actions::OpenFile;
+use crate::actions::{OpenFile, OpenFileAt};
 use crate::state::{AppEvent, AppState};
 
 /// Watcher events arriving within this window are folded into one re-list.
 const FS_DEBOUNCE: Duration = Duration::from_millis(75);
+/// Typing within this window runs one search.
+const SEARCH_DEBOUNCE: Duration = Duration::from_millis(120);
 const INDENT: f32 = 12.;
 const ROW_HEIGHT: Pixels = px(24.);
 /// The chevron's column; files leave it empty so names line up.
@@ -51,13 +58,40 @@ pub struct FileTree {
     watcher: Option<RootWatcher>,
     fs_changes: async_channel::Sender<Vec<PathBuf>>,
     focus: FocusHandle,
-    _subscriptions: [Subscription; 2],
+    query: Entity<InputState>,
+    /// Matches for the query; `None` while it is empty, which shows the tree.
+    results: Option<search::Results>,
+    searching: Option<(Arc<AtomicBool>, Task<()>)>,
+    _subscriptions: [Subscription; 3],
     _fs_task: Task<()>,
 }
 
+/// A file or folder being dragged to another folder.
+#[derive(Clone)]
+struct DraggedPath {
+    path: PathBuf,
+    name: SharedString,
+}
+
+impl Render for DraggedPath {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        h_flex()
+            .gap_1()
+            .px_2()
+            .py_0p5()
+            .rounded_sm()
+            .bg(cx.theme().popover)
+            .border_1()
+            .border_color(cx.theme().border)
+            .text_sm()
+            .child(self.name.clone())
+    }
+}
+
 impl FileTree {
-    pub fn new(state: Entity<AppState>, _window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(state: Entity<AppState>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let tree = cx.new(|cx| TreeState::new(cx));
+        let query = cx.new(|cx| InputState::new(window, cx).placeholder("Search files"));
         let subscriptions = [
             cx.subscribe(&state, |this, _, event, cx| {
                 if let AppEvent::ActiveWorktreeChanged(root) = event {
@@ -65,6 +99,11 @@ impl FileTree {
                 }
             }),
             cx.subscribe(&tree, |this, _, event, cx| this.on_tree_event(event, cx)),
+            cx.subscribe(&query, |this, _, event: &InputEvent, cx| {
+                if matches!(event, InputEvent::Change) {
+                    this.search(cx);
+                }
+            }),
         ];
         let (fs_changes, receiver) = async_channel::unbounded::<Vec<PathBuf>>();
         let fs_task = cx.spawn(async move |this, cx| {
@@ -89,6 +128,9 @@ impl FileTree {
             watcher: None,
             fs_changes,
             focus: cx.focus_handle(),
+            query,
+            results: None,
+            searching: None,
             _subscriptions: subscriptions,
             _fs_task: fs_task,
         };
@@ -119,6 +161,47 @@ impl FileTree {
             self.load(vec![root], cx);
         }
         self.rebuild(cx);
+        self.search(cx);
+    }
+
+    /// Runs the query against the root after a pause in typing, replacing
+    /// any search still running.
+    fn search(&mut self, cx: &mut Context<Self>) {
+        if let Some((cancel, _)) = self.searching.take() {
+            cancel.store(true, Ordering::Relaxed);
+        }
+        let query = self.query.read(cx).value().trim().to_owned();
+        let Some(root) = self
+            .root()
+            .map(Path::to_path_buf)
+            .filter(|_| !query.is_empty())
+        else {
+            self.results = None;
+            cx.notify();
+            return;
+        };
+        let cancel = Arc::new(AtomicBool::new(false));
+        let task = cx.spawn({
+            let cancel = cancel.clone();
+            async move |this, cx| {
+                cx.background_executor().timer(SEARCH_DEBOUNCE).await;
+                let results = cx
+                    .background_executor()
+                    .spawn(async move {
+                        let results = search::search(&root, &query, &cancel);
+                        (!cancel.load(Ordering::Relaxed)).then_some(results)
+                    })
+                    .await;
+                if let Some(results) = results {
+                    let _ = this.update(cx, |this, cx| {
+                        this.results = Some(results);
+                        this.searching = None;
+                        cx.notify();
+                    });
+                }
+            }
+        });
+        self.searching = Some((cancel, task));
     }
 
     /// Lists `dirs` on the background executor, then updates the tree.
@@ -204,6 +287,9 @@ impl FileTree {
         let Some(model) = &self.model else { return };
         let dirs = model.dirs_to_rescan(paths);
         self.load(dirs.into_iter().collect(), cx);
+        if self.results.is_some() {
+            self.search(cx);
+        }
     }
 
     /// Re-lists every loaded folder.
@@ -287,6 +373,42 @@ impl FileTree {
             path.parent().map(Path::to_path_buf).into_iter().collect(),
             cx,
         );
+    }
+
+    /// Moves `path` into `dir`, keeping its name.
+    fn move_into(&mut self, path: &Path, dir: &Path, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(name) = path.file_name() else { return };
+        if path.parent() == Some(dir) {
+            return;
+        }
+        if dir.starts_with(path) {
+            return error(
+                format!("Cannot move {} into itself", path.display()),
+                window,
+                cx,
+            );
+        }
+        let target = dir.join(name);
+        if target.exists() {
+            return error(format!("{} already exists", target.display()), window, cx);
+        }
+        if let Err(err) = std::fs::rename(path, &target) {
+            return error(
+                format!("Could not move {}: {err}", path.display()),
+                window,
+                cx,
+            );
+        }
+        self.state.update(cx, |state, cx| {
+            state.file_moved(path.to_path_buf(), target, cx)
+        });
+        if let Some(model) = self.model.as_mut()
+            && model.root() != dir
+        {
+            model.set_expanded(dir, true);
+        }
+        let dirs = path.parent().into_iter().chain([dir]);
+        self.load(dirs.map(Path::to_path_buf).collect(), cx);
     }
 
     /// Moves to the Trash rather than deleting, so a slip is recoverable.
@@ -422,25 +544,42 @@ impl FileTree {
             .item(item("Copy Path", copy_path))
     }
 
-    /// Asks for a name, then creates a file (or folder) in the root.
-    fn new_in_root(&mut self, folder: bool, window: &mut Window, cx: &mut Context<Self>) {
+    /// Asks for a name, then creates a file (or folder) in the selected
+    /// folder, the selected file's folder, or the root.
+    fn new_in_selected(&mut self, folder: bool, window: &mut Window, cx: &mut Context<Self>) {
         let Some(root) = self.root().map(Path::to_path_buf) else {
             return;
         };
+        let selected = self.tree.read(cx).selected_entry().and_then(|entry| {
+            let id = entry.item().id.as_ref();
+            if model::is_placeholder(id) {
+                return None;
+            }
+            let path = PathBuf::from(id);
+            if entry.is_folder() {
+                Some(path)
+            } else {
+                path.parent().map(Path::to_path_buf)
+            }
+        });
+        let dir = selected
+            .filter(|dir| dir.starts_with(&root))
+            .unwrap_or(root);
         let title = if folder { "New Folder" } else { "New File" };
         self.prompt(
             title,
             "Create",
             "",
-            move |this, name, window, cx| this.create(root.clone(), name, folder, window, cx),
+            move |this, name, window, cx| this.create(dir.clone(), name, folder, window, cx),
             window,
             cx,
         );
     }
 }
 
-/// One compact row: a chevron on folders, the icon, then the name.
-fn render_row(ix: usize, entry: &TreeEntry, cx: &App) -> ListItem {
+/// One compact row: a chevron on folders, the icon, then the name. Rows drag;
+/// dropping on a folder moves into it, on a file into the file's folder.
+fn render_row(ix: usize, entry: &TreeEntry, this: &WeakEntity<FileTree>, cx: &App) -> ListItem {
     let item = entry.item();
     let indent = px(6. + INDENT * entry.depth() as f32);
     let muted = cx.theme().muted_foreground;
@@ -472,6 +611,31 @@ fn render_row(ix: usize, entry: &TreeEntry, cx: &App) -> ListItem {
         (true, false) => IconName::Folder,
         (false, _) => IconName::File,
     };
+    let path = PathBuf::from(item.id.as_ref());
+    let drop_dir = if entry.is_folder() {
+        path.clone()
+    } else {
+        path.parent()
+            .map_or_else(|| path.clone(), Path::to_path_buf)
+    };
+    let drop_bg = cx.theme().drop_target;
+    let row = row
+        .on_drag(
+            DraggedPath {
+                path: path.clone(),
+                name: item.label.clone(),
+            },
+            |dragged, _, _, cx| cx.new(|_| dragged.clone()),
+        )
+        .drag_over::<DraggedPath>(move |style, _, _, _| style.bg(drop_bg))
+        .on_drop({
+            let this = this.clone();
+            move |dragged: &DraggedPath, window, cx| {
+                let _ = this.update(cx, |this, cx| {
+                    this.move_into(&dragged.path, &drop_dir, window, cx)
+                });
+            }
+        });
     let row = row.child(
         h_flex()
             .gap_1()
@@ -496,10 +660,130 @@ fn render_row(ix: usize, entry: &TreeEntry, cx: &App) -> ListItem {
     if entry.is_folder() {
         return row;
     }
-    let path = PathBuf::from(item.id.as_ref());
     row.on_click(move |_, window, cx| {
         window.dispatch_action(Box::new(OpenFile { path: path.clone() }), cx);
     })
+}
+
+/// The query's matches: file names first, then lines grouped by file.
+fn render_results(results: &search::Results, cx: &App) -> AnyElement {
+    let theme = cx.theme();
+    let muted = theme.muted_foreground;
+    let mark = HighlightStyle {
+        color: Some(theme.foreground),
+        font_weight: Some(FontWeight::BOLD),
+        background_color: Some(theme.drop_target),
+        ..HighlightStyle::default()
+    };
+    let label = |text: &str| {
+        div()
+            .px_2()
+            .pt_2()
+            .pb_0p5()
+            .text_xs()
+            .text_color(muted)
+            .child(text.to_owned())
+    };
+    let row = |id: ElementId, depth: f32| {
+        h_flex()
+            .id(id)
+            .h(ROW_HEIGHT)
+            .pl(px(6. + INDENT * depth))
+            .pr_2()
+            .gap_1()
+            .rounded_sm()
+            .cursor_pointer()
+            .hover(|this| this.bg(theme.tokens.list_hover))
+            .whitespace_nowrap()
+            .overflow_hidden()
+    };
+    let mut list = v_flex()
+        .id("files-search-results")
+        .flex_1()
+        .min_h_0()
+        .p_1()
+        .overflow_y_scroll()
+        .text_sm();
+    if results.names.is_empty() && results.contents.is_empty() {
+        list = list.child(label("No matches"));
+    }
+    if !results.names.is_empty() {
+        list = list.child(label("Files"));
+    }
+    for (ix, hit) in results.names.iter().enumerate() {
+        let path = hit.path.clone();
+        list = list.child(
+            row(
+                ElementId::NamedInteger("files-name-hit".into(), ix as u64),
+                0.,
+            )
+            .child(Icon::new(IconName::File).small().text_color(muted))
+            .child(div().overflow_hidden().text_ellipsis().child(
+                StyledText::new(hit.relative.clone()).with_highlights([(hit.range.clone(), mark)]),
+            ))
+            .on_click(move |_, window, cx| {
+                window.dispatch_action(Box::new(OpenFile { path: path.clone() }), cx);
+            }),
+        );
+    }
+    if !results.contents.is_empty() {
+        list = list.child(label("In files"));
+    }
+    for (file_ix, file) in results.contents.iter().enumerate() {
+        let path = file.path.clone();
+        list = list.child(
+            row(
+                ElementId::NamedInteger("files-content-file".into(), file_ix as u64),
+                0.,
+            )
+            .child(Icon::new(IconName::File).small().text_color(muted))
+            .child(
+                div()
+                    .overflow_hidden()
+                    .text_ellipsis()
+                    .child(file.relative.clone()),
+            )
+            .on_click(move |_, window, cx| {
+                window.dispatch_action(Box::new(OpenFile { path: path.clone() }), cx);
+            }),
+        );
+        for (line_ix, hit) in file.lines.iter().enumerate() {
+            let path = file.path.clone();
+            let line = hit.line;
+            let id =
+                ElementId::NamedInteger(format!("files-line-hit-{file_ix}").into(), line_ix as u64);
+            list = list.child(
+                row(id, 1.)
+                    .child(
+                        div()
+                            .flex_shrink_0()
+                            .text_color(muted)
+                            .child(format!("{}", line + 1)),
+                    )
+                    .child(
+                        div().overflow_hidden().text_ellipsis().child(
+                            StyledText::new(hit.text.clone())
+                                .with_highlights([(hit.range.clone(), mark)]),
+                        ),
+                    )
+                    .on_click(move |_, window, cx| {
+                        window.dispatch_action(
+                            Box::new(OpenFileAt {
+                                path: path.clone(),
+                                line,
+                            }),
+                            cx,
+                        );
+                    }),
+            );
+        }
+    }
+    if results.truncated {
+        list = list.child(label(
+            "Showing the first matches; refine the search for more",
+        ));
+    }
+    list.into_any_element()
 }
 
 /// A single path component a user typed.
@@ -530,22 +814,54 @@ impl Render for FileTree {
                 .into_any_element();
         };
         let this = cx.entity().downgrade();
+        let search = div().p_1().child(
+            Input::new(&self.query).small().cleanable(true).prefix(
+                Icon::new(IconName::Search)
+                    .small()
+                    .text_color(cx.theme().muted_foreground),
+            ),
+        );
+        let body = match &self.results {
+            Some(results) => render_results(results, cx),
+            None => {
+                let rows = this.clone();
+                let menu = this.clone();
+                let root = self.root().map(Path::to_path_buf);
+                let drop_bg = cx.theme().drop_target;
+                // Drops that miss every row land in the root.
+                div()
+                    .flex_1()
+                    .min_h_0()
+                    .drag_over::<DraggedPath>(move |style, _, _, _| style.bg(drop_bg))
+                    .on_drop(move |dragged: &DraggedPath, window, cx| {
+                        let Some(root) = &root else { return };
+                        let _ = this.update(cx, |this, cx| {
+                            this.move_into(&dragged.path, root, window, cx)
+                        });
+                    })
+                    .child(
+                        tree(&self.tree, move |ix, entry, _selected, _window, cx| {
+                            render_row(ix, entry, &rows, cx)
+                        })
+                        .size_full()
+                        .p_1()
+                        .context_menu(
+                            move |_ix, entry, popup, _window, _cx| {
+                                Self::context_menu(&menu, entry, popup)
+                            },
+                        ),
+                    )
+                    .into_any_element()
+            }
+        };
         v_flex()
             .track_focus(&self.focus)
             .size_full()
             // Under the dock's title bar, like the main area's tab strip.
             .border_t_1()
             .border_color(cx.theme().border)
-            .child(
-                tree(&self.tree, |ix, entry, _selected, _window, cx| {
-                    render_row(ix, entry, cx)
-                })
-                .flex_1()
-                .p_1()
-                .context_menu(move |_ix, entry, menu, _window, _cx| {
-                    Self::context_menu(&this, entry, menu)
-                }),
-            )
+            .child(search)
+            .child(body)
             .into_any_element()
     }
 }
@@ -587,11 +903,15 @@ impl Panel for FileTree {
             Button::new("files-new-file")
                 .icon(IconName::Plus)
                 .tooltip("New File")
-                .on_click(cx.listener(|this, _, window, cx| this.new_in_root(false, window, cx))),
+                .on_click(
+                    cx.listener(|this, _, window, cx| this.new_in_selected(false, window, cx)),
+                ),
             Button::new("files-new-folder")
                 .icon(IconName::FolderClosed)
                 .tooltip("New Folder")
-                .on_click(cx.listener(|this, _, window, cx| this.new_in_root(true, window, cx))),
+                .on_click(
+                    cx.listener(|this, _, window, cx| this.new_in_selected(true, window, cx)),
+                ),
             Button::new("files-refresh")
                 .icon(IconName::RefreshCw)
                 .tooltip("Refresh")

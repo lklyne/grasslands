@@ -20,7 +20,7 @@ use self::dock::{Docks, MainPanel};
 use self::main_area::MainArea;
 use self::titlebar::DrawnTabs;
 pub use self::titlebar::window_options;
-use crate::actions::{CommandPalette, FocusPane, OpenContextMenu, OpenFile};
+use crate::actions::{CommandPalette, FocusPane, OpenContextMenu, OpenFile, OpenFileAt};
 use crate::chrome::Chrome;
 use crate::editor::{Editor, EditorEvent};
 use crate::overlay;
@@ -186,6 +186,12 @@ impl Workspace {
             .update(cx, |editor, cx| editor.open(&action.path, window, cx));
     }
 
+    fn open_file_at(&mut self, action: &OpenFileAt, window: &mut Window, cx: &mut Context<Self>) {
+        self.editor.update(cx, |editor, cx| {
+            editor.open_at(&action.path, action.line, window, cx)
+        });
+    }
+
     fn focus_pane(&mut self, action: &FocusPane, window: &mut Window, cx: &mut Context<Self>) {
         self.select(MainTab::Herdr, window, cx);
         self.terminal_area
@@ -233,6 +239,7 @@ impl Render for Workspace {
             .key_context(CONTEXT)
             .track_focus(&self.focus)
             .on_action(cx.listener(Self::open_file))
+            .on_action(cx.listener(Self::open_file_at))
             .on_action(cx.listener(Self::focus_pane))
             .on_action(cx.listener(Self::command_palette))
             .on_action(cx.listener(Self::open_context_menu))

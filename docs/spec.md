@@ -110,6 +110,9 @@ This also follows agents that move into another folder, since `foreground_cwd` t
 - GPUI Kit tree view rooted at the active worktree, with .gitignore respected.
 - Live updates from the file watcher as agents create, edit and delete files.
 - Click to open in the editor. Basic actions: new file, rename, delete, reveal in Finder.
+- New file/folder from the toolbar goes in the selected folder (or the selected file's folder), else the root.
+- Drag a file or folder onto a folder to move it there; onto a file to move it beside that file; onto empty space to move it to the root.
+- A search box above the tree matches file paths and file contents (smart case, .gitignore respected). Results replace the tree while the box has text; a line result opens the file at that line.
 
 ## Editor
 

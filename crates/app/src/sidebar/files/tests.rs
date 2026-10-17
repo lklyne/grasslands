@@ -261,3 +261,77 @@ fn cancel_in_prompt_should_create_nothing(cx: &mut TestAppContext) {
     cx.run_until_parked();
     assert!(!f.dir.join("no.txt").exists());
 }
+
+#[gpui::test]
+fn move_into_should_move_file_into_folder(cx: &mut TestAppContext) {
+    let f = fixture(cx, "move");
+    let (path, src) = (f.dir.join("a.txt"), f.dir.join("src"));
+    f.with_window(cx, |files, window, cx| {
+        files.move_into(&path, &src, window, cx)
+    });
+    assert_eq!(
+        f.rows(cx),
+        vec!["src", "  a.txt", "  main.rs", ".gitignore"]
+    );
+}
+
+#[gpui::test]
+fn move_into_should_refuse_folder_into_its_own_child(cx: &mut TestAppContext) {
+    let f = fixture(cx, "move-self");
+    let src = f.dir.join("src");
+    std::fs::create_dir_all(src.join("deep")).unwrap();
+    let deep = src.join("deep");
+    f.with_window(cx, |files, window, cx| {
+        files.move_into(&src, &deep, window, cx)
+    });
+    assert!(src.join("main.rs").is_file());
+}
+
+#[gpui::test]
+fn new_file_button_should_create_in_selected_folder(cx: &mut TestAppContext) {
+    let f = fixture(cx, "new-in-selected");
+    f.with_window(cx, |files, _, cx| {
+        files
+            .tree
+            .update(cx, |tree, cx| tree.set_selected_index(Some(0), cx))
+    });
+    f.with_window(cx, |files, window, cx| {
+        files.new_in_selected(false, window, cx)
+    });
+    cx.simulate_input(f.window, "lib.rs");
+    cx.simulate_keystrokes(f.window, "enter");
+    cx.run_until_parked();
+    assert!(f.dir.join("src/lib.rs").is_file());
+}
+
+#[gpui::test]
+fn typing_a_query_should_show_name_and_content_matches(cx: &mut TestAppContext) {
+    let f = fixture(cx, "search");
+    f.with_window(cx, |files, window, cx| {
+        files.query.update(cx, |query, cx| query.focus(window, cx))
+    });
+    cx.simulate_input(f.window, "main");
+    cx.executor().advance_clock(super::SEARCH_DEBOUNCE);
+    cx.run_until_parked();
+    let found = cx.read(|cx| {
+        f.files.read(cx).results.as_ref().map(|r| {
+            (
+                r.names
+                    .iter()
+                    .map(|h| h.relative.clone())
+                    .collect::<Vec<_>>(),
+                r.contents
+                    .iter()
+                    .map(|h| h.relative.clone())
+                    .collect::<Vec<_>>(),
+            )
+        })
+    });
+    assert_eq!(
+        found,
+        Some((
+            vec!["src/main.rs".to_owned()],
+            vec!["src/main.rs".to_owned()]
+        ))
+    );
+}
