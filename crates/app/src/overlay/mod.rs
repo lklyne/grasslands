@@ -33,7 +33,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use gpui_kit::base::Root;
-use gpui_kit::component::WindowExt as _;
+use gpui_kit::component::{ActiveTheme as _, WindowExt as _};
 use gpui_kit::*;
 
 pub use native::{app_is_active, ns_window, subviews as native_subviews};
@@ -608,7 +608,11 @@ struct OverlayContent {
 }
 
 impl Render for OverlayContent {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // base's Root doesn't size rems from the theme the way the main
+        // window's Kit root does; without this, menus and dialogs here draw
+        // `text_sm` from a 16px rem and come out larger than the app's.
+        window.set_rem_size(cx.theme().font_size);
         let this = cx.entity().downgrade();
         let overlay = self.overlay.clone();
         let kit_modal = self.kit_modal.clone();
