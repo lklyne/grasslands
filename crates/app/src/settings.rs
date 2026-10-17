@@ -3,12 +3,13 @@
 //! One window at a time; opening it again brings the open one forward.
 
 use gpui_kit::component::setting::{
-    SettingField, SettingGroup, SettingItem, SettingPage, Settings,
+    NumberFieldOptions, SettingField, SettingGroup, SettingItem, SettingPage, Settings,
 };
 use gpui_kit::component::{ActiveTheme as _, IconName, ThemeMode, ThemeRegistry, TitleBar, v_flex};
 use gpui_kit::*;
 
 use crate::actions::OpenSettings;
+use crate::sounds::{self, SoundTheme};
 use crate::theme::{self, Appearance};
 
 /// The open Settings window, if any.
@@ -68,7 +69,8 @@ impl Render for SettingsView {
                 div().flex_1().min_h_0().child(
                     Settings::new("settings")
                         .sidebar_width(px(180.))
-                        .page(appearance_page(cx)),
+                        .page(appearance_page(cx))
+                        .page(sounds_page()),
                 ),
             )
     }
@@ -123,6 +125,47 @@ fn appearance_page(cx: &App) -> SettingPage {
                     .description("Used in dark mode."),
                 ),
         )
+}
+
+fn sounds_page() -> SettingPage {
+    let themes = SoundTheme::ALL
+        .iter()
+        .map(|t| (t.key().into(), t.label().into()))
+        .collect();
+    let percent = NumberFieldOptions {
+        min: 0.,
+        max: 100.,
+        step: 10.,
+    };
+    SettingPage::new("Sounds").icon(IconName::Bell).group(
+        SettingGroup::new()
+            .item(
+                SettingItem::new(
+                    "Theme",
+                    SettingField::dropdown(
+                        themes,
+                        |cx| sounds::settings(cx).theme.key().into(),
+                        |key: SharedString, cx| {
+                            if let Some(theme) = SoundTheme::from_key(&key) {
+                                sounds::set_theme(theme, cx);
+                            }
+                        },
+                    ),
+                )
+                .description("The material of interface and agent sounds, or off."),
+            )
+            .item(
+                SettingItem::new(
+                    "Volume",
+                    SettingField::number_input(
+                        percent,
+                        |cx| (f64::from(sounds::settings(cx).volume) * 100.).round(),
+                        |percent, cx| sounds::set_volume((percent / 100.) as f32, cx),
+                    ),
+                )
+                .description("Percent."),
+            ),
+    )
 }
 
 /// Every registered theme of `mode`, the Kit's default first, then by name.
