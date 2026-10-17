@@ -797,9 +797,11 @@ impl TerminalArea {
             .map(|w| w.tabs.iter().map(|tab| tab.info.clone()).collect())
             .unwrap_or_default();
         let active_id = active.map(|tab| tab.info.tab_id.clone());
-        let (tab_bar, active_bg, muted, border, drop) = (
-            theme.tab_bar,
-            theme.tab_active,
+        // The strip wears the panel headers' background, so the selected tab
+        // is marked by an accent line rather than a fill.
+        let (strip_bg, accent, muted, border, drop) = (
+            theme.background,
+            theme.primary,
             theme.muted_foreground,
             theme.border,
             theme.drop_target,
@@ -810,7 +812,7 @@ impl TerminalArea {
             // the strip's bottom line meets theirs.
             .h(px(31.))
             .flex_shrink_0()
-            .bg(tab_bar)
+            .bg(strip_bg)
             .border_b_1()
             .border_color(border)
             .text_sm()
@@ -835,7 +837,13 @@ impl TerminalArea {
                     .items_center()
                     .border_r_1()
                     .border_color(border)
-                    .when(is_active, |tab| tab.bg(active_bg))
+                    .map(|el| {
+                        if is_active {
+                            el.child(active_tab_line(accent))
+                        } else {
+                            el.text_color(muted)
+                        }
+                    })
                     .child(status_dot(tab.agent_status, cx))
                     .child(if tab.label.is_empty() {
                         tab.number.to_string()
@@ -1284,6 +1292,18 @@ fn pane_label(pane: &PaneInfo) -> String {
             Some(dir.file_name()?.to_string_lossy().into_owned())
         })
         .unwrap_or_else(|| "Terminal".to_owned())
+}
+
+/// The selected tab's marker in the titlebar strip: a line along its bottom
+/// edge, over the strip's border. The tab must be `relative`.
+pub fn active_tab_line(accent: Hsla) -> impl IntoElement {
+    div()
+        .absolute()
+        .left_0()
+        .right_0()
+        .bottom_0()
+        .h(px(2.))
+        .bg(accent)
 }
 
 fn status_dot(status: AgentStatus, cx: &App) -> impl IntoElement {

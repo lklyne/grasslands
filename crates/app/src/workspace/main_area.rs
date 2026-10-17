@@ -84,7 +84,7 @@ impl Workspace {
     fn render_file_tabs(&self, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let selected = self.selected_index(cx);
         let theme = cx.theme();
-        let (active_bg, muted, border) = (theme.tab_active, theme.muted_foreground, theme.border);
+        let (accent, muted, border) = (theme.primary, theme.muted_foreground, theme.border);
         let warning = theme.warning;
         self.editor
             .read(cx)
@@ -107,7 +107,7 @@ impl Workspace {
                     .border_color(border)
                     .map(|this| {
                         if selected == index {
-                            this.bg(active_bg)
+                            this.child(crate::terminal_area::active_tab_line(accent))
                         } else {
                             this.text_color(muted)
                         }
