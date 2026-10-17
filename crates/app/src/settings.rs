@@ -9,7 +9,7 @@ use gpui_kit::component::{ActiveTheme as _, IconName, ThemeMode, ThemeRegistry, 
 use gpui_kit::*;
 
 use crate::actions::OpenSettings;
-use crate::sounds::{self, SoundTheme};
+use crate::sounds;
 use crate::theme::{self, Appearance};
 
 /// The open Settings window, if any.
@@ -39,8 +39,20 @@ fn open(cx: &mut App) -> anyhow::Result<()> {
     if let Some(titlebar) = options.titlebar.as_mut() {
         titlebar.title = Some("Settings".into());
     }
+    // Open on the display the user is working on, not the main one.
+    let display_id = cx.active_window().and_then(|window| {
+        window
+            .update(cx, |_, window, cx| window.display(cx).map(|display| display.id()))
+            .ok()
+            .flatten()
+    });
     let options = WindowOptions {
-        window_bounds: Some(WindowBounds::centered(size(px(760.), px(520.)), cx)),
+        window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
+            display_id,
+            size(px(760.), px(520.)),
+            cx,
+        ))),
+        display_id,
         window_min_size: Some(size(px(520.), px(360.))),
         ..options
     };
@@ -128,9 +140,9 @@ fn appearance_page(cx: &App) -> SettingPage {
 }
 
 fn sounds_page() -> SettingPage {
-    let themes = SoundTheme::ALL
+    let themes = sounds::THEMES
         .iter()
-        .map(|t| (t.key().into(), t.label().into()))
+        .map(|(_, key, label)| ((*key).into(), (*label).into()))
         .collect();
     let percent = NumberFieldOptions {
         min: 0.,
@@ -141,18 +153,25 @@ fn sounds_page() -> SettingPage {
         SettingGroup::new()
             .item(
                 SettingItem::new(
+                    "Sound",
+                    SettingField::switch(|cx| sounds::settings(cx).enabled, sounds::set_enabled),
+                )
+                .description("Interface and agent sounds."),
+            )
+            .item(
+                SettingItem::new(
                     "Theme",
                     SettingField::dropdown(
                         themes,
-                        |cx| sounds::settings(cx).theme.key().into(),
+                        |cx| sounds::theme_key(sounds::settings(cx).theme).into(),
                         |key: SharedString, cx| {
-                            if let Some(theme) = SoundTheme::from_key(&key) {
+                            if let Some(theme) = sounds::theme_from_key(&key) {
                                 sounds::set_theme(theme, cx);
                             }
                         },
                     ),
                 )
-                .description("The material of interface and agent sounds, or off."),
+                .description("The material the sounds are made of."),
             )
             .item(
                 SettingItem::new(

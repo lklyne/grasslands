@@ -1,5 +1,5 @@
 //! Interface and status sounds through `cues`, the cuelume port. One
-//! app-wide [`Cues`], created on first use; the theme and volume picked in
+//! app-wide [`Cues`], created on first use; the on/off, theme and volume picked in
 //! Settings → Sounds, saved under `"sounds"` in the settings file.
 
 use std::sync::OnceLock;
@@ -35,48 +35,33 @@ pub fn enabled() -> bool {
     ENABLED.load(Ordering::Relaxed)
 }
 
-/// A choice in the Theme dropdown: one of cuelume's materials, or off.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct SoundTheme(Option<Theme>);
+/// The Theme dropdown's choices: settings key, label.
+pub const THEMES: [(Theme, &str, &str); 4] = [
+    (Theme::Default, "default", "Default"),
+    (Theme::Mech, "mech", "Mech"),
+    (Theme::Bubble, "bubble", "Bubble"),
+    (Theme::Press, "press", "Press"),
+];
 
-impl SoundTheme {
-    pub const ALL: [Self; 5] = [
-        Self(Some(Theme::Default)),
-        Self(Some(Theme::Mech)),
-        Self(Some(Theme::Bubble)),
-        Self(Some(Theme::Press)),
-        Self(None),
-    ];
+pub fn theme_key(theme: Theme) -> &'static str {
+    THEMES
+        .iter()
+        .find(|(t, ..)| *t == theme)
+        .map_or("default", |(_, key, _)| key)
+}
 
-    pub fn key(self) -> &'static str {
-        match self.0 {
-            Some(Theme::Default) => "default",
-            Some(Theme::Mech) => "mech",
-            Some(Theme::Bubble) => "bubble",
-            Some(Theme::Press) => "press",
-            None => "off",
-        }
-    }
-
-    pub fn label(self) -> &'static str {
-        match self.0 {
-            Some(Theme::Default) => "Default",
-            Some(Theme::Mech) => "Mech",
-            Some(Theme::Bubble) => "Bubble",
-            Some(Theme::Press) => "Press",
-            None => "Off",
-        }
-    }
-
-    pub fn from_key(key: &str) -> Option<Self> {
-        Self::ALL.into_iter().find(|theme| theme.key() == key)
-    }
+pub fn theme_from_key(key: &str) -> Option<Theme> {
+    THEMES
+        .iter()
+        .find(|(_, k, _)| *k == key)
+        .map(|(theme, ..)| *theme)
 }
 
 /// The saved sound choice.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct SoundSettings {
-    pub theme: SoundTheme,
+    pub enabled: bool,
+    pub theme: Theme,
     /// 0–1.
     pub volume: f32,
 }
@@ -86,7 +71,8 @@ impl Global for SoundSettings {}
 impl Default for SoundSettings {
     fn default() -> Self {
         Self {
-            theme: SoundTheme(Some(Theme::Default)),
+            enabled: true,
+            theme: Theme::Default,
             volume: 1.0,
         }
     }
@@ -94,16 +80,18 @@ impl Default for SoundSettings {
 
 impl SoundSettings {
     /// Reads the `"sounds"` object from a settings file's JSON, keeping the
-    /// defaults for anything missing or malformed.
+    /// defaults for anything missing or malformed. A `"theme": "off"` from
+    /// before the on/off switch reads as off.
     fn from_json(json: &Map<String, Value>) -> Self {
         let defaults = Self::default();
         let sounds = json.get("sounds");
         let field = |key: &str| sounds.and_then(|sounds| sounds.get(key));
+        let theme = field("theme").and_then(Value::as_str);
         Self {
-            theme: field("theme")
-                .and_then(Value::as_str)
-                .and_then(SoundTheme::from_key)
-                .unwrap_or(defaults.theme),
+            enabled: field("enabled")
+                .and_then(Value::as_bool)
+                .unwrap_or(theme != Some("off")),
+            theme: theme.and_then(theme_from_key).unwrap_or(defaults.theme),
             volume: field("volume")
                 .and_then(Value::as_f64)
                 .map_or(defaults.volume, |volume| volume.clamp(0.0, 1.0) as f32),
@@ -113,18 +101,16 @@ impl SoundSettings {
     fn write_json(&self, json: &mut Map<String, Value>) {
         json.insert(
             "sounds".into(),
-            json!({ "theme": self.theme.key(), "volume": self.volume }),
+            json!({ "enabled": self.enabled, "theme": theme_key(self.theme), "volume": self.volume }),
         );
     }
 
     fn apply(&self) {
-        ENABLED.store(self.theme.0.is_some(), Ordering::Relaxed);
+        ENABLED.store(self.enabled, Ordering::Relaxed);
         let Some(cues) = cues() else { return };
-        if let Some(theme) = self.theme.0 {
-            cues.set_theme(theme);
-        }
+        cues.set_theme(self.theme);
         cues.set_volume(self.volume);
-        cues.set_enabled(self.theme.0.is_some());
+        cues.set_enabled(self.enabled);
     }
 }
 
@@ -143,17 +129,24 @@ pub fn settings(cx: &App) -> SoundSettings {
     *cx.global::<SoundSettings>()
 }
 
+/// Turns sounds on or off and saves it; turning on plays a `Toggle`.
+pub fn set_enabled(enabled: bool, cx: &mut App) {
+    update(cx, |settings| settings.enabled = enabled);
+    if let Some(cues) = cues().filter(|_| enabled) {
+        cues.play(Cue::Toggle, PlayOptions::default());
+    }
+}
+
 /// Picks a theme, saves it, and previews it: `Ready`, then `Attention`.
-pub fn set_theme(theme: SoundTheme, cx: &mut App) {
+pub fn set_theme(theme: Theme, cx: &mut App) {
     update(cx, |settings| settings.theme = theme);
-    let preview = theme.0.and_then(|theme| {
-        let cues = cues()?;
-        cues.play(Cue::Ready, PlayOptions::default().theme(theme));
+    let preview = cues().map(|cues| {
+        cues.play(Cue::Ready, PlayOptions::default());
         let gap = cx.background_executor().timer(PREVIEW_GAP);
-        Some(cx.background_executor().spawn(async move {
+        cx.background_executor().spawn(async move {
             gap.await;
-            cues.play(Cue::Attention, PlayOptions::default().theme(theme));
-        }))
+            cues.play(Cue::Attention, PlayOptions::default());
+        })
     });
     cx.set_global(Preview(preview));
 }
@@ -176,7 +169,7 @@ fn update(cx: &mut App, edit: impl FnOnce(&mut SoundSettings)) {
 
 #[cfg(test)]
 mod tests {
-    use super::{SoundSettings, SoundTheme, Theme};
+    use super::{SoundSettings, Theme};
     use serde_json::{Map, Value, json};
 
     fn object(value: Value) -> Map<String, Value> {
@@ -189,7 +182,8 @@ mod tests {
     #[test]
     fn settings_round_trip_through_json() {
         let settings = SoundSettings {
-            theme: SoundTheme(Some(Theme::Press)),
+            enabled: false,
+            theme: Theme::Press,
             volume: 0.5,
         };
         let mut json = Map::new();
@@ -198,19 +192,16 @@ mod tests {
     }
 
     #[test]
-    fn off_is_saved_as_off() {
-        let mut json = Map::new();
-        SoundSettings {
-            theme: SoundTheme(None),
-            volume: 1.0,
-        }
-        .write_json(&mut json);
-        assert_eq!(json["sounds"]["theme"], json!("off"));
+    fn theme_off_from_before_the_switch_reads_as_off() {
+        let json = object(json!({ "sounds": { "theme": "off", "volume": 0.4 } }));
+        let settings = SoundSettings::from_json(&json);
+        assert_eq!((settings.enabled, settings.theme), (false, Theme::Default));
     }
 
     #[test]
     fn missing_or_malformed_keys_keep_defaults() {
-        let json = object(json!({ "sounds": { "theme": "kazoo", "volume": "loud" } }));
+        let json =
+            object(json!({ "sounds": { "enabled": "yes", "theme": "kazoo", "volume": "loud" } }));
         assert_eq!(SoundSettings::from_json(&json), SoundSettings::default());
     }
 
