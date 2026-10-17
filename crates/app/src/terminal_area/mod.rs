@@ -735,7 +735,18 @@ impl TerminalArea {
 
     // Rendering
 
-    fn render_tab_bar(&self, snapshot: &Snapshot, cx: &mut Context<Self>) -> impl IntoElement {
+    /// The main area's tab strip: the focused workspace's herdr tabs, then
+    /// `files` (the editor's tabs, drawn by the workspace), then +. The
+    /// workspace draws it above whichever of the terminals or the editor is
+    /// showing; `herdr_selected` says which.
+    pub fn render_tab_bar(
+        &self,
+        herdr_selected: bool,
+        files: Vec<AnyElement>,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        self.drawn.borrow_mut().tabs.clear();
+        let snapshot = &*self.snapshot(cx);
         let theme = cx.theme();
         let active = Self::active_tab(snapshot);
         let workspace = active.and_then(|tab| snapshot.workspace(&tab.info.workspace_id));
@@ -759,16 +770,8 @@ impl TerminalArea {
             .border_b_1()
             .border_color(border)
             .text_sm()
-            .when_some(workspace, |bar, workspace| {
-                bar.child(
-                    div()
-                        .px_3()
-                        .text_color(muted)
-                        .child(workspace.info.label.clone()),
-                )
-            })
             .children(tabs.into_iter().map(|tab| {
-                let is_active = active_id.as_deref() == Some(tab.tab_id.as_str());
+                let is_active = herdr_selected && active_id.as_deref() == Some(tab.tab_id.as_str());
                 let (focus_id, close_id, drop_id, menu_id) = (
                     tab.tab_id.clone(),
                     tab.tab_id.clone(),
@@ -807,7 +810,8 @@ impl TerminalArea {
                                 this.close_tab_confirmed(close_id.clone(), window, cx);
                             })),
                     )
-                    .on_click(cx.listener(move |this, _, _, cx| {
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        window.dispatch_action(Box::new(crate::workspace::ShowHerdr), cx);
                         this.state
                             .read(cx)
                             .focus_tab(&focus_id, cx)
@@ -840,6 +844,7 @@ impl TerminalArea {
                             .detach_and_log_err(cx);
                     }))
             }))
+            .children(files)
             .child(
                 div()
                     .id("new-tab")
@@ -870,6 +875,7 @@ impl TerminalArea {
                             .detach_and_log_err(cx);
                     })),
             )
+            .into_any_element()
     }
 
     fn render_node(
@@ -1254,7 +1260,6 @@ impl Render for TerminalArea {
             drawn.panes.clear();
             drawn.splits.clear();
             drawn.headers.clear();
-            drawn.tabs.clear();
             drawn.reattach.clear();
         }
 
@@ -1360,7 +1365,6 @@ impl Render for TerminalArea {
                 this.resize_focused(PaneDirection::Down, cx)
             }))
             .on_action(cx.listener(|this, _: &ToggleZoom, _, cx| this.toggle_zoom(cx)))
-            .child(self.render_tab_bar(&snapshot, cx))
             .child(div().flex_1().min_h_0().p(GAP).child(body))
             .child(
                 // Window-wide pointer tracking for divider and pane drags.

@@ -6,6 +6,7 @@
 //! sideways).
 
 pub mod dock;
+mod main_area;
 mod titlebar;
 
 use std::cell::RefCell;
@@ -16,6 +17,7 @@ use gpui_kit::component::{ActiveTheme as _, v_flex};
 use gpui_kit::*;
 
 use self::dock::{Docks, MainPanel};
+use self::main_area::MainArea;
 use self::titlebar::DrawnTabs;
 pub use self::titlebar::window_options;
 use crate::actions::{CommandPalette, FocusPane, OpenContextMenu, OpenFile};
@@ -99,11 +101,12 @@ impl Workspace {
         ];
         let id = window.window_handle().window_id();
         let this = cx.entity().downgrade();
-        cx.default_global::<Workspaces>().0.insert(id, this);
+        cx.default_global::<Workspaces>().0.insert(id, this.clone());
         let terminal_area = cx.new(|cx| TerminalArea::new(state.clone(), window, cx));
+        let main_area = cx.new(|_| MainArea::new(this));
         let main_panel = cx.new(|cx| {
             let mut panel = MainPanel::new(cx);
-            panel.set_content(terminal_area.clone().into(), cx);
+            panel.set_content(main_area.into(), cx);
             panel
         });
         let sidebar = SidebarPanels::new(state.clone(), window, cx);
@@ -145,12 +148,7 @@ impl Workspace {
         self.terminal_area.update(cx, |area, cx| {
             area.set_visible(herdr && !self.dragging, window, cx)
         });
-        let content: AnyView = match tab {
-            MainTab::Herdr => self.terminal_area.clone().into(),
-            MainTab::Files => self.editor.clone().into(),
-        };
-        self.main_panel
-            .update(cx, |panel, cx| panel.set_content(content, cx));
+        self.main_panel.update(cx, |_, cx| cx.notify());
         if changed && !herdr {
             self.editor
                 .update(cx, |editor, cx| editor.focus_active(window, cx));

@@ -43,14 +43,13 @@ Always check crates.io for a newer patch before adding a dependency.
 
 ```
 ┌──────────────────────── GPUI app ────────────────────────┐
-│ ● ● ●  [herdr] [one/mod.rs ●×] [notes.md ×]   (titlebar)  │
+│ ● ● ●  rusted-tools (focused space)           (titlebar)  │
 ├──────────────────┬────────────────────────────────────────┤
-│ Sidebar          │ Main area: the selected titlebar tab    │
-│ - Workspaces,    │ herdr tab:                              │
-│   each with its  │ - herdr tab bar                         │
-│   agents         │ - Split tree of Ghostty views           │
-│ - File tree      │   (focused workspace)                   │
-│                  │ file tab: the code editor, full size    │
+│ Dock panels      │ Main area                               │
+│ (draggable):     │ [1] [2] [one/mod.rs ●×] [notes.md ×] [+]│
+│ - Spaces         │ herdr tab: split tree of Ghostty views  │
+│ - Agents         │   (focused workspace)                   │
+│ - Files          │ file tab: the code editor               │
 └───────▲──────────────────────────────────────▲───────────┘
         │ socket: snapshot, events, commands  │ PTY: herdr terminal attach
 ┌───────┴──────────────────────────────────────┴───────────┐
@@ -114,7 +113,7 @@ This also follows agents that move into another folder, since `foreground_cwd` t
 
 ## Editor
 
-- GPUI Kit code editor with syntax highlighting. Each open file is a tab in the window's titlebar, after the fixed herdr tab; selecting a file tab shows the editor in the whole main area.
+- GPUI Kit code editor with syntax highlighting. Each open file is a tab in the main area's tab strip, after the focused space's herdr tabs; selecting a file tab shows the editor in place of the terminals. The titlebar shows the focused space's name.
 - Open, edit, save, close. Unsaved changes are marked on the tab.
 - Open files are grouped per worktree; switching worktrees swaps to that worktree's file tabs. With no file tab selected (or none open) the main area shows herdr.
 - When an agent changes an open file on disk, it reloads automatically. If you have unsaved edits, you're asked whether to keep yours or take the agent's.
