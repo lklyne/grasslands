@@ -1,6 +1,37 @@
-//! The dock badge and alert sounds. GPUI has neither, so this calls AppKit.
+//! The dock icon, badge and alert sounds. GPUI has none of them, so this
+//! calls AppKit.
 
 use crate::herdr::AgentStatus;
+
+/// Gives an unbundled run (`cargo run`, `scripts/relaunch-main`) the app icon
+/// in the dock. A bundle's own icon is left alone: macOS draws its Assets.car
+/// as glass, which this flat copy would replace.
+pub fn set_icon() {
+    #[cfg(target_os = "macos")]
+    {
+        use objc2::{AllocAnyThread as _, MainThreadMarker};
+        use objc2_app_kit::{NSApplication, NSImage};
+        use objc2_foundation::NSData;
+
+        static ICON: &[u8] = include_bytes!("../../assets/AppIcon.compiled/AppIcon.icns");
+
+        let bundled = std::env::current_exe()
+            .is_ok_and(|exe| exe.to_string_lossy().contains(".app/Contents/MacOS/"));
+        let Some(mtm) = MainThreadMarker::new() else {
+            return;
+        };
+        if bundled {
+            return;
+        }
+        let data = NSData::with_bytes(ICON);
+        if let Some(image) = NSImage::initWithData(NSImage::alloc(), &data) {
+            // SAFETY: on the main thread, with an image AppKit decoded itself.
+            unsafe {
+                NSApplication::sharedApplication(mtm).setApplicationIconImage(Some(&image));
+            }
+        }
+    }
+}
 
 /// Shows `count` on the dock icon, or clears it at zero.
 pub fn set_badge(count: usize) {

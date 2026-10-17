@@ -35,7 +35,9 @@ use crate::state::{AppEvent, AppState};
 pub use command::HerdrCommand;
 pub use confirm::Confirmation;
 
-pub fn init(_cx: &mut App) {}
+pub fn init(_cx: &mut App) {
+    dock::set_icon();
+}
 
 /// What a context menu is about. The terminal area opens one per pane and
 /// tab, the sidebar per workspace and agent.
