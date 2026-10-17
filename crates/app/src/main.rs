@@ -10,6 +10,7 @@ extern crate gpui_kit as gpui;
 mod actions;
 mod assets;
 mod attention;
+mod changes;
 mod chrome;
 mod editor;
 mod herdr;

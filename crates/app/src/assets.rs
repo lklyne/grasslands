@@ -6,7 +6,10 @@ use std::borrow::Cow;
 use gpui_kit::assets::{Assets, icon_assets};
 use gpui_kit::*;
 
-icon_assets!(ExtraIcons, [CircleQuestionMark, GitBranch, GitMerge]);
+icon_assets!(
+    ExtraIcons,
+    [CircleQuestionMark, GitBranch, GitCompare, GitMerge]
+);
 
 pub struct AppAssets;
 

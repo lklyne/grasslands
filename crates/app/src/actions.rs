@@ -10,7 +10,18 @@ use gpui_kit::*;
 
 use crate::chrome::MenuTarget;
 
-actions!(app, [Quit, ToggleTheme, CommandPalette, OpenSettings]);
+actions!(
+    app,
+    [
+        Quit,
+        ToggleTheme,
+        CommandPalette,
+        OpenSettings,
+        /// Show the active worktree's diff in the Changes tab. Sent by the
+        /// file tree's git footer.
+        OpenChanges
+    ]
+);
 
 /// Open a file in the editor. Sent by the file tree, the command palette, and
 /// anything else that wants a file on screen.

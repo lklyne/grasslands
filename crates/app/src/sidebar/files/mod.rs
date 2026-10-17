@@ -6,9 +6,9 @@
 //! up live. Clicking a file sends `OpenFile`; the context menu creates,
 //! renames, trashes and reveals. Rows drag onto folders to move them. The
 //! search box above swaps the tree for name and content matches. A footer
-//! shows the branch, its parent and the lines changed since (see `git`).
+//! shows the branch, its parent and the lines changed since (see
+//! `crate::changes`); clicking it opens the Changes tab.
 
-mod git;
 mod model;
 mod search;
 mod watch;
@@ -36,7 +36,8 @@ use gpui_kit::*;
 
 use self::model::FileModel;
 use self::watch::RootWatcher;
-use crate::actions::{OpenFile, OpenFileAt};
+use crate::actions::{OpenChanges, OpenFile, OpenFileAt};
+use crate::changes::git;
 use crate::state::{AppEvent, AppState};
 
 /// Watcher events arriving within this window are folded into one re-list.
@@ -853,7 +854,7 @@ fn render_results(results: &search::Results, cx: &App) -> AnyElement {
 
 /// A single path component a user typed.
 /// The footer: branch, parent branch, and lines added and removed.
-fn render_git(git: &git::Summary, cx: &App) -> AnyElement {
+fn render_git(git: &git::Summary, cx: &App) -> Stateful<Div> {
     let muted = cx.theme().muted_foreground;
     let branch = |icon: assets::IconName, name: &str| {
         h_flex()
@@ -869,7 +870,10 @@ fn render_git(git: &git::Summary, cx: &App) -> AnyElement {
             )
     };
     h_flex()
+        .id("files-git")
         .flex_none()
+        .cursor_pointer()
+        .hover(|style| style.bg(cx.theme().list_hover))
         .gap_3()
         .px_2p5()
         .py_1p5()
@@ -902,7 +906,6 @@ fn render_git(git: &git::Summary, cx: &App) -> AnyElement {
                         .child(format!("-{removed}")),
                 )
         }))
-        .into_any_element()
 }
 
 fn valid_name(name: &str) -> Result<&str, String> {
@@ -980,7 +983,13 @@ impl Render for FileTree {
             .border_color(cx.theme().border)
             .child(search)
             .child(body)
-            .children(self.git.as_ref().map(|git| render_git(git, cx)))
+            .children(self.git.as_ref().map(|git| {
+                render_git(git, cx).on_click(cx.listener(|this, _, window, cx| {
+                    // Dispatch from inside `Workspace`, which opens the tab.
+                    window.focus(&this.focus, cx);
+                    window.dispatch_action(Box::new(OpenChanges), cx);
+                }))
+            }))
             .into_any_element()
     }
 }

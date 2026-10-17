@@ -1,5 +1,6 @@
-//! The footer's git summary: the worktree's branch, the branch it was cut
-//! from, and the lines added and removed since then, read with git2.
+//! A worktree's changes, read with git2: its branch, the branch it was cut
+//! from, and the diff since then, as line counts (the file tree's footer) or
+//! a patch (the Changes tab).
 //!
 //! The parent is the repo's default branch: the local branch `origin/HEAD`
 //! names, else `main`, else `master`. On that branch itself the parent is
@@ -23,32 +24,58 @@ pub struct Summary {
 /// The summary for the checkout containing `dir`, or `None` outside git.
 pub fn read(dir: &Path) -> Option<Summary> {
     let repo = git2::Repository::discover(dir).ok()?;
-    // Read HEAD's target rather than `repo.head()`, which fails before the
-    // first commit.
-    let branch = repo
-        .find_reference("HEAD")
-        .ok()
-        .and_then(|head| head.symbolic_target().ok().flatten().map(str::to_owned))
-        .map(|target| {
-            target
-                .strip_prefix("refs/heads/")
-                .unwrap_or(&target)
-                .to_owned()
-        });
+    let branch = branch(&repo);
     let parent = branch.as_deref().and_then(|b| parent(&repo, b));
-    let base = match &parent {
-        Some((_, oid)) => repo
-            .head()
-            .ok()
-            .and_then(|h| h.target())
-            .and_then(|head| repo.merge_base(head, *oid).ok()),
-        None => repo.head().ok().and_then(|h| h.target()),
-    };
+    let base = base(&repo, parent.as_ref().map(|(_, oid)| *oid));
+    let diff = diff_since(&repo, base)
+        .and_then(|diff| diff.stats().ok())
+        .map(|stats| (stats.insertions(), stats.deletions()));
     Some(Summary {
         branch,
         parent: parent.map(|(name, _)| name),
-        diff: diff_since(&repo, base),
+        diff,
     })
+}
+
+/// The same diff `read` counts, as a git-style patch.
+pub fn patch(dir: &Path) -> Option<String> {
+    let repo = git2::Repository::discover(dir).ok()?;
+    let parent = branch(&repo).and_then(|branch| parent(&repo, &branch));
+    let base = base(&repo, parent.map(|(_, oid)| oid));
+    let diff = diff_since(&repo, base)?;
+    let mut patch = String::new();
+    diff.print(git2::DiffFormat::Patch, |_, _, line| {
+        // Context and change lines come without their marker.
+        if matches!(line.origin(), ' ' | '+' | '-') {
+            patch.push(line.origin());
+        }
+        patch.push_str(&String::from_utf8_lossy(line.content()));
+        true
+    })
+    .ok()?;
+    Some(patch)
+}
+
+/// The branch HEAD names, `None` when detached. Reads HEAD's target rather
+/// than `repo.head()`, which fails before the first commit.
+fn branch(repo: &git2::Repository) -> Option<String> {
+    let head = repo.find_reference("HEAD").ok()?;
+    let target = head.symbolic_target().ok().flatten()?;
+    Some(
+        target
+            .strip_prefix("refs/heads/")
+            .unwrap_or(target)
+            .to_owned(),
+    )
+}
+
+/// Where the diff starts: the merge base with the parent's tip, else HEAD.
+fn base(repo: &git2::Repository, parent: Option<git2::Oid>) -> Option<git2::Oid> {
+    let head = repo.head().ok()?.target()?;
+    match parent {
+        Some(parent) => repo.merge_base(head, parent).ok(),
+        None => Some(head),
+    }
 }
 
 /// The parent branch's short name and tip.
@@ -88,9 +115,9 @@ fn default_branch(repo: &git2::Repository) -> Option<String> {
     })
 }
 
-/// Lines added and removed from `base` to the working tree; from the empty
-/// tree when `base` is `None` (before the first commit).
-fn diff_since(repo: &git2::Repository, base: Option<git2::Oid>) -> Option<(usize, usize)> {
+/// From `base` to the working tree; from the empty tree when `base` is
+/// `None` (before the first commit).
+fn diff_since(repo: &git2::Repository, base: Option<git2::Oid>) -> Option<git2::Diff<'_>> {
     let tree = match base {
         Some(oid) => Some(repo.find_commit(oid).ok()?.tree().ok()?),
         None => None,
@@ -100,11 +127,8 @@ fn diff_since(repo: &git2::Repository, base: Option<git2::Oid>) -> Option<(usize
         .include_untracked(true)
         .recurse_untracked_dirs(true)
         .show_untracked_content(true);
-    let diff = repo
-        .diff_tree_to_workdir_with_index(tree.as_ref(), Some(&mut options))
-        .ok()?;
-    let stats = diff.stats().ok()?;
-    Some((stats.insertions(), stats.deletions()))
+    repo.diff_tree_to_workdir_with_index(tree.as_ref(), Some(&mut options))
+        .ok()
 }
 
 #[cfg(test)]
@@ -115,7 +139,7 @@ mod tests {
 
     fn temp_dir(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!(
-            "grasslands-files-git-{name}-{}",
+            "grasslands-changes-git-{name}-{}",
             std::process::id()
         ));
         let _ = std::fs::remove_dir_all(&dir);
@@ -194,6 +218,22 @@ mod tests {
             (summary.branch.as_deref(), summary.diff),
             (Some("dev"), Some((1, 0)))
         );
+    }
+
+    #[test]
+    fn patch_should_hold_edits_and_new_files_since_parent() {
+        let dir = temp_dir("patch");
+        let repo = repo_on_main(&dir);
+        let head = repo.head().unwrap().peel_to_commit().unwrap();
+        repo.branch("feat", &head, false).unwrap();
+        repo.set_head("refs/heads/feat").unwrap();
+        std::fs::write(dir.join("a.txt"), "one\n2\n").unwrap();
+        commit_all(&repo, "edit");
+        std::fs::write(dir.join("new.txt"), "x\n").unwrap();
+        let patch = patch(&dir).unwrap();
+        for line in ["diff --git a/a.txt b/a.txt", " one", "-two", "+2", "+x"] {
+            assert!(patch.lines().any(|l| l == line), "{line:?} in {patch}");
+        }
     }
 
     #[test]

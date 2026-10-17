@@ -1,7 +1,7 @@
 //! The window's root view: the titlebar tab strip over the dock, which holds
 //! the main area in its center and the sidebar panels in its left dock. The
-//! main area shows the terminal area (the herdr tab) or the editor (a file
-//! tab). Also routes cross-module actions to
+//! main area shows the terminal area (the herdr tab), the editor (a file
+//! tab) or the worktree's diff (the Changes tab, after the files). Also routes cross-module actions to
 //! the view that owns them (actions bubble up the focus path to here, not
 //! sideways).
 
@@ -20,7 +20,10 @@ use self::dock::{Docks, MainPanel};
 use self::main_area::MainArea;
 use self::titlebar::DrawnTabs;
 pub use self::titlebar::window_options;
-use crate::actions::{CommandPalette, FocusPane, OpenContextMenu, OpenFile, OpenFileAt};
+use crate::actions::{
+    CommandPalette, FocusPane, OpenChanges, OpenContextMenu, OpenFile, OpenFileAt,
+};
+use crate::changes::Changes;
 use crate::chrome::Chrome;
 use crate::editor::{Editor, EditorEvent};
 use crate::overlay;
@@ -44,12 +47,13 @@ pub fn init(cx: &mut App) {
     ]);
 }
 
-/// What the main area shows: the herdr terminal area, or the editor's
-/// selected file.
+/// What the main area shows: the herdr terminal area, the editor's
+/// selected file, or the Changes tab.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MainTab {
     Herdr,
     Files,
+    Changes,
 }
 
 /// Each main window's workspace, for the script hooks: see [`get`].
@@ -86,6 +90,8 @@ pub struct Workspace {
     /// marked with [`keep_terminals_during_drag`] don't count.
     dragging: bool,
     editor: Entity<Editor>,
+    /// The Changes tab, while it is open.
+    changes: Option<Entity<Changes>>,
     terminal_area: Entity<TerminalArea>,
     chrome: Entity<Chrome>,
     selected: MainTab,
@@ -131,6 +137,7 @@ impl Workspace {
             main_panel,
             dragging: false,
             editor,
+            changes: None,
             terminal_area,
             chrome: cx.new(|cx| Chrome::new(state.clone(), window, cx)),
             state,
@@ -154,6 +161,7 @@ impl Workspace {
     pub fn select(&mut self, tab: MainTab, window: &mut Window, cx: &mut Context<Self>) {
         let tab = match tab {
             MainTab::Files if self.editor.read(cx).active_index().is_none() => MainTab::Herdr,
+            MainTab::Changes if self.changes.is_none() => MainTab::Herdr,
             tab => tab,
         };
         let changed = self.selected != tab;
@@ -163,15 +171,35 @@ impl Workspace {
             area.set_visible(herdr && !self.dragging, window, cx)
         });
         self.main_panel.update(cx, |_, cx| cx.notify());
-        if changed && !herdr {
-            self.editor
-                .update(cx, |editor, cx| editor.focus_active(window, cx));
+        if changed {
+            match tab {
+                MainTab::Herdr => {}
+                MainTab::Files => self
+                    .editor
+                    .update(cx, |editor, cx| editor.focus_active(window, cx)),
+                MainTab::Changes => {
+                    if let Some(changes) = &self.changes {
+                        window.focus(&changes.focus_handle(cx), cx);
+                    }
+                }
+            }
         }
         cx.notify();
     }
 
-    /// Selects titlebar tab `index`: 0 is herdr, then the file tabs.
+    /// The Changes tab's titlebar index, after the file tabs.
+    fn changes_index(&self, cx: &App) -> Option<usize> {
+        self.changes
+            .as_ref()
+            .map(|_| self.editor.read(cx).tabs().len() + 1)
+    }
+
+    /// Selects titlebar tab `index`: 0 is herdr, then the file tabs, then
+    /// Changes.
     pub fn select_index(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
+        if Some(index) == self.changes_index(cx) {
+            return self.select(MainTab::Changes, window, cx);
+        }
         match index.checked_sub(1) {
             None => self.select(MainTab::Herdr, window, cx),
             // Emits `Activated`, which selects the editor.
@@ -181,16 +209,21 @@ impl Workspace {
         }
     }
 
-    /// The titlebar index on screen: 0 for herdr, 1 + the file tab's index.
+    /// The titlebar index on screen: 0 for herdr, 1 + the file tab's index,
+    /// or the Changes tab's.
     pub fn selected_index(&self, cx: &App) -> usize {
         match (self.selected, self.editor.read(cx).active_index()) {
             (MainTab::Files, Some(index)) => index + 1,
+            (MainTab::Changes, _) => self.changes_index(cx).unwrap_or(0),
             _ => 0,
         }
     }
 
     fn cycle(&mut self, step: isize, window: &mut Window, cx: &mut Context<Self>) {
-        let count = self.editor.read(cx).tabs().len() as isize + 1;
+        let count = self
+            .changes_index(cx)
+            .unwrap_or(self.editor.read(cx).tabs().len()) as isize
+            + 1;
         let index = (self.selected_index(cx) as isize + step).rem_euclid(count) as usize;
         self.select_index(index, window, cx);
     }
@@ -204,6 +237,26 @@ impl Workspace {
         self.editor.update(cx, |editor, cx| {
             editor.open_at(&action.path, action.line, window, cx)
         });
+    }
+
+    /// Opens the Changes tab, or re-reads it if open, and shows it.
+    fn open_changes(&mut self, _: &OpenChanges, window: &mut Window, cx: &mut Context<Self>) {
+        match &self.changes {
+            Some(changes) => changes.update(cx, |changes, cx| changes.reload(cx)),
+            None => {
+                let state = self.state.clone();
+                self.changes = Some(cx.new(|cx| Changes::new(state, cx)));
+            }
+        }
+        self.select(MainTab::Changes, window, cx);
+    }
+
+    fn close_changes(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.changes = None;
+        if self.selected == MainTab::Changes {
+            self.select(MainTab::Herdr, window, cx);
+        }
+        cx.notify();
     }
 
     fn focus_pane(&mut self, action: &FocusPane, window: &mut Window, cx: &mut Context<Self>) {
@@ -261,6 +314,7 @@ impl Render for Workspace {
             .track_focus(&self.focus)
             .on_action(cx.listener(Self::open_file))
             .on_action(cx.listener(Self::open_file_at))
+            .on_action(cx.listener(Self::open_changes))
             .on_action(cx.listener(Self::focus_pane))
             .on_action(cx.listener(Self::command_palette))
             .on_action(cx.listener(Self::open_context_menu))
