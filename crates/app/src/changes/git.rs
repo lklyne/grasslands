@@ -1,6 +1,6 @@
 //! A worktree's changes, read with git2: its branch, the branch it was cut
-//! from, and the diff since then, as line counts (the file tree's footer) or
-//! a patch (the Changes tab).
+//! from, and the diff since then, as line counts and changed paths (the file
+//! tree's footer and colors) or a patch (the Changes tab).
 //!
 //! The parent is the repo's default branch: the local branch `origin/HEAD`
 //! names, else `main`, else `master`. On that branch itself the parent is
@@ -8,9 +8,20 @@
 //! it counts commits, staged and unstaged edits and untracked files alike,
 //! like the PR the branch would become.
 
-use std::path::Path;
+use std::collections::{BTreeMap, BTreeSet};
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
-/// What the footer shows; every part is optional outside a tidy repo.
+/// How a file differs from the parent branch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FileChange {
+    /// New on this branch, committed or not (untracked included).
+    Added,
+    Modified,
+}
+
+/// What the footer and the tree show; every part is optional outside a
+/// tidy repo.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Summary {
     /// `None` when HEAD is detached.
@@ -19,6 +30,10 @@ pub struct Summary {
     /// Lines added and removed since the merge base with `parent`, or since
     /// HEAD when there is no parent.
     pub diff: Option<(usize, usize)>,
+    /// Changed files still on disk, by absolute path.
+    pub files: Arc<BTreeMap<PathBuf, FileChange>>,
+    /// Folders holding a change, deleted files included, by absolute path.
+    pub folders: Arc<BTreeSet<PathBuf>>,
 }
 
 /// The summary for the checkout containing `dir`, or `None` outside git.
@@ -27,14 +42,58 @@ pub fn read(dir: &Path) -> Option<Summary> {
     let branch = branch(&repo);
     let parent = branch.as_deref().and_then(|b| parent(&repo, b));
     let base = base(&repo, parent.as_ref().map(|(_, oid)| *oid));
-    let diff = diff_since(&repo, base)
-        .and_then(|diff| diff.stats().ok())
-        .map(|stats| (stats.insertions(), stats.deletions()));
-    Some(Summary {
+    let mut summary = Summary {
         branch,
         parent: parent.map(|(name, _)| name),
-        diff,
-    })
+        ..Summary::default()
+    };
+    if let Some(diff) = diff_since(&repo, base) {
+        summary.diff = diff
+            .stats()
+            .ok()
+            .map(|stats| (stats.insertions(), stats.deletions()));
+        if let Some(workdir) = repo.workdir() {
+            let (files, folders) = changed_paths(&diff, workdir);
+            summary.files = Arc::new(files);
+            summary.folders = Arc::new(folders);
+        }
+    }
+    Some(summary)
+}
+
+fn changed_paths(
+    diff: &git2::Diff<'_>,
+    workdir: &Path,
+) -> (BTreeMap<PathBuf, FileChange>, BTreeSet<PathBuf>) {
+    let workdir = workdir
+        .canonicalize()
+        .unwrap_or_else(|_| workdir.to_path_buf());
+    let mut files = BTreeMap::new();
+    let mut folders = BTreeSet::new();
+    for delta in diff.deltas() {
+        let change = match delta.status() {
+            git2::Delta::Added | git2::Delta::Untracked => Some(FileChange::Added),
+            git2::Delta::Deleted => None,
+            _ => Some(FileChange::Modified),
+        };
+        let file = match change {
+            Some(_) => delta.new_file(),
+            None => delta.old_file(),
+        };
+        let Some(path) = file.path().map(|p| workdir.join(p)) else {
+            continue;
+        };
+        folders.extend(
+            path.ancestors()
+                .skip(1)
+                .take_while(|dir| dir.starts_with(&workdir) && *dir != workdir)
+                .map(Path::to_path_buf),
+        );
+        if let Some(change) = change {
+            files.insert(path, change);
+        }
+    }
+    (files, folders)
 }
 
 /// The same diff `read` counts, as a git-style patch.
@@ -133,8 +192,6 @@ fn diff_since(repo: &git2::Repository, base: Option<git2::Oid>) -> Option<git2::
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
-
     use super::*;
 
     fn temp_dir(name: &str) -> PathBuf {
@@ -182,13 +239,14 @@ mod tests {
         std::fs::write(dir.join("a.txt"), "one\n2\n").unwrap();
         commit_all(&repo, "edit");
         std::fs::write(dir.join("new.txt"), "x\ny\n").unwrap();
+        let summary = read(&dir).unwrap();
         assert_eq!(
-            read(&dir).unwrap(),
-            Summary {
-                branch: Some("feat".into()),
-                parent: Some("main".into()),
-                diff: Some((3, 1)),
-            }
+            (
+                summary.branch.as_deref(),
+                summary.parent.as_deref(),
+                summary.diff
+            ),
+            (Some("feat"), Some("main"), Some((3, 1)))
         );
     }
 
@@ -197,13 +255,14 @@ mod tests {
         let dir = temp_dir("main");
         repo_on_main(&dir);
         std::fs::write(dir.join("a.txt"), "one\n").unwrap();
+        let summary = read(&dir).unwrap();
         assert_eq!(
-            read(&dir).unwrap(),
-            Summary {
-                branch: Some("main".into()),
-                parent: None,
-                diff: Some((0, 1)),
-            }
+            (
+                summary.branch.as_deref(),
+                summary.parent.as_deref(),
+                summary.diff
+            ),
+            (Some("main"), None, Some((0, 1)))
         );
     }
 
@@ -234,6 +293,48 @@ mod tests {
         for line in ["diff --git a/a.txt b/a.txt", " one", "-two", "+2", "+x"] {
             assert!(patch.lines().any(|l| l == line), "{line:?} in {patch}");
         }
+    }
+
+    #[test]
+    fn read_should_mark_branch_files_and_their_folders() {
+        let dir = temp_dir("files");
+        std::fs::create_dir_all(dir.join("src/old")).unwrap();
+        std::fs::write(dir.join("src/old/gone.txt"), "x\n").unwrap();
+        let repo = repo_on_main(&dir);
+        commit_all(&repo, "more");
+        let head = repo.head().unwrap().peel_to_commit().unwrap();
+        repo.branch("feat", &head, false).unwrap();
+        repo.set_head("refs/heads/feat").unwrap();
+        // Committed on the branch, then uncommitted and untracked work.
+        std::fs::write(dir.join("a.txt"), "one\n2\n").unwrap();
+        commit_all(&repo, "edit");
+        std::fs::remove_file(dir.join("src/old/gone.txt")).unwrap();
+        std::fs::create_dir_all(dir.join("lib")).unwrap();
+        std::fs::write(dir.join("lib/new.rs"), "x\n").unwrap();
+        let summary = read(&dir).unwrap();
+        assert_eq!(
+            summary
+                .files
+                .iter()
+                .map(|(p, c)| (p.strip_prefix(&dir).unwrap().to_owned(), *c))
+                .collect::<Vec<_>>(),
+            vec![
+                (PathBuf::from("a.txt"), FileChange::Modified),
+                (PathBuf::from("lib/new.rs"), FileChange::Added),
+            ]
+        );
+        assert_eq!(
+            summary
+                .folders
+                .iter()
+                .map(|p| p.strip_prefix(&dir).unwrap().to_owned())
+                .collect::<Vec<_>>(),
+            vec![
+                PathBuf::from("lib"),
+                PathBuf::from("src"),
+                PathBuf::from("src/old")
+            ]
+        );
     }
 
     #[test]

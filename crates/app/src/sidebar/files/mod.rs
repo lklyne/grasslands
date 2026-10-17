@@ -7,7 +7,9 @@
 //! renames, trashes and reveals. Rows drag onto folders to move them. The
 //! search box above swaps the tree for name and content matches. A footer
 //! shows the branch, its parent and the lines changed since (see
-//! `crate::changes`); clicking it opens the Changes tab.
+//! `crate::changes`); clicking it opens the Changes tab. Rows changed on the
+//! branch, committed or not, are colored: added green, modified yellow, and
+//! folders holding a change yellow.
 
 mod model;
 mod search;
@@ -32,6 +34,7 @@ use gpui_kit::component::tree::{TreeEntry, TreeEvent, TreeState, tree};
 use gpui_kit::component::{
     ActiveTheme as _, Icon, IconName, Sizable as _, WindowExt as _, h_flex, v_flex,
 };
+use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use self::model::FileModel;
@@ -642,7 +645,13 @@ impl FileTree {
 
 /// One compact row: a chevron on folders, the icon, then the name. Rows drag;
 /// dropping on a folder moves into it, on a file into the file's folder.
-fn render_row(ix: usize, entry: &TreeEntry, this: &WeakEntity<FileTree>, cx: &App) -> ListItem {
+fn render_row(
+    ix: usize,
+    entry: &TreeEntry,
+    this: &WeakEntity<FileTree>,
+    git: Option<&git::Summary>,
+    cx: &App,
+) -> ListItem {
     let item = entry.item();
     let indent = px(6. + INDENT * entry.depth() as f32);
     let muted = cx.theme().muted_foreground;
@@ -675,6 +684,20 @@ fn render_row(ix: usize, entry: &TreeEntry, this: &WeakEntity<FileTree>, cx: &Ap
         (false, _) => IconName::File,
     };
     let path = PathBuf::from(item.id.as_ref());
+    let changed = git.and_then(|git| {
+        if entry.is_folder() {
+            git.folders
+                .contains(&path)
+                .then_some(git::FileChange::Modified)
+        } else {
+            git.files.get(&path).copied()
+        }
+    });
+    let label_color = match changed {
+        Some(git::FileChange::Added) => Some(cx.theme().success),
+        Some(git::FileChange::Modified) => Some(cx.theme().warning),
+        None => None,
+    };
     let drop_dir = if entry.is_folder() {
         path.clone()
     } else {
@@ -720,6 +743,7 @@ fn render_row(ix: usize, entry: &TreeEntry, this: &WeakEntity<FileTree>, cx: &Ap
                     .overflow_hidden()
                     .text_ellipsis()
                     .whitespace_nowrap()
+                    .when_some(label_color, |this, color| this.text_color(color))
                     .child(item.label.clone()),
             ),
     );
@@ -946,6 +970,7 @@ impl Render for FileTree {
             Some(results) => render_results(results, cx),
             None => {
                 let rows = this.clone();
+                let git = self.git.clone();
                 let menu = this.clone();
                 let root = self.root().map(Path::to_path_buf);
                 let drop_bg = cx.theme().drop_target;
@@ -962,7 +987,7 @@ impl Render for FileTree {
                     })
                     .child(
                         tree(&self.tree, move |ix, entry, _selected, _window, cx| {
-                            render_row(ix, entry, &rows, cx)
+                            render_row(ix, entry, &rows, git.as_ref(), cx)
                         })
                         .size_full()
                         .p_1()
