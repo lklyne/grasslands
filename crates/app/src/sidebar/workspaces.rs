@@ -22,10 +22,9 @@ use gpui_kit::component::button::Button;
 use gpui_kit::component::dock::{BasePanel, Panel, PanelControl, PanelEvent};
 use gpui_kit::component::menu::{PopupMenu, PopupMenuItem};
 use gpui_kit::component::notification::Notification;
-use gpui_kit::component::tag::Tag;
 use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::{
-    ActiveTheme as _, IconName, Sizable as _, StyledExt as _, WindowExt as _, h_flex, v_flex,
+    ActiveTheme as _, Icon, IconName, Sizable as _, StyledExt as _, WindowExt as _, h_flex, v_flex,
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
@@ -90,12 +89,24 @@ fn rolled_up(statuses: impl IntoIterator<Item = AgentStatus>) -> AgentStatus {
         .unwrap_or(AgentStatus::Unknown)
 }
 
-/// herdr's dot glyphs: filled when something happened, a ring when idle.
-fn glyph(status: AgentStatus) -> &'static str {
+/// herdr's dot glyphs, with icons for the states that want the user: a
+/// question for blocked (herdr's "waiting for input"), a check for done.
+/// Every status gets the same slot so labels line up.
+fn status_icon(status: AgentStatus, cx: &App) -> Div {
+    let color = status_color(status, cx);
+    let slot = div()
+        .flex_shrink_0()
+        .w(px(12.))
+        .flex()
+        .justify_center()
+        .text_color(color);
+    let icon = |name: assets::IconName| Icon::new(name).xsmall().text_color(color);
     match status {
-        AgentStatus::Working | AgentStatus::Blocked | AgentStatus::Done => "●",
-        AgentStatus::Idle => "○",
-        AgentStatus::Unknown => "·",
+        AgentStatus::Blocked => slot.child(icon(assets::IconName::CircleQuestionMark)),
+        AgentStatus::Done => slot.child(icon(assets::IconName::CircleCheck)),
+        AgentStatus::Working => slot.child("●"),
+        AgentStatus::Idle => slot.child("○"),
+        AgentStatus::Unknown => slot.child("·"),
     }
 }
 
@@ -118,31 +129,6 @@ fn dim_text(cx: &App) -> Hsla {
 
 fn text(s: impl Into<SharedString>) -> Div {
     div().flex_shrink_0().whitespace_nowrap().child(s.into())
-}
-
-/// Tags counting blocked agents and unseen results.
-fn badges(blocked: usize, unseen: usize) -> Div {
-    h_flex()
-        .flex_shrink_0()
-        .gap_1()
-        .when(blocked > 0, |this| {
-            this.child(
-                Tag::danger()
-                    .outline()
-                    .xsmall()
-                    .text_xs()
-                    .child(blocked.to_string()),
-            )
-        })
-        .when(unseen > 0, |this| {
-            this.child(
-                Tag::info()
-                    .outline()
-                    .xsmall()
-                    .text_xs()
-                    .child(unseen.to_string()),
-            )
-        })
 }
 
 /// The folder a workspace's branch is read from: herdr's checkout path, or
@@ -461,18 +447,13 @@ impl WorkspaceList {
             .iter()
             .filter(|a| members.iter().any(|m| m.workspace_id == a.workspace_id))
             .collect();
-        let blocked = agents
-            .iter()
-            .filter(|a| a.agent_status == AgentStatus::Blocked)
-            .count();
         let unseen = agents
             .iter()
-            .filter(|a| state.attention.is_unseen_done(snapshot, &a.pane_id))
-            .count();
+            .any(|a| state.attention.is_unseen_done(snapshot, &a.pane_id));
         let mut status = rolled_up(members.iter().map(|m| m.agent_status));
         // herdr's `done` means unseen; this app also counts looks herdr
         // can't see, and a seen result is idle again.
-        if status == AgentStatus::Done && unseen == 0 {
+        if status == AgentStatus::Done && !unseen {
             status = AgentStatus::Idle;
         }
         let checkout = self.checkout(snapshot, info);
@@ -510,7 +491,7 @@ impl WorkspaceList {
         let first = h_flex()
             .h(LINE)
             .child(lead)
-            .child(text(glyph(status)).text_color(status_color(status, cx)))
+            .child(status_icon(status, cx))
             .child(text(" "))
             .child(
                 div()
@@ -522,8 +503,7 @@ impl WorkspaceList {
                     })
                     .when(!focused, |this| this.text_color(dim_text(cx)))
                     .child(info.label.clone()),
-            )
-            .child(badges(blocked, unseen).pr_1());
+            );
         let second = branch_line.map(|(branch, ahead_behind)| {
             let (ahead, behind) = ahead_behind.unwrap_or_default();
             h_flex()
@@ -660,22 +640,6 @@ pub(super) fn rename_workspace(workspace_id: &str, window: &mut Window, cx: &mut
     });
 }
 
-/// The blocked and unseen-done counts across every agent, for the title bar.
-fn totals(state: &AppState) -> (usize, usize) {
-    let snapshot = &state.snapshot;
-    let blocked = snapshot
-        .agents
-        .iter()
-        .filter(|a| a.agent_status == AgentStatus::Blocked)
-        .count();
-    let unseen = snapshot
-        .agents
-        .iter()
-        .filter(|a| state.attention.is_unseen_done(snapshot, &a.pane_id))
-        .count();
-    (blocked, unseen)
-}
-
 impl EventEmitter<PanelEvent> for WorkspaceList {}
 
 impl Focusable for WorkspaceList {
@@ -697,11 +661,6 @@ impl BasePanel for WorkspaceList {
 impl Panel for WorkspaceList {
     fn title(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
         div().text_sm().child("Spaces")
-    }
-
-    fn title_suffix(&mut self, _: &mut Window, cx: &mut Context<Self>) -> Option<impl IntoElement> {
-        let (blocked, unseen) = totals(self.state.read(cx));
-        (blocked + unseen > 0).then(|| badges(blocked, unseen))
     }
 
     fn toolbar_buttons(&mut self, _: &mut Window, cx: &mut Context<Self>) -> Option<Vec<Button>> {

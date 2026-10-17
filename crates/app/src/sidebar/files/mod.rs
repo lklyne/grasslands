@@ -817,8 +817,8 @@ impl Render for FileTree {
                 .into_any_element();
         };
         let this = cx.entity().downgrade();
-        let search = div().p_1().child(
-            Input::new(&self.query).small().cleanable(true).prefix(
+        let search = div().p_1p5().child(
+            Input::new(&self.query).cleanable(true).prefix(
                 Icon::new(IconName::Search)
                     .small()
                     .text_color(cx.theme().muted_foreground),
