@@ -1,0 +1,7 @@
+# 0015: Git footer and the Changes tab
+
+- **Parent branch** is the repo's default branch: the local branch `origin/HEAD` names, else `main`, else `master`. On the default branch itself it is the upstream. No guessing from reflogs or the nearest branch: a branch cut from this one sits at the same commit and would look like the parent.
+- **The diff runs from the merge base to the working tree**, untracked files included, so the footer and the tab show what the branch's PR would hold plus anything not yet committed. Read with git2 on the background executor; the footer at most once a second, the tab every 3 s while open, redrawn only when the patch text changed so scrolling keeps its place.
+- **One Changes tab**, after the file tabs, following the active worktree, rather than one per worktree or a tab kind inside the editor: the editor's tabs are file buffers throughout, and a single live view of "what this worktree changed" is the useful thing.
+- **Lines wrap** (`Diff::soft_wrap`); no horizontal scrolling. The diff notifies its own state after a paint once it knows the width, so `Changes` observes it and redraws; without that the wrapped rows stay at zero width and the tab is blank.
+- **gpui-component is vendored** (`vendor/gpui-component`, see its PATCHES.md) to give the diff's list overdraw. Without it the wheel can only reach the last painted row: GPUI's list drops the diff's row-height hint whenever its width changes, so rows below the viewport count as 0 px. Drop the vendor copy once GPUI Kit fixes this.

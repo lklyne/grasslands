@@ -26,7 +26,7 @@ pub struct Changes {
     /// The patch on screen; `None` before the first read or outside git.
     patch: Option<String>,
     loaded: bool,
-    _subscription: Subscription,
+    _subscriptions: [Subscription; 2],
     _refresh: Task<()>,
 }
 
@@ -48,12 +48,16 @@ impl Changes {
                 }
             }
         });
+        let diff = cx.new(|cx| DiffState::new([], cx));
+        // The diff notifies itself after a paint (wrapped rows take the
+        // width it just measured); redraw with it, or wrapping stays blank.
+        let redraw = cx.observe(&diff, |_, _, cx| cx.notify());
         let mut this = Self {
-            diff: cx.new(|cx| DiffState::new([], cx)),
+            diff,
             root: state.read(cx).active_worktree().cloned(),
             patch: None,
             loaded: false,
-            _subscription: subscription,
+            _subscriptions: [subscription, redraw],
             _refresh: refresh,
         };
         this.reload(cx);
