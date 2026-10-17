@@ -16,7 +16,8 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::time::Duration;
 
-use gpui_kit::component::button::{Button, ButtonVariants as _};
+use gpui_kit::component::button::Button;
+use gpui_kit::component::dock::{BasePanel, Panel, PanelControl, PanelEvent};
 use gpui_kit::component::list::ListItem;
 use gpui_kit::component::menu::{PopupMenu, PopupMenuItem};
 use gpui_kit::component::notification::Notification;
@@ -46,6 +47,7 @@ pub struct FileTree {
     model: Option<FileModel>,
     watcher: Option<RootWatcher>,
     fs_changes: async_channel::Sender<Vec<PathBuf>>,
+    focus: FocusHandle,
     _subscriptions: [Subscription; 2],
     _fs_task: Task<()>,
 }
@@ -83,6 +85,7 @@ impl FileTree {
             model: None,
             watcher: None,
             fs_changes,
+            focus: cx.focus_handle(),
             _subscriptions: subscriptions,
             _fs_task: fs_task,
         };
@@ -416,72 +419,20 @@ impl FileTree {
             .item(item("Copy Path", copy_path))
     }
 
-    fn render_header(&self, root: &Path, cx: &mut Context<Self>) -> impl IntoElement {
-        let name = root.file_name().map_or_else(
-            || root.display().to_string(),
-            |n| n.to_string_lossy().into_owned(),
-        );
-        let new_in_root = |folder: bool| {
-            cx.listener(move |this, _: &ClickEvent, window, cx| {
-                let Some(root) = this.root().map(Path::to_path_buf) else {
-                    return;
-                };
-                let title = if folder { "New Folder" } else { "New File" };
-                this.prompt(
-                    title,
-                    "Create",
-                    "",
-                    move |this, name, window, cx| {
-                        this.create(root.clone(), name, folder, window, cx)
-                    },
-                    window,
-                    cx,
-                );
-            })
+    /// Asks for a name, then creates a file (or folder) in the root.
+    fn new_in_root(&mut self, folder: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(root) = self.root().map(Path::to_path_buf) else {
+            return;
         };
-        h_flex()
-            .h(px(32.))
-            .flex_shrink_0()
-            .px_2()
-            .gap_1()
-            .border_b_1()
-            .border_color(cx.theme().border)
-            .child(
-                div()
-                    .id("files-root")
-                    .flex_1()
-                    .min_w_0()
-                    .overflow_hidden()
-                    .text_ellipsis()
-                    .whitespace_nowrap()
-                    .text_sm()
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .child(name.to_uppercase()),
-            )
-            .child(
-                Button::new("files-new-file")
-                    .ghost()
-                    .xsmall()
-                    .icon(IconName::Plus)
-                    .tooltip("New File")
-                    .on_click(new_in_root(false)),
-            )
-            .child(
-                Button::new("files-new-folder")
-                    .ghost()
-                    .xsmall()
-                    .icon(IconName::FolderClosed)
-                    .tooltip("New Folder")
-                    .on_click(new_in_root(true)),
-            )
-            .child(
-                Button::new("files-refresh")
-                    .ghost()
-                    .xsmall()
-                    .icon(IconName::RefreshCw)
-                    .tooltip("Refresh")
-                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.refresh(cx))),
-            )
+        let title = if folder { "New Folder" } else { "New File" };
+        self.prompt(
+            title,
+            "Create",
+            "",
+            move |this, name, window, cx| this.create(root.clone(), name, folder, window, cx),
+            window,
+            cx,
+        );
     }
 }
 
@@ -542,7 +493,7 @@ fn error(message: impl Into<SharedString>, window: &mut Window, cx: &mut App) {
 
 impl Render for FileTree {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let Some(root) = self.root().map(Path::to_path_buf) else {
+        if self.root().is_none() {
             return v_flex()
                 .size_full()
                 .items_center()
@@ -554,8 +505,8 @@ impl Render for FileTree {
         };
         let this = cx.entity().downgrade();
         v_flex()
+            .track_focus(&self.focus)
             .size_full()
-            .child(self.render_header(&root, cx))
             .child(
                 tree(&self.tree, |ix, entry, _selected, _window, cx| {
                     render_row(ix, entry, cx)
@@ -566,5 +517,62 @@ impl Render for FileTree {
                 }),
             )
             .into_any_element()
+    }
+}
+
+impl EventEmitter<PanelEvent> for FileTree {}
+
+impl Focusable for FileTree {
+    fn focus_handle(&self, _: &App) -> FocusHandle {
+        self.focus.clone()
+    }
+}
+
+impl BasePanel for FileTree {
+    fn panel_name(&self) -> &'static str {
+        "FilesPanel"
+    }
+
+    fn closable(&self, _: &App) -> bool {
+        false
+    }
+}
+
+impl Panel for FileTree {
+    /// The active worktree's folder name.
+    fn title(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        match self.root() {
+            Some(root) => root.file_name().map_or_else(
+                || root.display().to_string(),
+                |n| n.to_string_lossy().into_owned(),
+            ),
+            None => "Files".to_owned(),
+        }
+    }
+
+    fn toolbar_buttons(&mut self, _: &mut Window, cx: &mut Context<Self>) -> Option<Vec<Button>> {
+        self.root()?;
+        Some(vec![
+            Button::new("files-new-file")
+                .icon(IconName::Plus)
+                .tooltip("New File")
+                .on_click(cx.listener(|this, _, window, cx| this.new_in_root(false, window, cx))),
+            Button::new("files-new-folder")
+                .icon(IconName::FolderClosed)
+                .tooltip("New Folder")
+                .on_click(cx.listener(|this, _, window, cx| this.new_in_root(true, window, cx))),
+            Button::new("files-refresh")
+                .icon(IconName::RefreshCw)
+                .tooltip("Refresh")
+                .on_click(cx.listener(|this, _, _, cx| this.refresh(cx))),
+        ])
+    }
+
+    fn zoom_control(&self, _: &App) -> Option<PanelControl> {
+        None
+    }
+
+    fn inner_padding(&self, _: &App) -> bool {
+        false
     }
 }

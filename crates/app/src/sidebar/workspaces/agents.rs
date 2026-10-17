@@ -1,20 +1,24 @@
-//! The "agents" section under the spaces, after herdr's agent panel
+//! The agents panel, after herdr's agent panel
 //! (`client/shell/agent_sidebar.rs`): every agent as two lines, its status
 //! glyph with its workspace (and tab, when the workspace has more than one),
 //! then its name. "grouped" keeps herdr's workspace order, blocked first
-//! within each workspace; "priority" is herdr's attention queue. Clicking the
-//! section label folds it.
+//! within each workspace; "priority" is herdr's attention queue. The sort
+//! toggle sits in the panel's title bar.
 
 use std::cmp::Reverse;
 
-use gpui_kit::component::{ActiveTheme as _, StyledExt as _, h_flex, v_flex};
+use gpui_kit::component::button::Button;
+use gpui_kit::component::dock::{BasePanel, Panel, PanelControl, PanelEvent};
+use gpui_kit::component::tag::Tag;
+use gpui_kit::component::{ActiveTheme as _, Sizable as _, StyledExt as _, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
-use super::{AgentSort, LINE, WorkspaceList, badge, dim_text, glyph, priority, status_color, text};
+use super::{AgentSort, LINE, TEXT, dim_text, glyph, priority, status_color, text};
 use crate::actions::OpenContextMenu;
 use crate::chrome::MenuTarget;
 use crate::herdr::{Agent, AgentStatus, Snapshot};
+use crate::state::AppState;
 
 /// What herdr calls an agent in its panel.
 fn agent_label(agent: &Agent) -> &str {
@@ -52,66 +56,41 @@ pub(super) fn ordered(snapshot: &Snapshot, sort: AgentSort) -> Vec<&Agent> {
     agents
 }
 
-impl WorkspaceList {
-    pub(super) fn render_agents(&self, snapshot: &Snapshot, cx: &mut Context<Self>) -> Div {
-        let theme = cx.theme();
-        let open = self.agents_open;
-        let header = h_flex()
-            .flex_shrink_0()
-            .h(LINE)
-            .pr_1()
-            .child(
-                h_flex()
-                    .id("agents-toggle")
-                    .debug_selector(|| "agents-toggle".into())
-                    .cursor_pointer()
-                    .child(Self::section_label(" agents", cx))
-                    .child(text(if open { " ▾" } else { " ▸" }).text_color(theme.muted_foreground))
-                    .on_click(cx.listener(|this, _, _, cx| this.toggle_agents(cx))),
-            )
-            .child(div().flex_1())
-            .when(open, |this| {
-                this.child(
-                    div()
-                        .id("agents-sort")
-                        .debug_selector(|| "agents-sort".into())
-                        .whitespace_nowrap()
-                        .font_bold()
-                        .text_color(theme.muted_foreground)
-                        .hover(|this| this.text_color(theme.foreground))
-                        .cursor_pointer()
-                        .child(match self.agent_sort {
-                            AgentSort::Grouped => "grouped",
-                            AgentSort::Priority => "priority",
-                        })
-                        .on_click(cx.listener(|this, _, _, cx| this.toggle_agent_sort(cx))),
-                )
-            });
-        let section = v_flex()
-            .flex_shrink_0()
-            .border_t_1()
-            .border_color(theme.border)
-            .child(header);
-        if !open {
-            return section;
+pub struct AgentList {
+    state: Entity<AppState>,
+    pub(super) sort: AgentSort,
+    focus: FocusHandle,
+    _observe: Subscription,
+}
+
+impl AgentList {
+    pub fn new(state: Entity<AppState>, cx: &mut Context<Self>) -> Self {
+        Self {
+            _observe: cx.observe(&state, |_, _, cx| cx.notify()),
+            state,
+            sort: AgentSort::Grouped,
+            focus: cx.focus_handle(),
         }
-        let rows: Vec<AnyElement> = ordered(snapshot, self.agent_sort)
-            .into_iter()
-            .map(|agent| self.render_agent(agent, snapshot, cx))
-            .collect();
-        let empty = rows
-            .is_empty()
-            .then(|| text(" no agents").text_color(cx.theme().muted_foreground));
-        section.flex_1().min_h(LINE * 3.).child(
-            v_flex()
-                .id("agent-rows")
-                .flex_1()
-                .min_h_0()
-                .pt(LINE)
-                .overflow_y_scroll()
-                .children(rows)
-                .children(empty),
-        )
+    }
+
+    /// Focuses the agent's pane and counts its result as seen.
+    pub fn activate(&mut self, pane_id: &str, window: &mut Window, cx: &mut Context<Self>) {
+        self.state
+            .update(cx, |state, cx| state.mark_seen(pane_id, cx));
+        window.dispatch_action(
+            Box::new(crate::actions::FocusPane {
+                pane_id: pane_id.to_owned(),
+            }),
+            cx,
+        );
+    }
+
+    pub fn toggle_sort(&mut self, cx: &mut Context<Self>) {
+        self.sort = match self.sort {
+            AgentSort::Grouped => AgentSort::Priority,
+            AgentSort::Priority => AgentSort::Grouped,
+        };
+        cx.notify();
     }
 
     fn render_agent(
@@ -139,7 +118,6 @@ impl WorkspaceList {
         {
             place = format!("{place} · {}", tab.info.label);
         }
-        let color = status_color(status, cx);
         let (pane_id, menu_pane_id) = (agent.pane_id.clone(), agent.pane_id.clone());
         v_flex()
             .id(SharedString::from(format!("agent-{}", agent.pane_id)))
@@ -151,7 +129,7 @@ impl WorkspaceList {
             .when(focused, |this| this.bg(theme.sidebar_accent))
             .hover(|this| this.bg(theme.sidebar_accent.opacity(0.6)))
             .on_click(cx.listener(move |this, _, window, cx| {
-                this.activate_agent(&pane_id, window, cx);
+                this.activate(&pane_id, window, cx);
             }))
             .on_mouse_down(MouseButton::Right, move |event, window, cx| {
                 window.dispatch_action(
@@ -169,7 +147,7 @@ impl WorkspaceList {
                     .h(LINE)
                     .pr_1()
                     .child(text(" "))
-                    .child(text(glyph(status)).text_color(color))
+                    .child(text(glyph(status)).text_color(status_color(status, cx)))
                     .child(text(" "))
                     .child(
                         div()
@@ -185,8 +163,12 @@ impl WorkspaceList {
                             .child(place),
                     )
                     .map(|this| match status {
-                        AgentStatus::Blocked => this.child(badge("blocked", color)),
-                        AgentStatus::Done => this.child(badge("done", color)),
+                        AgentStatus::Blocked => {
+                            this.child(Tag::danger().outline().xsmall().child("blocked"))
+                        }
+                        AgentStatus::Done => {
+                            this.child(Tag::info().outline().xsmall().child("done"))
+                        }
                         _ => this,
                     }),
             )
@@ -200,5 +182,75 @@ impl WorkspaceList {
                 ),
             )
             .into_any_element()
+    }
+}
+
+impl EventEmitter<PanelEvent> for AgentList {}
+
+impl Focusable for AgentList {
+    fn focus_handle(&self, _: &App) -> FocusHandle {
+        self.focus.clone()
+    }
+}
+
+impl BasePanel for AgentList {
+    fn panel_name(&self) -> &'static str {
+        "AgentsPanel"
+    }
+
+    fn closable(&self, _: &App) -> bool {
+        false
+    }
+}
+
+impl Panel for AgentList {
+    fn title(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        "Agents"
+    }
+
+    fn toolbar_buttons(&mut self, _: &mut Window, cx: &mut Context<Self>) -> Option<Vec<Button>> {
+        let label = match self.sort {
+            AgentSort::Grouped => "Grouped",
+            AgentSort::Priority => "Priority",
+        };
+        Some(vec![
+            Button::new("agents-sort")
+                .label(label)
+                .tooltip("Sort agents")
+                .debug_selector(|| "agents-sort".into())
+                .on_click(cx.listener(|this, _, _, cx| this.toggle_sort(cx))),
+        ])
+    }
+
+    fn zoom_control(&self, _: &App) -> Option<PanelControl> {
+        None
+    }
+
+    fn inner_padding(&self, _: &App) -> bool {
+        false
+    }
+}
+
+impl Render for AgentList {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let snapshot = self.state.read(cx).snapshot.clone();
+        let rows: Vec<AnyElement> = ordered(&snapshot, self.sort)
+            .into_iter()
+            .map(|agent| self.render_agent(agent, &snapshot, cx))
+            .collect();
+        let theme = cx.theme();
+        let empty = rows
+            .is_empty()
+            .then(|| text(" no agents").text_color(theme.muted_foreground));
+        v_flex()
+            .id("agent-rows")
+            .track_focus(&self.focus)
+            .size_full()
+            .overflow_y_scroll()
+            .font_family(theme.mono_font_family.clone())
+            .text_size(TEXT)
+            .line_height(LINE)
+            .children(rows)
+            .children(empty)
     }
 }

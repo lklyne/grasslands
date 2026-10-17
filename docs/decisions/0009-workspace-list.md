@@ -1,6 +1,6 @@
 # 0009 Workspace list
 
-Date: 2026-10-15. Status: accepted.
+Date: 2026-10-15. Status: accepted; the agents section, header, footer and colors changed in 0011 (sidebar dock).
 
 The terminal area shows only herdr's focused workspace (`focused_workspace_id`), so without a list the other workspaces were invisible and unreachable. The upper sidebar panel is now `sidebar::workspaces::WorkspaceList`, modeled on herdr's TUI sidebar. It replaces `sidebar::agents::AgentList`: agents are listed under their workspace instead of in a flat panel.
 

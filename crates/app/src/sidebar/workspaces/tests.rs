@@ -5,7 +5,11 @@
 
 use std::sync::Arc;
 
-use gpui_kit::{AppContext as _, Entity, Modifiers, TestAppContext, VisualTestContext};
+use gpui_kit::component::dock::{DockArea, DockLayout, DockSkin, panel_handle};
+use gpui_kit::{
+    AppContext as _, Context, Entity, IntoElement, Modifiers, ParentElement as _, Render,
+    Styled as _, TestAppContext, VisualTestContext, Window, div,
+};
 use serde_json::json;
 
 use std::collections::HashSet;
@@ -13,7 +17,7 @@ use std::collections::HashSet;
 use super::agents::ordered;
 use super::git::Placement;
 use super::groups::{Kind, entries};
-use super::{AgentSort, WorkspaceList, rolled_up};
+use super::{AgentList, AgentSort, WorkspaceList, rolled_up};
 use crate::herdr::{Agent, AgentStatus, Snapshot, WorkspaceInfo};
 use crate::state::{AppState, offline_config};
 
@@ -200,24 +204,57 @@ fn snapshot() -> Arc<Snapshot> {
     })
 }
 
-fn fixture(
-    cx: &mut TestAppContext,
-) -> (
-    Entity<WorkspaceList>,
-    Entity<AppState>,
-    &mut VisualTestContext,
-) {
+/// Both panels in a dock, as the sidebar holds them.
+struct Fixture {
+    dock: Entity<DockArea>,
+}
+
+impl Render for Fixture {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        div().size_full().child(self.dock.clone())
+    }
+}
+
+struct Panels {
+    spaces: Entity<WorkspaceList>,
+    agents: Entity<AgentList>,
+    state: Entity<AppState>,
+}
+
+fn fixture(cx: &mut TestAppContext) -> (Panels, &mut VisualTestContext) {
     cx.update(gpui_kit::init);
     let state = cx.new(|cx| AppState::new(Ok(offline_config()), cx));
-    let (list, cx) = cx.add_window_view(|window, cx| WorkspaceList::new(state.clone(), window, cx));
+    let spaces = cx.new(|cx| WorkspaceList::new(state.clone(), cx));
+    let agents = cx.new(|cx| AgentList::new(state.clone(), cx));
+    let (_, cx) = cx.add_window_view(|window, cx| {
+        let (dock, _) = DockSkin::dock_area("test", None, window, cx);
+        let layout = DockLayout::v_split()
+            .child(
+                DockLayout::tabs().panel_view(panel_handle(spaces.clone()), cx),
+                None,
+            )
+            .child(
+                DockLayout::tabs().panel_view(panel_handle(agents.clone()), cx),
+                None,
+            );
+        dock.update(cx, |dock, cx| dock.set_center(layout, window, cx));
+        Fixture { dock }
+    });
     state.update(cx, |state, cx| state.replace_snapshot(snapshot(), cx));
     cx.run_until_parked();
-    (list, state, cx)
+    (
+        Panels {
+            spaces,
+            agents,
+            state,
+        },
+        cx,
+    )
 }
 
 #[gpui::test]
 fn every_workspace_and_agent_gets_a_row(cx: &mut TestAppContext) {
-    let (_, _, cx) = fixture(cx);
+    let (_, cx) = fixture(cx);
     let found: Vec<bool> = ["ws-w1", "ws-w2", "ws-w3", "agent-w2:p1", "agent-w2:p2"]
         .iter()
         .map(|s| cx.debug_bounds(s).is_some())
@@ -226,27 +263,18 @@ fn every_workspace_and_agent_gets_a_row(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
-fn folding_the_agents_section_hides_agent_rows(cx: &mut TestAppContext) {
-    let (_, _, cx) = fixture(cx);
-    let toggle = cx.debug_bounds("agents-toggle").unwrap().center();
-    cx.simulate_click(toggle, Modifiers::none());
-    cx.run_until_parked();
-    assert!(cx.debug_bounds("agent-w2:p1").is_none());
-}
-
-#[gpui::test]
 fn sort_toggle_should_switch_to_priority(cx: &mut TestAppContext) {
-    let (list, _, cx) = fixture(cx);
+    let (panels, cx) = fixture(cx);
     let toggle = cx.debug_bounds("agents-sort").unwrap().center();
     cx.simulate_click(toggle, Modifiers::none());
     cx.run_until_parked();
-    let sort = list.read_with(cx, |list, _| list.agent_sort);
+    let sort = panels.agents.read_with(cx, |list, _| list.sort);
     assert_eq!(sort, AgentSort::Priority);
 }
 
 #[gpui::test]
 fn clicking_a_finished_agent_marks_it_seen(cx: &mut TestAppContext) {
-    let (_, state, cx) = fixture(cx);
+    let (Panels { state, .. }, cx) = fixture(cx);
     let row = cx.debug_bounds("agent-w2:p1").unwrap().center();
     cx.simulate_click(row, Modifiers::none());
     cx.run_until_parked();
@@ -256,13 +284,13 @@ fn clicking_a_finished_agent_marks_it_seen(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn group_parent_gets_a_fold_toggle(cx: &mut TestAppContext) {
-    let (_, _, cx) = fixture(cx);
+    let (_, cx) = fixture(cx);
     assert!(cx.debug_bounds("fold-repo").is_some());
 }
 
 #[gpui::test]
 fn main_checkout_row_sits_above_linked_worktree_row(cx: &mut TestAppContext) {
-    let (_, _, cx) = fixture(cx);
+    let (_, cx) = fixture(cx);
     let main = cx.debug_bounds("ws-w3").unwrap().origin.y;
     let linked = cx.debug_bounds("ws-w2").unwrap().origin.y;
     assert!(main < linked);
@@ -270,7 +298,7 @@ fn main_checkout_row_sits_above_linked_worktree_row(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn folding_a_group_hides_its_linked_worktrees_only(cx: &mut TestAppContext) {
-    let (_, _, cx) = fixture(cx);
+    let (_, cx) = fixture(cx);
     let toggle = cx.debug_bounds("fold-repo").unwrap().center();
     cx.simulate_click(toggle, Modifiers::none());
     cx.run_until_parked();
@@ -290,7 +318,14 @@ fn workspace_in_a_git_folder_shows_its_branch(cx: &mut TestAppContext) {
     .unwrap();
     let mut worktree = main_checkout("x");
     worktree["checkout_path"] = json!(dir.to_string_lossy());
-    let (list, state, cx) = fixture(cx);
+    let (
+        Panels {
+            spaces: list,
+            state,
+            ..
+        },
+        cx,
+    ) = fixture(cx);
     let mut snapshot = (*snapshot()).clone();
     snapshot.workspaces[0].info.worktree = serde_json::from_value(worktree).unwrap();
     state.update(cx, |state, cx| {

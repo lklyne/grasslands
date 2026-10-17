@@ -1,10 +1,11 @@
-//! The workspace list, laid out like herdr's own TUI sidebar: a "spaces"
-//! section (one compact row per workspace: status glyph and label, then the
-//! branch and its ahead/behind counts), a footer with "new" and "menu", and an
-//! "agents" section listing every agent, grouped by workspace or by priority.
-//! It draws in the monospace font at terminal density. The rules (glyphs,
-//! colors, grouping, ordering) follow herdr 0.9.5's `client/shell/sidebar.rs`
-//! and `agent_sidebar.rs`; see docs/decisions/0009-workspace-list.md.
+//! The spaces panel, laid out like herdr's own TUI sidebar: one compact row
+//! per workspace (status glyph and label, then the branch and its
+//! ahead/behind counts). The agents panel ([`AgentList`]) lists every agent,
+//! grouped by workspace or by priority. Both draw their rows in the monospace
+//! font at terminal density and sit in the sidebar's dock, which draws their
+//! title bars. The rules (glyphs, colors, grouping, ordering) follow herdr
+//! 0.9.5's `client/shell/sidebar.rs` and `agent_sidebar.rs`; see
+//! docs/decisions/0009-workspace-list.md.
 //!
 //! Click a workspace to focus it (`workspace.focus`; the terminal area
 //! follows herdr's focused workspace). Click an agent to focus its pane.
@@ -15,21 +16,28 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
-use std::rc::Rc;
 use std::time::Duration;
 
+use gpui_kit::component::button::Button;
+use gpui_kit::component::dock::{BasePanel, Panel, PanelControl, PanelEvent};
+use gpui_kit::component::menu::{PopupMenu, PopupMenuItem};
 use gpui_kit::component::notification::Notification;
+use gpui_kit::component::tag::Tag;
 use gpui_kit::component::tooltip::Tooltip;
-use gpui_kit::component::{ActiveTheme as _, StyledExt as _, WindowExt as _, h_flex, v_flex};
+use gpui_kit::component::{
+    ActiveTheme as _, IconName, Sizable as _, StyledExt as _, WindowExt as _, h_flex, v_flex,
+};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use crate::actions::{CommandPalette, OpenContextMenu};
-use crate::chrome::{self, HerdrCommand, MenuCommand, MenuEntry, MenuTarget};
+use crate::chrome::{self, HerdrCommand, MenuCommand, MenuTarget};
 use crate::herdr::{Agent, AgentStatus, Snapshot, WorkspaceInfo, WorktreeParams};
 use crate::state::{AppEvent, AppState};
 use git::{Checkout, HeadWatcher, Placement, Repo};
 use groups::{Entry, Kind};
+
+pub use agents::AgentList;
 
 pub fn init(_cx: &mut App) {}
 
@@ -53,13 +61,12 @@ pub struct WorkspaceList {
     state: Entity<AppState>,
     /// Repo groups (by key) folded to their parent rows.
     folded: HashSet<String>,
-    agents_open: bool,
-    agent_sort: AgentSort,
     /// git2's answer per workspace folder (`None`: not in git).
     checkouts: HashMap<PathBuf, Option<Checkout>>,
     /// Folders being read for the first time.
     reading: HashSet<PathBuf>,
     heads: Option<HeadWatcher>,
+    focus: FocusHandle,
     _observe: Subscription,
     _subscribe: Subscription,
     _tasks: Vec<Task<()>>,
@@ -93,14 +100,14 @@ fn glyph(status: AgentStatus) -> &'static str {
     }
 }
 
-/// herdr's `status_color`, mapped onto the theme's palette.
+/// herdr's `status_color`, mapped onto the theme's status colors.
 fn status_color(status: AgentStatus, cx: &App) -> Hsla {
     let theme = cx.theme();
     match status {
-        AgentStatus::Blocked => theme.red,
-        AgentStatus::Working => theme.yellow,
-        AgentStatus::Done => theme.cyan,
-        AgentStatus::Idle => theme.green,
+        AgentStatus::Blocked => theme.danger,
+        AgentStatus::Working => theme.warning,
+        AgentStatus::Done => theme.info,
+        AgentStatus::Idle => theme.success,
         AgentStatus::Unknown => theme.muted_foreground,
     }
 }
@@ -114,27 +121,16 @@ fn text(s: impl Into<SharedString>) -> Div {
     div().flex_shrink_0().whitespace_nowrap().child(s.into())
 }
 
-/// A pill counting blocked agents or unseen results.
-fn badge(label: impl Into<SharedString>, color: Hsla) -> Div {
-    div()
-        .flex_shrink_0()
-        .px_1()
-        .rounded_sm()
-        .text_size(px(11.))
-        .text_color(color)
-        .bg(color.opacity(0.15))
-        .child(label.into())
-}
-
-fn badges(blocked: usize, unseen: usize, cx: &App) -> Div {
+/// Tags counting blocked agents and unseen results.
+fn badges(blocked: usize, unseen: usize) -> Div {
     h_flex()
         .flex_shrink_0()
         .gap_1()
         .when(blocked > 0, |this| {
-            this.child(badge(blocked.to_string(), cx.theme().red))
+            this.child(Tag::danger().outline().xsmall().child(blocked.to_string()))
         })
         .when(unseen > 0, |this| {
-            this.child(badge(unseen.to_string(), cx.theme().cyan))
+            this.child(Tag::info().outline().xsmall().child(unseen.to_string()))
         })
 }
 
@@ -157,7 +153,7 @@ fn checkout_dir(snapshot: &Snapshot, info: &WorkspaceInfo) -> Option<PathBuf> {
 }
 
 impl WorkspaceList {
-    pub fn new(state: Entity<AppState>, window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(state: Entity<AppState>, cx: &mut Context<Self>) -> Self {
         let observe = cx.observe(&state, |_, _, cx| cx.notify());
         let subscribe = cx.subscribe(&state, |this, _, event, cx| match event {
             AppEvent::SnapshotReplaced => this.sync_checkouts(cx),
@@ -198,15 +194,13 @@ impl WorkspaceList {
                 .ok();
             (watcher, vec![heads_task, refresh_task])
         };
-        script::start(window, cx);
         let mut this = Self {
             state,
             folded: HashSet::new(),
-            agents_open: true,
-            agent_sort: AgentSort::Grouped,
             checkouts: HashMap::new(),
             reading: HashSet::new(),
             heads,
+            focus: cx.focus_handle(),
             _observe: observe,
             _subscribe: subscribe,
             _tasks: tasks,
@@ -359,36 +353,11 @@ impl WorkspaceList {
             .detach_and_log_err(cx);
     }
 
-    /// Focuses the agent's pane and counts its result as seen.
-    pub fn activate_agent(&mut self, pane_id: &str, window: &mut Window, cx: &mut Context<Self>) {
-        self.state
-            .update(cx, |state, cx| state.mark_seen(pane_id, cx));
-        window.dispatch_action(
-            Box::new(crate::actions::FocusPane {
-                pane_id: pane_id.to_owned(),
-            }),
-            cx,
-        );
-    }
-
     /// Folds or unfolds a repo group, by repo key.
     pub fn toggle_group(&mut self, repo_key: &str, cx: &mut Context<Self>) {
         if !self.folded.remove(repo_key) {
             self.folded.insert(repo_key.to_owned());
         }
-        cx.notify();
-    }
-
-    pub fn toggle_agents(&mut self, cx: &mut Context<Self>) {
-        self.agents_open = !self.agents_open;
-        cx.notify();
-    }
-
-    pub fn toggle_agent_sort(&mut self, cx: &mut Context<Self>) {
-        self.agent_sort = match self.agent_sort {
-            AgentSort::Grouped => AgentSort::Priority,
-            AgentSort::Priority => AgentSort::Grouped,
-        };
         cx.notify();
     }
 
@@ -461,82 +430,6 @@ impl WorkspaceList {
             }
         })
         .detach();
-    }
-
-    /// The footer's "menu": the chrome's menu for the focused workspace plus
-    /// the list's own entries, or the command palette when nothing is
-    /// focused. herdr's global menu (settings, keybinds, …) has no
-    /// counterpart here; the palette holds the app's commands.
-    pub fn open_menu(
-        &mut self,
-        position: Point<Pixels>,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let focused = self.state.read(cx).snapshot.focused_workspace_id.clone();
-        let Some(chrome) = chrome::get(window, cx) else {
-            return;
-        };
-        let Some(workspace_id) = focused else {
-            chrome.update(cx, |chrome, cx| chrome.open_command_palette(window, cx));
-            return;
-        };
-        let (a, b) = (cx.entity().downgrade(), cx.entity().downgrade());
-        let extra = vec![
-            MenuEntry::item(
-                "New Workspace",
-                MenuCommand::Callback(Rc::new(move |_, cx| {
-                    let _ = a.update(cx, |this, cx| this.new_workspace(cx));
-                })),
-            ),
-            MenuEntry::item(
-                "New Worktree…",
-                MenuCommand::Callback(Rc::new(move |window, cx| {
-                    let _ = b.update(cx, |this, cx| this.new_worktree(None, window, cx));
-                })),
-            ),
-            MenuEntry::item(
-                "Command Palette…",
-                MenuCommand::Action(Rc::new(CommandPalette)),
-            ),
-        ];
-        chrome.update(cx, |chrome, cx| {
-            chrome.context_menu(
-                MenuTarget::Workspace { workspace_id },
-                position,
-                extra,
-                window,
-                cx,
-            )
-        });
-    }
-
-    fn section_label(label: &'static str, cx: &App) -> Div {
-        text(label)
-            .font_bold()
-            .text_color(cx.theme().muted_foreground)
-    }
-
-    fn render_spaces_header(&self, snapshot: &Snapshot, cx: &App) -> Div {
-        let attention = &self.state.read(cx).attention;
-        let blocked = snapshot
-            .agents
-            .iter()
-            .filter(|a| a.agent_status == AgentStatus::Blocked)
-            .count();
-        let unseen = snapshot
-            .agents
-            .iter()
-            .filter(|a| attention.is_unseen_done(snapshot, &a.pane_id))
-            .count();
-        h_flex()
-            .flex_shrink_0()
-            .h(LINE * 2.)
-            .items_start()
-            .pr_1()
-            .child(Self::section_label(" spaces", cx))
-            .child(div().flex_1())
-            .child(badges(blocked, unseen, cx))
     }
 
     /// One workspace: status glyph and label, then (except for a group's
@@ -619,7 +512,7 @@ impl WorkspaceList {
                     .when(!focused, |this| this.text_color(dim_text(cx)))
                     .child(info.label.clone()),
             )
-            .child(badges(blocked, unseen, cx).pr_1());
+            .child(badges(blocked, unseen).pr_1());
         let second = branch_line.map(|(branch, ahead_behind)| {
             let (ahead, behind) = ahead_behind.unwrap_or_default();
             h_flex()
@@ -638,10 +531,10 @@ impl WorkspaceList {
                         .child(branch),
                 )
                 .when(ahead > 0, |this| {
-                    this.child(text(format!(" ↑{ahead}")).text_color(theme.green))
+                    this.child(text(format!(" ↑{ahead}")).text_color(theme.success))
                 })
                 .when(behind > 0, |this| {
-                    this.child(text(format!(" ↓{behind}")).text_color(theme.red))
+                    this.child(text(format!(" ↓{behind}")).text_color(theme.danger))
                 })
         });
 
@@ -710,32 +603,6 @@ impl WorkspaceList {
             .child(actions)
             .into_any_element()
     }
-
-    fn render_footer(&self, cx: &mut Context<Self>) -> Div {
-        let theme = cx.theme();
-        let link = |id: &'static str, label: &'static str| {
-            div()
-                .id(id)
-                .debug_selector(move || id.to_owned())
-                .whitespace_nowrap()
-                .text_color(theme.muted_foreground)
-                .hover(|this| this.text_color(theme.foreground))
-                .cursor_pointer()
-                .child(label)
-        };
-        h_flex()
-            .flex_shrink_0()
-            .h(LINE)
-            .pr_1()
-            .child(
-                link("spaces-new", " new")
-                    .on_click(cx.listener(|this, _, _, cx| this.new_workspace(cx))),
-            )
-            .child(div().flex_1())
-            .child(link("spaces-menu", "menu").on_click(cx.listener(
-                |this, event: &ClickEvent, window, cx| this.open_menu(event.position(), window, cx),
-            )))
-    }
 }
 
 fn open_workspace_menu(
@@ -780,6 +647,92 @@ pub(super) fn rename_workspace(workspace_id: &str, window: &mut Window, cx: &mut
     });
 }
 
+/// The blocked and unseen-done counts across every agent, for the title bar.
+fn totals(state: &AppState) -> (usize, usize) {
+    let snapshot = &state.snapshot;
+    let blocked = snapshot
+        .agents
+        .iter()
+        .filter(|a| a.agent_status == AgentStatus::Blocked)
+        .count();
+    let unseen = snapshot
+        .agents
+        .iter()
+        .filter(|a| state.attention.is_unseen_done(snapshot, &a.pane_id))
+        .count();
+    (blocked, unseen)
+}
+
+impl EventEmitter<PanelEvent> for WorkspaceList {}
+
+impl Focusable for WorkspaceList {
+    fn focus_handle(&self, _: &App) -> FocusHandle {
+        self.focus.clone()
+    }
+}
+
+impl BasePanel for WorkspaceList {
+    fn panel_name(&self) -> &'static str {
+        "SpacesPanel"
+    }
+
+    fn closable(&self, _: &App) -> bool {
+        false
+    }
+}
+
+impl Panel for WorkspaceList {
+    fn title(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        "Spaces"
+    }
+
+    fn title_suffix(&mut self, _: &mut Window, cx: &mut Context<Self>) -> Option<impl IntoElement> {
+        let (blocked, unseen) = totals(self.state.read(cx));
+        (blocked + unseen > 0).then(|| badges(blocked, unseen))
+    }
+
+    fn toolbar_buttons(&mut self, _: &mut Window, cx: &mut Context<Self>) -> Option<Vec<Button>> {
+        Some(vec![
+            Button::new("spaces-new")
+                .icon(IconName::Plus)
+                .tooltip("New Workspace")
+                .on_click(cx.listener(|this, _, _, cx| this.new_workspace(cx))),
+        ])
+    }
+
+    fn dropdown_menu(
+        &mut self,
+        menu: PopupMenu,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> PopupMenu {
+        let (a, b) = (cx.entity().downgrade(), cx.entity().downgrade());
+        menu.item(
+            PopupMenuItem::new("New Workspace").on_click(move |_, _, cx| {
+                let _ = a.update(cx, |this, cx| this.new_workspace(cx));
+            }),
+        )
+        .item(
+            PopupMenuItem::new("New Worktree…").on_click(move |_, window, cx| {
+                let _ = b.update(cx, |this, cx| this.new_worktree(None, window, cx));
+            }),
+        )
+        .item(
+            PopupMenuItem::new("Command Palette…").on_click(|_, window, cx| {
+                window.dispatch_action(Box::new(CommandPalette), cx);
+            }),
+        )
+    }
+
+    fn zoom_control(&self, _: &App) -> Option<PanelControl> {
+        None
+    }
+
+    fn inner_padding(&self, _: &App) -> bool {
+        false
+    }
+}
+
 impl Render for WorkspaceList {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let snapshot = self.state.read(cx).snapshot.clone();
@@ -793,28 +746,26 @@ impl Render for WorkspaceList {
             .is_empty()
             .then(|| text(" no workspaces").text_color(theme.muted_foreground));
         v_flex()
+            .id("workspace-rows")
+            .track_focus(&self.focus)
             .size_full()
+            .overflow_y_scroll()
             .font_family(theme.mono_font_family.clone())
             .text_size(TEXT)
             .line_height(LINE)
-            .child(
-                v_flex()
-                    .flex_1()
-                    .min_h(LINE * 4.)
-                    .child(self.render_spaces_header(&snapshot, cx))
-                    .child(
-                        v_flex()
-                            .id("workspace-rows")
-                            .flex_1()
-                            .min_h_0()
-                            .overflow_y_scroll()
-                            .children(rows)
-                            .children(empty),
-                    )
-                    .child(self.render_footer(cx)),
-            )
-            .child(self.render_agents(&snapshot, cx))
+            .children(rows)
+            .children(empty)
     }
+}
+
+/// Debug builds only: drives both panels from `RT_SIDEBAR_SCRIPT`.
+pub fn start_script(
+    spaces: WeakEntity<WorkspaceList>,
+    agents: WeakEntity<AgentList>,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    script::start(spaces, agents, window, cx);
 }
 
 mod agents;
