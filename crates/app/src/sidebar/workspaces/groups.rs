@@ -81,3 +81,77 @@ pub fn entries<'a>(
     }
     entries
 }
+
+/// A row as a drag source or drop target.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Slot {
+    pub workspace_id: String,
+    pub kind: Kind,
+    /// The repo key of the group the row sits in, if any.
+    pub group: Option<String>,
+}
+
+impl Slot {
+    pub fn of(entry: &Entry) -> Self {
+        Self {
+            workspace_id: entry.info.workspace_id.clone(),
+            kind: entry.kind,
+            group: (entry.kind != Kind::Plain)
+                .then(|| entry.repo.as_ref().map(|r| r.key.clone()))
+                .flatten(),
+        }
+    }
+}
+
+/// Whether `dragged` can drop on `target`. A plain row or a group's parent
+/// moves as a block (its whole group) to any row outside that block; a
+/// linked worktree moves only among its group's linked worktrees.
+pub fn accepts(dragged: &Slot, target: &Slot) -> bool {
+    if dragged.workspace_id == target.workspace_id {
+        return false;
+    }
+    match dragged.kind {
+        Kind::Child => target.kind == Kind::Child && target.group == dragged.group,
+        Kind::Plain => true,
+        Kind::Parent => target.group != dragged.group,
+    }
+}
+
+/// herdr's whole new order after dropping `dragged` on `target`, which
+/// lands where `target` was. `entries` must be built with nothing folded, so
+/// a folded group's hidden worktrees move with it. `None` when the drop isn't
+/// allowed or either row is gone.
+pub fn reordered(entries: &[Entry], dragged: &Slot, target: &Slot) -> Option<Vec<String>> {
+    if !accepts(dragged, target) {
+        return None;
+    }
+    // Groups are contiguous in `entries`, so each run of one group is a block.
+    let mut blocks: Vec<(Option<String>, Vec<String>)> = Vec::new();
+    for slot in entries.iter().map(Slot::of) {
+        match blocks.last_mut() {
+            Some((group, ids)) if group.is_some() && *group == slot.group => {
+                ids.push(slot.workspace_id)
+            }
+            _ => blocks.push((slot.group, vec![slot.workspace_id])),
+        }
+    }
+    let block_of = |id: &str| blocks.iter().position(|(_, ids)| ids.iter().any(|i| i == id));
+    let (from, to) = (
+        block_of(&dragged.workspace_id)?,
+        block_of(&target.workspace_id)?,
+    );
+    if dragged.kind == Kind::Child {
+        let ids = &mut blocks[from].1;
+        let position = |id: &str| ids.iter().position(|i| i == id);
+        let (i, j) = (
+            position(&dragged.workspace_id)?,
+            position(&target.workspace_id)?,
+        );
+        let id = ids.remove(i);
+        ids.insert(j, id);
+    } else {
+        let block = blocks.remove(from);
+        blocks.insert(to, block);
+    }
+    Some(blocks.into_iter().flat_map(|(_, ids)| ids).collect())
+}

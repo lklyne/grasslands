@@ -1,5 +1,5 @@
 //! The agents panel, after herdr's agent panel
-//! (`client/shell/agent_sidebar.rs`): every agent as two lines, its status
+//! (`client/shell/agent_sidebar.rs`): every agent on one line, its status
 //! glyph with its workspace (and tab, when the workspace has more than one),
 //! then its name. "grouped" keeps herdr's workspace order, blocked first
 //! within each workspace; "priority" is herdr's attention queue. The sort
@@ -9,11 +9,12 @@ use std::cmp::Reverse;
 
 use gpui_kit::component::button::Button;
 use gpui_kit::component::dock::{BasePanel, Panel, PanelControl, PanelEvent};
-use gpui_kit::component::{ActiveTheme as _, StyledExt as _, h_flex, v_flex};
+use gpui_kit::component::menu::{PopupMenu, PopupMenuItem};
+use gpui_kit::component::{ActiveTheme as _, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
-use super::{AgentSort, LINE, dim_text, priority, status_icon, text};
+use super::{AgentSort, ROW, dim_text, priority, status_icon, text};
 use crate::actions::OpenContextMenu;
 use crate::chrome::MenuTarget;
 use crate::herdr::{Agent, AgentStatus, Snapshot};
@@ -118,12 +119,18 @@ impl AgentList {
             place = format!("{place} · {}", tab.info.label);
         }
         let (pane_id, menu_pane_id) = (agent.pane_id.clone(), agent.pane_id.clone());
-        v_flex()
+        h_flex()
             .id(SharedString::from(format!("agent-{}", agent.pane_id)))
             .debug_selector({
                 let pane_id = agent.pane_id.clone();
                 move || format!("agent-{pane_id}")
             })
+            .flex_shrink_0()
+            .h(ROW)
+            .pl(px(6.))
+            .pr_2()
+            .gap_1()
+            .rounded_sm()
             .cursor_pointer()
             .when(focused, |this| this.bg(theme.sidebar_accent))
             .hover(|this| this.bg(theme.sidebar_accent.opacity(0.6)))
@@ -141,35 +148,24 @@ impl AgentList {
                     cx,
                 );
             })
+            .child(status_icon(status, cx))
             .child(
-                h_flex()
-                    .h(LINE)
-                    .pr_1()
-                    .child(text(" "))
-                    .child(status_icon(status, cx))
-                    .child(text(" "))
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .truncate()
-                            .font_bold()
-                            .text_color(if focused {
-                                theme.foreground
-                            } else {
-                                dim_text(cx)
-                            })
-                            .child(place),
-                    ),
+                div()
+                    .min_w_0()
+                    .truncate()
+                    .text_color(if focused {
+                        theme.foreground
+                    } else {
+                        dim_text(cx)
+                    })
+                    .child(place),
             )
             .child(
-                h_flex().h(LINE).pr_1().child(text("   ")).child(
-                    div()
-                        .min_w_0()
-                        .truncate()
-                        .text_color(theme.muted_foreground)
-                        .child(agent_label(agent).to_owned()),
-                ),
+                div()
+                    .min_w_0()
+                    .truncate()
+                    .text_color(theme.muted_foreground)
+                    .child(agent_label(agent).to_owned()),
             )
             .into_any_element()
     }
@@ -212,6 +208,29 @@ impl Panel for AgentList {
         ])
     }
 
+    fn dropdown_menu(
+        &mut self,
+        menu: PopupMenu,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> PopupMenu {
+        [("Grouped", AgentSort::Grouped), ("Priority", AgentSort::Priority)]
+            .into_iter()
+            .fold(menu.label("Sort"), |menu, (label, sort)| {
+                let this = cx.entity().downgrade();
+                menu.item(
+                    PopupMenuItem::new(label)
+                        .checked(self.sort == sort)
+                        .on_click(move |_, _, cx| {
+                            let _ = this.update(cx, |this, cx| {
+                                this.sort = sort;
+                                cx.notify();
+                            });
+                        }),
+                )
+            })
+    }
+
     fn zoom_control(&self, _: &App) -> Option<PanelControl> {
         None
     }
@@ -231,7 +250,7 @@ impl Render for AgentList {
         let theme = cx.theme();
         let empty = rows
             .is_empty()
-            .then(|| text(" no agents").text_color(theme.muted_foreground));
+            .then(|| text("No agents").px_2().text_color(theme.muted_foreground));
         v_flex()
             .id("agent-rows")
             .track_focus(&self.focus)
@@ -239,10 +258,9 @@ impl Render for AgentList {
             // Under the dock's title bar, like the main area's tab strip.
             .border_t_1()
             .border_color(theme.border)
+            .p_1()
             .overflow_y_scroll()
-            .font_family(theme.mono_font_family.clone())
-            .text_size(theme.mono_font_size)
-            .line_height(LINE)
+            .text_sm()
             .children(rows)
             .children(empty)
     }

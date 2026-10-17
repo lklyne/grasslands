@@ -15,6 +15,7 @@
 //! - `repo-worktree <repo name> <branch>`: submit that prompt with `branch`
 //! - `rename <workspace>`: the menu's Rename Workspace… (chrome's prompt)
 //! - `close <workspace>`: the row's × (chrome confirms if agents run)
+//! - `move <workspace> <target>`: drag a row and drop it on `target`'s row
 //! - `key <keystroke>`: one key press (`enter`, `escape`, `down`, …) to the
 //!   window that owns the keyboard: the overlay while a prompt or dialog is
 //!   open there (`overlay::dispatch_keystroke`)
@@ -29,7 +30,7 @@ use std::time::Duration;
 use gpui_kit::*;
 
 use super::git::Repo;
-use super::groups::Kind;
+use super::groups::{Kind, Slot};
 use super::{AgentList, WorkspaceList, agents, close_workspace, rename_workspace};
 use crate::attention::{agent_name, status_label};
 use crate::overlay;
@@ -134,9 +135,25 @@ fn run_step(
         }
         "rename" => rename_workspace(arg, window, cx),
         "close" => close_workspace(arg, window, cx),
+        "move" => {
+            let (dragged, target) = arg.split_once(' ').unwrap_or((arg, ""));
+            match (slot(this, dragged, cx), slot(this, target.trim(), cx)) {
+                (Some(dragged), Some(target)) => this.reorder(&dragged, &target, cx),
+                _ => eprintln!("[sidebar-script] no row for {arg}"),
+            }
+        }
         "log" => log(this, arg, sort, cx),
         other => eprintln!("[sidebar-script] unknown step {other}"),
     }
+}
+
+/// The row showing `workspace_id`, as a drag source or drop target.
+fn slot(this: &WorkspaceList, workspace_id: &str, cx: &App) -> Option<Slot> {
+    let snapshot = this.state.read(cx).snapshot.clone();
+    this.entries(&snapshot)
+        .iter()
+        .find(|e| e.info.workspace_id == workspace_id)
+        .map(Slot::of)
 }
 
 fn repo_named(this: &WorkspaceList, name: &str, cx: &App) -> Option<Repo> {

@@ -1,5 +1,5 @@
 //! The window's GPUI Kit dock: the main area (terminals or the editor) in the
-//! center, the sidebar panels in the left dock. Any sidebar panel can be
+//! center, workspaces and agents in the left dock, files in the right. Any sidebar panel can be
 //! dragged to reorder, stacked as tabs, or dropped beside the main area. The
 //! dock's own skin draws the title bars, in the theme's colors. The layout is
 //! saved per herdr session and restored on launch; see
@@ -141,10 +141,12 @@ impl Docks {
                 area.set_center(DockLayout::tabs().panel_view(main, cx), window, cx);
                 let sidebar = DockLayout::v_split()
                     .child(DockLayout::tabs().panel_view(spaces, cx), Some(px(300.)))
-                    .child(DockLayout::tabs().panel_view(agents, cx), Some(px(220.)))
-                    .child(DockLayout::tabs().panel_view(files, cx), None);
+                    .child(DockLayout::tabs().panel_view(agents, cx), None);
                 area.set_dock(DockPlacement::Left, sidebar, window, cx);
                 area.set_dock_size(DockPlacement::Left, SIDEBAR_WIDTH, window, cx);
+                let files = DockLayout::tabs().panel_view(files, cx);
+                area.set_dock(DockPlacement::Right, files, window, cx);
+                area.set_dock_size(DockPlacement::Right, SIDEBAR_WIDTH, window, cx);
             }
         });
 

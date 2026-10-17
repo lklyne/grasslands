@@ -69,7 +69,11 @@ pub(super) fn open(
                 });
             })
             .on_cancel(|window, cx| window.close_dialog(cx));
-        dialog.w(px(600.)).close_button(false).child(palette)
+        dialog
+            .w(px(600.))
+            .p_0()
+            .close_button(false)
+            .child(palette)
     });
     palette_state
 }

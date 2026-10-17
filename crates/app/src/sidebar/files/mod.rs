@@ -358,13 +358,6 @@ impl FileTree {
         self.refresh_git(cx);
     }
 
-    /// Re-lists every loaded folder.
-    fn refresh(&mut self, cx: &mut Context<Self>) {
-        if let Some(model) = &self.model {
-            self.load(model.loaded_dirs(), cx);
-        }
-    }
-
     // File operations. Each re-lists the affected folder right away rather than
     // waiting for the watcher.
 
@@ -401,6 +394,7 @@ impl FileTree {
         {
             model.set_expanded(&dir, true);
         }
+        crate::sounds::play(cues::Cue::Tap, crate::sounds::subtle());
         self.load(vec![dir], cx);
         if !folder {
             // Called from the name prompt, which lives in the Kit's dialog layer,
@@ -432,6 +426,7 @@ impl FileTree {
                 cx,
             );
         }
+        crate::sounds::play(cues::Cue::Tap, crate::sounds::subtle());
         let from = path.to_path_buf();
         self.state
             .update(cx, |state, cx| state.file_moved(from, target, cx));
@@ -465,6 +460,7 @@ impl FileTree {
                 cx,
             );
         }
+        crate::sounds::play(cues::Cue::Tap, crate::sounds::strong());
         self.state.update(cx, |state, cx| {
             state.file_moved(path.to_path_buf(), target, cx)
         });
@@ -486,6 +482,7 @@ impl FileTree {
                 cx,
             );
         }
+        crate::sounds::play(cues::Cue::Close, crate::sounds::strong());
         let trashed = path.to_path_buf();
         self.state
             .update(cx, |state, cx| state.file_trashed(trashed, cx));
@@ -941,6 +938,7 @@ fn valid_name(name: &str) -> Result<&str, String> {
 }
 
 fn error(message: impl Into<SharedString>, window: &mut Window, cx: &mut App) {
+    crate::sounds::play(cues::Cue::Error, crate::sounds::subtle());
     window.push_notification(Notification::error(message), cx);
 }
 
@@ -1038,8 +1036,8 @@ impl BasePanel for FileTree {
 }
 
 impl Panel for FileTree {
-    /// The active worktree's folder name.
-    fn title(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+    /// The active worktree's folder name, then its branch.
+    fn title(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let name = match self.root() {
             Some(root) => root.file_name().map_or_else(
                 || root.display().to_string(),
@@ -1047,7 +1045,19 @@ impl Panel for FileTree {
             ),
             None => "Files".to_owned(),
         };
-        div().text_sm().child(name)
+        let branch = self.git.as_ref().and_then(|git| git.branch.clone());
+        h_flex()
+            .min_w_0()
+            .gap_1()
+            .text_sm()
+            .child(div().flex_shrink_0().child(name))
+            .children(branch.map(|branch| {
+                div()
+                    .min_w_0()
+                    .truncate()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(branch)
+            }))
     }
 
     fn toolbar_buttons(&mut self, _: &mut Window, cx: &mut Context<Self>) -> Option<Vec<Button>> {
@@ -1065,11 +1075,29 @@ impl Panel for FileTree {
                 .on_click(
                     cx.listener(|this, _, window, cx| this.new_in_selected(true, window, cx)),
                 ),
-            Button::new("files-refresh")
-                .icon(IconName::RefreshCw)
-                .tooltip("Refresh")
-                .on_click(cx.listener(|this, _, _, cx| this.refresh(cx))),
         ])
+    }
+
+    fn dropdown_menu(
+        &mut self,
+        menu: PopupMenu,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> PopupMenu {
+        if self.root().is_none() {
+            return menu;
+        }
+        let (a, b) = (cx.entity().downgrade(), cx.entity().downgrade());
+        menu.item(
+            PopupMenuItem::new("New File").on_click(move |_, window, cx| {
+                let _ = a.update(cx, |this, cx| this.new_in_selected(false, window, cx));
+            }),
+        )
+        .item(
+            PopupMenuItem::new("New Folder").on_click(move |_, window, cx| {
+                let _ = b.update(cx, |this, cx| this.new_in_selected(true, window, cx));
+            }),
+        )
     }
 
     fn zoom_control(&self, _: &App) -> Option<PanelControl> {
