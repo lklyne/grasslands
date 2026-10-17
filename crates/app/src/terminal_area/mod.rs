@@ -196,6 +196,12 @@ pub struct TerminalArea {
     /// False while the window shows something else in its place (a file
     /// tab); every native view is hidden then.
     visible: bool,
+    /// The tab on screen at the last sync, to notice tab switches.
+    shown_tab: Option<String>,
+    /// A tab the user picked from the tab bar: its pane takes keyboard focus
+    /// once herdr shows it. The bar is outside the area, so a click there
+    /// takes focus out of it.
+    focus_on_show: Option<String>,
     _subscriptions: Vec<Subscription>,
     _liveness: Task<()>,
 }
@@ -227,6 +233,8 @@ impl TerminalArea {
             attached: HashSet::new(),
             right_click_set: HashSet::new(),
             visible: true,
+            shown_tab: None,
+            focus_on_show: None,
             _subscriptions: subscriptions,
             _liveness: Self::watch_liveness(cx),
         };
@@ -370,6 +378,24 @@ impl TerminalArea {
             let caught_up = herdr_ratio.is_none_or(|ratio| (ratio - local.ratio).abs() < 0.005);
             !caught_up && local.since.elapsed() < OVERRIDE_TIMEOUT
         });
+
+        // A tab switch hides the terminal holding keyboard focus; the focus
+        // moves to the new tab's pane, unless it is elsewhere (the editor).
+        let shown_tab = Self::active_tab(&snapshot).map(|tab| tab.info.tab_id.clone());
+        let picked = shown_tab.is_some() && self.focus_on_show == shown_tab;
+        if picked {
+            self.focus_on_show = None;
+        }
+        if shown_tab != self.shown_tab || picked {
+            let follow = picked || self.owns_keyboard_focus(window, cx);
+            self.shown_tab = shown_tab;
+            if self.visible
+                && follow
+                && let Some(pane_id) = self.target_pane(cx)
+            {
+                self.focus_terminal(&pane_id, window, cx);
+            }
+        }
         cx.notify();
     }
 
@@ -561,6 +587,22 @@ impl TerminalArea {
             }
         })
         .detach();
+    }
+
+    /// Shows `tab_id` and gives its pane keyboard focus, now if it is
+    /// already on screen, else when herdr's snapshot shows it.
+    fn pick_tab(&mut self, tab_id: &str, window: &mut Window, cx: &mut Context<Self>) {
+        if self.shown_tab.as_deref() == Some(tab_id) {
+            if let Some(pane_id) = self.target_pane(cx) {
+                self.focus_terminal(&pane_id, window, cx);
+            }
+            return;
+        }
+        self.focus_on_show = Some(tab_id.to_owned());
+        self.state
+            .read(cx)
+            .focus_tab(tab_id, cx)
+            .detach_and_log_err(cx);
     }
 
     fn cycle_tab(&mut self, step: isize, cx: &mut Context<Self>) {
@@ -814,10 +856,7 @@ impl TerminalArea {
                     )
                     .on_click(cx.listener(move |this, _, window, cx| {
                         window.dispatch_action(Box::new(crate::workspace::ShowHerdr), cx);
-                        this.state
-                            .read(cx)
-                            .focus_tab(&focus_id, cx)
-                            .detach_and_log_err(cx);
+                        this.pick_tab(&focus_id, window, cx);
                     }))
                     .on_mouse_down(
                         MouseButton::Right,

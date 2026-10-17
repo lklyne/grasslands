@@ -553,6 +553,7 @@ impl Run {
         Self::settle(cx).await;
         self.check_views(cx, "new tab: other tab's views hidden");
         self.shoot(cx, "second-tab");
+        self.tab_switch_focus(cx, &tab_id).await?;
 
         // Move the new tab's pane into the first tab: same terminal, same view.
         let Some((_, SplitTree::Pane(moving))) = self.tab(cx)? else {
@@ -913,6 +914,49 @@ impl Run {
             })
             .await;
         self.check(back, "cmd-alt-left moves it back");
+        Ok(())
+    }
+
+    /// Switching tabs moves keyboard focus to the new tab's terminal, so
+    /// typing goes there without a click.
+    async fn tab_switch_focus(&mut self, cx: &mut Cx, first_tab: &str) -> anyhow::Result<()> {
+        let typing_in_active_tab = |area: &TerminalArea, window: &Window, cx: &App| {
+            let snapshot = area.snapshot(cx);
+            let want = area
+                .target_pane(cx)
+                .and_then(|p| snapshot.pane(&p).map(|p| p.terminal_id.clone()));
+            want.is_some() && area.terminals.focused(window, cx).map(str::to_owned) == want
+        };
+        let on_new = self
+            .until(cx, Duration::from_secs(5), typing_in_active_tab)
+            .await;
+        self.check(on_new, "a new tab takes keyboard focus");
+
+        let second_tab = self.tab(cx)?.map(|(id, _)| id);
+        let first_strip = self.drawn(cx, |d| d.tabs.get(first_tab).copied())?;
+        let Some(first_strip) = first_strip else {
+            self.fail("tab switch: first tab not drawn in the strip");
+            return Ok(());
+        };
+        self.click(cx, center(first_strip)).await;
+        let clicked = self
+            .until(cx, Duration::from_secs(5), |area, window, cx| {
+                TerminalArea::active_tab(&area.snapshot(cx))
+                    .is_some_and(|t| t.info.tab_id == first_tab)
+                    && typing_in_active_tab(area, window, cx)
+            })
+            .await;
+        self.check(clicked, "clicking a tab focuses its terminal");
+
+        self.dispatch(cx, Box::new(super::NextTab));
+        let cycled = self
+            .until(cx, Duration::from_secs(5), |area, window, cx| {
+                TerminalArea::active_tab(&area.snapshot(cx)).map(|t| &t.info.tab_id)
+                    == second_tab.as_ref()
+                    && typing_in_active_tab(area, window, cx)
+            })
+            .await;
+        self.check(cycled, "cmd-shift-] focuses the next tab's terminal");
         Ok(())
     }
 
