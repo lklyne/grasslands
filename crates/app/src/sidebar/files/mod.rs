@@ -5,8 +5,10 @@
 //! folder whose contents change, so files agents create, edit and delete show
 //! up live. Clicking a file sends `OpenFile`; the context menu creates,
 //! renames, trashes and reveals. Rows drag onto folders to move them. The
-//! search box above swaps the tree for name and content matches.
+//! search box above swaps the tree for name and content matches. A footer
+//! shows the branch, its parent and the lines changed since (see `git`).
 
+mod git;
 mod model;
 mod search;
 mod watch;
@@ -41,6 +43,10 @@ use crate::state::{AppEvent, AppState};
 const FS_DEBOUNCE: Duration = Duration::from_millis(75);
 /// Typing within this window runs one search.
 const SEARCH_DEBOUNCE: Duration = Duration::from_millis(120);
+/// The git footer re-reads at most this often, and at least this often too
+/// (5x), for commits in a linked worktree's git dir the watcher can't see.
+const GIT_THROTTLE: Duration = Duration::from_secs(1);
+const GIT_REFRESH: Duration = Duration::from_secs(5);
 const INDENT: f32 = 12.;
 const ROW_HEIGHT: Pixels = px(24.);
 /// The chevron's column; files leave it empty so names line up.
@@ -62,8 +68,14 @@ pub struct FileTree {
     /// Matches for the query; `None` while it is empty, which shows the tree.
     results: Option<search::Results>,
     searching: Option<(Arc<AtomicBool>, Task<()>)>,
+    git: Option<git::Summary>,
+    /// A read in flight, then the throttle pause after it.
+    git_reading: Option<Task<()>>,
+    /// Something changed while `git_reading`; read again after it.
+    git_stale: bool,
     _subscriptions: [Subscription; 3],
     _fs_task: Task<()>,
+    _git_timer: Task<()>,
 }
 
 /// A file or folder being dragged to another folder.
@@ -120,6 +132,14 @@ impl FileTree {
                 }
             }
         });
+        let git_timer = cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor().timer(GIT_REFRESH).await;
+                if this.update(cx, |this, cx| this.refresh_git(cx)).is_err() {
+                    break;
+                }
+            }
+        });
         let root = state.read(cx).active_worktree().cloned();
         let mut this = Self {
             state,
@@ -131,8 +151,12 @@ impl FileTree {
             query,
             results: None,
             searching: None,
+            git: None,
+            git_reading: None,
+            git_stale: false,
             _subscriptions: subscriptions,
             _fs_task: fs_task,
+            _git_timer: git_timer,
         };
         this.set_root(root, cx);
         this
@@ -162,6 +186,43 @@ impl FileTree {
         }
         self.rebuild(cx);
         self.search(cx);
+        self.git = None;
+        self.refresh_git(cx);
+    }
+
+    /// Re-reads the git footer on the background executor, at most once per
+    /// `GIT_THROTTLE`.
+    fn refresh_git(&mut self, cx: &mut Context<Self>) {
+        if self.git_reading.is_some() {
+            self.git_stale = true;
+            return;
+        }
+        let Some(root) = self.root().map(Path::to_path_buf) else {
+            return;
+        };
+        self.git_reading = Some(cx.spawn(async move |this, cx| {
+            let summary = cx
+                .background_executor()
+                .spawn({
+                    let root = root.clone();
+                    async move { git::read(&root) }
+                })
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                // A read for a root we have since left.
+                if this.root() == Some(root.as_path()) && this.git != summary {
+                    this.git = summary;
+                    cx.notify();
+                }
+            });
+            cx.background_executor().timer(GIT_THROTTLE).await;
+            let _ = this.update(cx, |this, cx| {
+                this.git_reading = None;
+                if std::mem::take(&mut this.git_stale) {
+                    this.refresh_git(cx);
+                }
+            });
+        }));
     }
 
     /// Runs the query against the root after a pause in typing, replacing
@@ -290,6 +351,7 @@ impl FileTree {
         if self.results.is_some() {
             self.search(cx);
         }
+        self.refresh_git(cx);
     }
 
     /// Re-lists every loaded folder.
@@ -790,6 +852,59 @@ fn render_results(results: &search::Results, cx: &App) -> AnyElement {
 }
 
 /// A single path component a user typed.
+/// The footer: branch, parent branch, and lines added and removed.
+fn render_git(git: &git::Summary, cx: &App) -> AnyElement {
+    let muted = cx.theme().muted_foreground;
+    let branch = |icon: assets::IconName, name: &str| {
+        h_flex()
+            .gap_1()
+            .min_w_0()
+            .child(Icon::new(icon).xsmall().text_color(muted).flex_none())
+            .child(
+                div()
+                    .overflow_hidden()
+                    .text_ellipsis()
+                    .whitespace_nowrap()
+                    .child(name.to_owned()),
+            )
+    };
+    h_flex()
+        .flex_none()
+        .gap_3()
+        .px_2p5()
+        .py_1p5()
+        .border_t_1()
+        .border_color(cx.theme().border)
+        .text_xs()
+        .text_color(muted)
+        .child(branch(
+            assets::IconName::GitBranch,
+            git.branch.as_deref().unwrap_or("detached"),
+        ))
+        .children(
+            git.parent
+                .as_deref()
+                .map(|parent| branch(assets::IconName::GitMerge, parent)),
+        )
+        .children(git.diff.map(|(added, removed)| {
+            h_flex()
+                .ml_auto()
+                .flex_none()
+                .gap_1p5()
+                .child(
+                    div()
+                        .text_color(cx.theme().success)
+                        .child(format!("+{added}")),
+                )
+                .child(
+                    div()
+                        .text_color(cx.theme().danger)
+                        .child(format!("-{removed}")),
+                )
+        }))
+        .into_any_element()
+}
+
 fn valid_name(name: &str) -> Result<&str, String> {
     let name = name.trim();
     if name.is_empty() || name == "." || name == ".." || name.contains('/') || name.contains('\0') {
@@ -865,6 +980,7 @@ impl Render for FileTree {
             .border_color(cx.theme().border)
             .child(search)
             .child(body)
+            .children(self.git.as_ref().map(|git| render_git(git, cx)))
             .into_any_element()
     }
 }

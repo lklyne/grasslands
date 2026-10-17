@@ -8,6 +8,7 @@
 extern crate gpui_kit as gpui;
 
 mod actions;
+mod assets;
 mod attention;
 mod chrome;
 mod editor;
@@ -36,7 +37,7 @@ fn main() {
             .map_or_else(|| "stderr only".to_owned(), |dir| dir.display().to_string())
     );
     gpui_kit::application()
-        .with_assets(gpui_kit::assets::Assets)
+        .with_assets(assets::AppAssets)
         .run(|cx| {
             gpui_kit::init(cx);
             actions::init(cx);
