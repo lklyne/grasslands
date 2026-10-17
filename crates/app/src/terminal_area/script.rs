@@ -381,6 +381,38 @@ impl Run {
             "keys typed in the app reach the pane (herdr reads typed-42)",
         );
 
+        // A file dropped from Finder pastes its shell-escaped path.
+        self.type_text(cx, "echo dropped:");
+        let center = self.read(cx, |area, _| {
+            area.drawn.borrow().panes.get(&first).map(|b| b.center())
+        })?;
+        if let Some(position) = center {
+            let paths = ExternalPaths(vec![PathBuf::from("/tmp/drop me (1).png")].into());
+            self.mouse(
+                cx,
+                FileDropEvent::Entered { position, paths }.to_platform_input(),
+            );
+            Self::settle(cx).await;
+            self.mouse(cx, FileDropEvent::Pending { position }.to_platform_input());
+            Self::settle(cx).await;
+            self.mouse(cx, FileDropEvent::Submit { position }.to_platform_input());
+        }
+        Self::settle(cx).await;
+        self.type_text(cx, "\n");
+        let mut dropped = false;
+        for _ in 0..30 {
+            Self::sleep(cx, 150).await;
+            if self
+                .read_pane_text(cx, &first)
+                .await
+                .contains("dropped:/tmp/drop me (1).png")
+            {
+                dropped = true;
+                break;
+            }
+        }
+        self.check(dropped, "a dropped file pastes its escaped path");
+
         // Split right and down through the app's own actions.
         self.dispatch(cx, Box::new(SplitRight));
         let two = self

@@ -299,6 +299,19 @@ impl Render for Workspace {
         if !active && keep {
             cx.set_global(KeepTerminalsDuringDrag(false));
         }
+        // GPUI only leaves keyboard modality on a mouse move or press, and a
+        // drag from Finder brings neither, so every hitbox stays unhovered
+        // and the drop lands nowhere. Move the pointer where it already is.
+        if active && window.last_input_was_keyboard() {
+            window.defer(cx, |window, cx| {
+                let event = MouseMoveEvent {
+                    position: window.mouse_position(),
+                    pressed_button: Some(MouseButton::Left),
+                    modifiers: window.modifiers(),
+                };
+                window.dispatch_event(event.to_platform_input(), cx);
+            });
+        }
         let dragging = active && !keep;
         if dragging != self.dragging {
             self.dragging = dragging;

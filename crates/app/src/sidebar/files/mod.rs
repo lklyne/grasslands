@@ -84,8 +84,8 @@ pub struct FileTree {
 
 /// A file or folder being dragged to another folder.
 #[derive(Clone)]
-struct DraggedPath {
-    path: PathBuf,
+pub struct DraggedPath {
+    pub path: PathBuf,
     name: SharedString,
 }
 

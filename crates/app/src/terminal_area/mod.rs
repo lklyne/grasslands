@@ -13,7 +13,9 @@ mod terminals;
 
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
 use std::rc::Rc;
+use std::slice;
 use std::time::{Duration, Instant};
 
 use gpui_kit::component::{ActiveTheme as _, h_flex, v_flex};
@@ -27,6 +29,7 @@ use crate::herdr::{
     SplitDirection, SplitTree, Tab,
 };
 use crate::overlay;
+use crate::sidebar::files::DraggedPath;
 use crate::state::{AppEvent, AppState};
 
 use self::terminals::{Launch, Terminals};
@@ -1122,6 +1125,7 @@ impl TerminalArea {
             pane_id.to_owned(),
             pane_id.to_owned(),
         );
+        let (paste_pane, paste_file_pane) = (pane_id.to_owned(), pane_id.to_owned());
         let drawn = self.drawn.clone();
         let bounds_pane = pane_id.to_owned();
         let area = cx.entity().downgrade();
@@ -1207,6 +1211,13 @@ impl TerminalArea {
             .on_drop(cx.listener(move |this, dragged: &DraggedPane, _, cx| {
                 this.swap(&dragged.pane_id, &drop_body, cx);
             }))
+            .drag_over::<ExternalPaths>(move |style, _, _, _| style.bg(drop))
+            .on_drop(cx.listener(move |this, paths: &ExternalPaths, window, cx| {
+                this.paste_paths(&paste_pane, paths.paths(), window, cx);
+            }))
+            .on_drop(cx.listener(move |this, dragged: &DraggedPath, window, cx| {
+                this.paste_paths(&paste_file_pane, slice::from_ref(&dragged.path), window, cx);
+            }))
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |this, _: &MouseDownEvent, _, cx| {
@@ -1227,6 +1238,39 @@ impl TerminalArea {
             .when(with_header, |el| el.child(header))
             .child(body)
             .into_any_element()
+    }
+
+    /// Types dropped files' paths into the pane's terminal as one paste,
+    /// shell-escaped and space-separated like Ghostty does, then focuses it.
+    fn paste_paths(
+        &mut self,
+        pane_id: &str,
+        paths: &[PathBuf],
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let snapshot = self.snapshot(cx);
+        let Some(pane) = snapshot.pane(pane_id) else {
+            return;
+        };
+        let Some(view) = self.terminals.get(&pane.terminal_id) else {
+            return;
+        };
+        let text = paths
+            .iter()
+            .map(|path| shell_escape(&path.to_string_lossy()))
+            .collect::<Vec<_>>()
+            .join(" ");
+        view.terminal.update(cx, |terminal, cx| {
+            terminal.paste_text(&text);
+            terminal.focus(window, cx);
+        });
+        if snapshot.focused_pane_id.as_deref() != Some(pane_id) {
+            self.state
+                .read(cx)
+                .focus_pane(pane_id, cx)
+                .detach_and_log_err(cx);
+        }
     }
 
     fn swap(&mut self, source: &str, target: &str, cx: &mut Context<Self>) {
@@ -1462,8 +1506,37 @@ impl Render for TerminalArea {
     }
 }
 
+/// Backslash-escapes the characters a shell would split or expand, matching
+/// what Ghostty and Terminal.app paste for a dropped file.
+fn shell_escape(path: &str) -> String {
+    const SPECIAL: &str = "\\ ()[]{}<>\"'`!#$&;|*?\t";
+    let mut escaped = String::with_capacity(path.len());
+    for c in path.chars() {
+        if SPECIAL.contains(c) {
+            escaped.push('\\');
+        }
+        escaped.push(c);
+    }
+    escaped
+}
+
 impl Focusable for TerminalArea {
     fn focus_handle(&self, _: &App) -> FocusHandle {
         self.focus.clone()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::shell_escape;
+
+    #[test]
+    fn shell_escape_backslashes_shell_specials() {
+        assert_eq!(shell_escape("/tmp/plain.png"), "/tmp/plain.png");
+        assert_eq!(
+            shell_escape("/Users/me/Screenshot 2026-10-17 at 9.41 (2).png"),
+            r"/Users/me/Screenshot\ 2026-10-17\ at\ 9.41\ \(2\).png"
+        );
+        assert_eq!(shell_escape("it's$x"), r"it\'s\$x");
     }
 }
