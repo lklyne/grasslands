@@ -118,9 +118,14 @@ fn fill_room(data: &mut [f32], rate: f64, seed: u32) {
     }
 }
 
+/// How many samples a room impulse at `rate` holds.
+pub(super) fn room_len(rate: f64) -> usize {
+    ((ROOM_SECONDS * rate).floor() as usize).max(1)
+}
+
 /// One channel's room: the impulse through the walls' lowpass, as `sound.mjs` prefilters it.
 pub(super) fn room(rate: f64, seed: u32) -> Vec<f64> {
-    let mut impulse = vec![0f32; ((ROOM_SECONDS * rate).floor() as usize).max(1)];
+    let mut impulse = vec![0f32; room_len(rate)];
     fill_room(&mut impulse, rate, seed);
     let mut room: Vec<f64> = impulse.into_iter().map(f64::from).collect();
     filter(
@@ -143,6 +148,10 @@ impl Spectrum {
         let mut im = vec![0.0; size];
         fft(&mut re, &mut im);
         Self { re, im }
+    }
+
+    pub fn size(&self) -> usize {
+        self.re.len()
     }
 }
 

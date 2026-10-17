@@ -9,12 +9,13 @@ mod dsp;
 mod layers;
 mod rng;
 mod shape;
+mod shared;
 mod themes;
 
 use std::f64::consts::LN_10;
 use std::time::Duration;
 
-use self::dsp::{Biquad, ROOM_SECONDS, ROOM_SEEDS, ROOM_SEND, Spectrum};
+use self::dsp::{Biquad, ROOM_SECONDS, ROOM_SEND, Spectrum};
 use self::layers::{FLAT_Q, Filter, Layer, Source};
 use self::rng::Random;
 use self::shape::Jitter;
@@ -88,28 +89,27 @@ pub fn render(request: &Request, rate: u32) -> Stereo {
         return Stereo::default();
     }
 
-    let rate = f64::from(rate);
+    let hz = f64::from(rate);
     let end = layers
         .iter()
         .map(|layer| layer.offset + layer.attack + layer.decay + SOURCE_STOP_PADDING)
         .fold(f64::NEG_INFINITY, f64::max)
         + ROOM_SECONDS
         + RENDER_MARGIN;
-    let mut dry = vec![0.0; (end * rate).ceil() as usize];
-    let noise = dsp::noise(rate);
+    let mut dry = vec![0.0; (end * hz).ceil() as usize];
+    let noise = shared::noise(rate);
     let mut random = Random::new(request.seed);
     for layer in &layers {
-        add_layer(&mut dry, layer, &noise, &mut random, rate);
+        add_layer(&mut dry, layer, &noise, &mut random, hz);
     }
 
     let gain = recipe.master_gain * OUTPUT_GAIN;
     let send = ROOM_SEND * recipe.room;
-    let rooms = ROOM_SEEDS.map(|seed| dsp::room(rate, seed));
-    let size = dsp::convolution_size(dry.len(), rooms[0].len());
-    let dry_spectrum = Spectrum::new(&dry, size);
-    let subsonic = dsp::biquad(Filter::Highpass, SUBSONIC_HZ, FLAT_Q, rate);
-    let [left, right] = rooms.map(|room| {
-        let wet = dsp::convolve(&dry_spectrum, &Spectrum::new(&room, size), dry.len());
+    let rooms = shared::rooms(rate, dry.len());
+    let dry_spectrum = Spectrum::new(&dry, rooms[0].size());
+    let subsonic = dsp::biquad(Filter::Highpass, SUBSONIC_HZ, FLAT_Q, hz);
+    let [left, right] = [&rooms[0], &rooms[1]].map(|room| {
+        let wet = dsp::convolve(&dry_spectrum, room, dry.len());
         let mut out: Vec<f64> = dry
             .iter()
             .zip(&wet)
