@@ -194,6 +194,8 @@ impl Overlay {
         let parent_ns = ns_window(parent).ok_or_else(|| anyhow::anyhow!("no parent NSWindow"))?;
         let options = WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(parent.bounds())),
+            // The bounds are relative to this display, the main one if unset.
+            display_id: parent.display(cx).map(|display| display.id()),
             titlebar: None,
             focus: false,
             // Shown by `attach_later`, once it is borderless and click-through.
@@ -254,6 +256,12 @@ impl Overlay {
         });
         let weak = overlay.downgrade();
         content.update(cx, |content, _| content.overlay = Some(weak));
+        // Tooltips over a terminal would be hidden under it, so the main
+        // window's all show here (the coordinates match).
+        let tooltips = cx.update_window(window.into(), |_, window, cx| {
+            window.own_tooltip_overlay(cx)
+        })?;
+        parent.host_tooltips_in(Some(tooltips), cx);
         // GPUI Kit dialogs and sheets open and close inside the overlay's Root
         // (including on their own, e.g. on Escape), which changes whether the
         // overlay is modal.
