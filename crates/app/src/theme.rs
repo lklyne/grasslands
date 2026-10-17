@@ -75,7 +75,9 @@ impl Appearance {
     }
 
     pub fn from_key(key: &str) -> Option<Self> {
-        Self::ALL.into_iter().find(|appearance| appearance.key() == key)
+        Self::ALL
+            .into_iter()
+            .find(|appearance| appearance.key() == key)
     }
 }
 
@@ -104,7 +106,11 @@ impl ThemeSettings {
     /// Reads the keys this module owns from a settings file's JSON object,
     /// keeping `defaults` for any that are missing or malformed.
     fn from_json(json: &Map<String, Value>, defaults: Self) -> Self {
-        let name = |key: &str| json.get(key).and_then(Value::as_str).map(SharedString::from);
+        let name = |key: &str| {
+            json.get(key)
+                .and_then(Value::as_str)
+                .map(SharedString::from)
+        };
         Self {
             appearance: json
                 .get("appearance")
@@ -174,11 +180,7 @@ fn apply(system: WindowAppearance, cx: &mut App) {
     let settings = settings(cx).clone();
     let registry = ThemeRegistry::global(cx);
     let find = |name: &SharedString, fallback: &Rc<ThemeConfig>| {
-        registry
-            .themes()
-            .get(name)
-            .unwrap_or(fallback)
-            .clone()
+        registry.themes().get(name).unwrap_or(fallback).clone()
     };
     let light = find(&settings.light, registry.default_light_theme());
     let dark = find(&settings.dark, registry.default_dark_theme());

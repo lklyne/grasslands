@@ -438,9 +438,7 @@ impl Chrome {
             }
             MenuTarget::Tab { tab_id } => {
                 let tab = snapshot.tab(tab_id);
-                let workspace_id = tab
-                    .map(|t| t.info.workspace_id.clone())
-                    .unwrap_or_default();
+                let workspace_id = tab.map(|t| t.info.workspace_id.clone()).unwrap_or_default();
                 let mut entries = vec![
                     MenuEntry::herdr(
                         "Focus Tab",

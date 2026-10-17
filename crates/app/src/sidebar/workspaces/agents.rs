@@ -160,7 +160,7 @@ impl AgentList {
                                 dim_text(cx)
                             })
                             .child(place),
-                    )
+                    ),
             )
             .child(
                 h_flex().h(LINE).pr_1().child(text("   ")).child(

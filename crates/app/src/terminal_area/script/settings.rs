@@ -35,7 +35,9 @@ impl Run {
             window.dispatch_keystroke(Keystroke::parse("cmd-,").unwrap_or_default(), cx);
         })?;
         let opened = self
-            .until(cx, Duration::from_secs(5), |_, _, cx| settings::window(cx).is_some())
+            .until(cx, Duration::from_secs(5), |_, _, cx| {
+                settings::window(cx).is_some()
+            })
             .await;
         self.check(opened, "cmd-, opens the Settings window");
         let Some(first) = cx.update(|_, cx| settings::window(cx))? else {
@@ -79,7 +81,10 @@ impl Run {
                 && cx.theme().theme_name() == "Ayu Light"
                 && theme::settings(cx).appearance == Appearance::Light
         })?;
-        self.check(ayu, "picking a light theme while fixed dark switches to light");
+        self.check(
+            ayu,
+            "picking a light theme while fixed dark switches to light",
+        );
         Self::sleep(cx, 500).await;
         self.shoot(cx, "ayu-light-main");
 
