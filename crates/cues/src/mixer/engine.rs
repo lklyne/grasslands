@@ -3,8 +3,9 @@
 //! bookkeeping in `render.ts`. No device and no clock of its own, so tests
 //! drive it with their own instants and a fake [`Source`].
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::hash::{BuildHasher, RandomState};
+use std::panic::{self, AssertUnwindSafe};
 use std::time::{Duration, Instant};
 
 use super::PlayOptions;
@@ -75,6 +76,8 @@ pub(super) struct Engine<S> {
     latest: HashMap<Cue, Latest>,
     next_id: u64,
     seed: u32,
+    /// Cues whose render panicked in a theme, so each is logged once.
+    panicked: HashSet<(Cue, Theme)>,
 }
 
 impl<S: Source> Engine<S> {
@@ -91,6 +94,7 @@ impl<S: Source> Engine<S> {
             next_id: 0,
             // truncation is fine: any 32 bits of a random hash make a seed
             seed: RandomState::new().hash_one(0u8) as u32,
+            panicked: HashSet::new(),
         }
     }
 
@@ -177,7 +181,19 @@ impl<S: Source> Engine<S> {
             return None;
         }
         request.part = part;
-        let stereo = self.source.render(&request, rate);
+        // a bug in one recipe drops that play rather than every sound after it
+        let source = &mut self.source;
+        let stereo = match panic::catch_unwind(AssertUnwindSafe(|| source.render(&request, rate))) {
+            Ok(stereo) => stereo,
+            Err(_) => {
+                if self.panicked.insert((cue, theme)) {
+                    log::error!(
+                        "cues: rendering {cue:?} in {theme:?} panicked; dropping its plays"
+                    );
+                }
+                return None;
+            }
+        };
         if stereo.left.is_empty() {
             return None;
         }
@@ -255,11 +271,13 @@ mod tests {
         walks: HashMap<Cue, usize>,
         no_release: Vec<Cue>,
         silent: Vec<Cue>,
+        panics: Vec<Cue>,
     }
 
     impl Source for Fake {
         fn render(&mut self, request: &Request, _rate: u32) -> Stereo {
             self.requests.push(*request);
+            assert!(!self.panics.contains(&request.cue), "fake render panic");
             let len = if self.silent.contains(&request.cue) {
                 0
             } else {
@@ -638,6 +656,45 @@ mod tests {
         });
         rig.play(Cue::Tap, 0);
         assert!(rig.play(Cue::Type, 10).is_none());
+    }
+
+    fn panicking(cue: Cue) -> Rig {
+        Rig::with(Fake {
+            panics: vec![cue],
+            ..Fake::default()
+        })
+    }
+
+    #[test]
+    fn panicking_render_drops_the_play() {
+        let mut rig = panicking(Cue::Error);
+        assert!(rig.play(Cue::Error, 0).is_none());
+    }
+
+    #[test]
+    fn panicking_render_leaves_other_cues_playing() {
+        let mut rig = panicking(Cue::Error);
+        rig.play(Cue::Error, 0);
+        assert!(rig.play(Cue::Tap, 10).is_some());
+    }
+
+    #[test]
+    fn panicking_render_is_noted_once_per_cue_and_theme() {
+        let mut rig = panicking(Cue::Error);
+        rig.play(Cue::Error, 0);
+        rig.play(Cue::Error, 10);
+        let mech = PlayOptions::default().theme(Theme::Mech);
+        rig.run(Cue::Error, mech, Part::Both, None, 20);
+        assert_eq!(rig.engine.panicked.len(), 2);
+    }
+
+    #[test]
+    fn panicking_render_hands_nothing_off() {
+        let mut rig = panicking(Cue::Error);
+        let first = rig.play(Cue::Error, 0);
+        rig.engine.source.panics.clear();
+        let next = rig.play(Cue::Error, 10).unwrap();
+        assert_eq!((first.is_none(), next.handoff), (true, None));
     }
 
     #[test]
