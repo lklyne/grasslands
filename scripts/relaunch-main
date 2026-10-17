@@ -1,0 +1,51 @@
+#!/bin/sh
+# Rebuild the debug app and restart the "main" instance: the one running on
+# your live herdr session (started with RT_ALLOW_LIVE_HERDR=1). Dev-session
+# instances other agents run are left alone.
+#
+#   scripts/relaunch-main            # build, stop the main app, start it again
+#   scripts/relaunch-main --no-build # restart without building
+#
+# The new instance is detached; its output goes to target/main-app.log.
+set -eu
+
+root=$(cd "$(dirname "$0")/.." && pwd)
+bin="$root/target/debug/grasslands"
+
+if [ "${1:-}" != "--no-build" ]; then
+  # libghostty needs Zig 0.16 (Homebrew's 0.17 won't build it).
+  export ZIG="${ZIG:-$HOME/.local/zig-0.16/zig}"
+  # A failed build leaves the running app alone.
+  cargo build -p app --manifest-path "$root/Cargo.toml"
+fi
+[ -x "$bin" ] || { echo "relaunch-main: $bin missing; build first" >&2; exit 1; }
+
+# Main instances: a debug grasslands running in this checkout with the
+# live-herdr override in its environment.
+pids=""
+for pid in $(pgrep -f "target/debug/grasslands" || true); do
+  cwd=$(lsof -a -p "$pid" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p')
+  [ "$cwd" = "$root" ] || continue
+  if ps eww -o command= -p "$pid" | grep -q "RT_ALLOW_LIVE_HERDR=1"; then
+    pids="$pids $pid"
+  fi
+done
+
+for pid in $pids; do
+  echo "relaunch-main: stopping $pid"
+  kill "$pid" 2>/dev/null || true
+done
+for pid in $pids; do
+  i=0
+  while kill -0 "$pid" 2>/dev/null && [ $i -lt 50 ]; do
+    sleep 0.1
+    i=$((i + 1))
+  done
+  kill -0 "$pid" 2>/dev/null && { echo "relaunch-main: $pid did not exit" >&2; exit 1; }
+done
+
+# herdr's default session: no dev session or socket override.
+cd "$root"
+env -u HERDR_SESSION -u HERDR_SOCKET_PATH -u XDG_CONFIG_HOME RT_ALLOW_LIVE_HERDR=1 \
+  nohup "$bin" >"$root/target/main-app.log" 2>&1 </dev/null &
+echo "relaunch-main: started $! (log: target/main-app.log)"
