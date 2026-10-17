@@ -36,7 +36,6 @@ use crate::state::{AppEvent, AppState};
 const FS_DEBOUNCE: Duration = Duration::from_millis(75);
 const INDENT: f32 = 12.;
 const ROW_HEIGHT: Pixels = px(24.);
-const TEXT: Pixels = px(13.);
 /// The chevron's column; files leave it empty so names line up.
 const CHEVRON: Pixels = px(12.);
 
@@ -451,7 +450,7 @@ fn render_row(ix: usize, entry: &TreeEntry, cx: &App) -> ListItem {
         .pl(indent)
         .pr_2()
         .rounded_sm()
-        .text_size(TEXT);
+        .text_sm();
     if model::is_placeholder(&item.id) {
         return row.child(
             div()

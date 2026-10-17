@@ -41,8 +41,7 @@ pub use agents::AgentList;
 
 pub fn init(_cx: &mut App) {}
 
-/// Text size and line height: one herdr cell row per line.
-const TEXT: Pixels = px(13.);
+/// Line height: one herdr cell row per line, for the theme's mono size.
 const LINE: Pixels = px(17.);
 /// How often every cached checkout is re-read, for what the `HEAD` watcher
 /// can't see (commits, fetches and pushes move ahead/behind).
@@ -127,10 +126,22 @@ fn badges(blocked: usize, unseen: usize) -> Div {
         .flex_shrink_0()
         .gap_1()
         .when(blocked > 0, |this| {
-            this.child(Tag::danger().outline().xsmall().child(blocked.to_string()))
+            this.child(
+                Tag::danger()
+                    .outline()
+                    .xsmall()
+                    .text_xs()
+                    .child(blocked.to_string()),
+            )
         })
         .when(unseen > 0, |this| {
-            this.child(Tag::info().outline().xsmall().child(unseen.to_string()))
+            this.child(
+                Tag::info()
+                    .outline()
+                    .xsmall()
+                    .text_xs()
+                    .child(unseen.to_string()),
+            )
         })
 }
 
@@ -754,7 +765,7 @@ impl Render for WorkspaceList {
             .border_color(theme.border)
             .overflow_y_scroll()
             .font_family(theme.mono_font_family.clone())
-            .text_size(TEXT)
+            .text_size(theme.mono_font_size)
             .line_height(LINE)
             .children(rows)
             .children(empty)

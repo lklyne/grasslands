@@ -14,7 +14,7 @@ use gpui_kit::component::{ActiveTheme as _, Sizable as _, StyledExt as _, h_flex
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
-use super::{AgentSort, LINE, TEXT, dim_text, glyph, priority, status_color, text};
+use super::{AgentSort, LINE, dim_text, glyph, priority, status_color, text};
 use crate::actions::OpenContextMenu;
 use crate::chrome::MenuTarget;
 use crate::herdr::{Agent, AgentStatus, Snapshot};
@@ -164,10 +164,10 @@ impl AgentList {
                     )
                     .map(|this| match status {
                         AgentStatus::Blocked => {
-                            this.child(Tag::danger().outline().xsmall().child("blocked"))
+                            this.child(Tag::danger().outline().xsmall().text_xs().child("blocked"))
                         }
                         AgentStatus::Done => {
-                            this.child(Tag::info().outline().xsmall().child("done"))
+                            this.child(Tag::info().outline().xsmall().text_xs().child("done"))
                         }
                         _ => this,
                     }),
@@ -251,7 +251,7 @@ impl Render for AgentList {
             .border_color(theme.border)
             .overflow_y_scroll()
             .font_family(theme.mono_font_family.clone())
-            .text_size(TEXT)
+            .text_size(theme.mono_font_size)
             .line_height(LINE)
             .children(rows)
             .children(empty)
