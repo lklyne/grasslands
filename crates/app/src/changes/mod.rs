@@ -5,6 +5,9 @@
 
 pub mod git;
 
+#[cfg(test)]
+mod tests;
+
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -171,10 +174,10 @@ impl Render for Changes {
                 .text_color(muted)
                 .child(message)
                 .into_any_element(),
-            None => div()
+            None => Diff::new(&self.diff)
                 .flex_1()
                 .min_h_0()
-                .child(Diff::new(&self.diff).size_full())
+                .soft_wrap(true)
                 .into_any_element(),
         };
         v_flex()

@@ -8,6 +8,9 @@
 //! - `type <text>`: replace the rename dialog's text
 //! - `key <keystroke>`: one key press (`down`, `enter`, `escape`, `cmd-a`, …)
 //! - `keys <text>`: type `text` one key press at a time
+//! - `scroll <x> <y> <dy>`: a wheel event at window point (x, y), straight
+//!   into GPUI (AppKit's native views and the overlay never see it)
+//! - `hover <x> <y>`: a mouse move to window point (x, y), the same way
 //!
 //! Key presses go to the window that owns the keyboard: the overlay while a
 //! menu, the palette or a dialog is open there, else the main window
@@ -75,6 +78,21 @@ pub(super) fn start(window: &mut Window, cx: &mut Context<Chrome>) {
                 cx.background_executor().timer(STEP).await;
                 continue;
             }
+            let pointer = match step.split_once(' ') {
+                Some(("scroll", args)) => Some(wheel_event(args)),
+                Some(("hover", args)) => Some(move_event(args)),
+                _ => None,
+            };
+            if let Some(event) = pointer {
+                let Some(event) = event else {
+                    eprintln!("[chrome-script] {step}: bad coordinates");
+                    continue;
+                };
+                let handled = cx.update(|window, cx| window.dispatch_event(event, cx).propagate);
+                eprintln!("[chrome-script] {step}: propagated={handled:?}");
+                cx.background_executor().timer(STEP).await;
+                continue;
+            }
             // With the main window named, not `update_in`: that picks the
             // window the chrome was last used in, which is the overlay once
             // a palette or prompt has run there.
@@ -94,6 +112,36 @@ pub(super) fn start(window: &mut Window, cx: &mut Context<Chrome>) {
         eprintln!("[chrome-script] end");
     })
     .detach();
+}
+
+fn numbers(args: &str) -> Option<Vec<f32>> {
+    args.split_whitespace()
+        .map(str::parse)
+        .collect::<Result<_, _>>()
+        .ok()
+}
+
+fn move_event(args: &str) -> Option<PlatformInput> {
+    let [x, y] = numbers(args)?[..] else {
+        return None;
+    };
+    Some(PlatformInput::MouseMove(MouseMoveEvent {
+        position: point(px(x), px(y)),
+        pressed_button: None,
+        modifiers: Modifiers::none(),
+    }))
+}
+
+fn wheel_event(args: &str) -> Option<PlatformInput> {
+    let [x, y, dy] = numbers(args)?[..] else {
+        return None;
+    };
+    Some(PlatformInput::ScrollWheel(ScrollWheelEvent {
+        position: point(px(x), px(y)),
+        delta: ScrollDelta::Pixels(point(px(0.), px(dy))),
+        modifiers: Modifiers::none(),
+        touch_phase: TouchPhase::Moved,
+    }))
 }
 
 fn run_step(
