@@ -1222,7 +1222,12 @@ fn pane_label(pane: &PaneInfo) -> String {
         .or_else(|| pane.terminal_title_stripped.clone())
         .or_else(|| pane.title.clone())
         .filter(|label| !label.is_empty())
-        .unwrap_or_else(|| pane.pane_id.clone())
+        // herdr's pane id means nothing to a person; the folder does.
+        .or_else(|| {
+            let dir = std::path::Path::new(pane.working_dir()?);
+            Some(dir.file_name()?.to_string_lossy().into_owned())
+        })
+        .unwrap_or_else(|| "Terminal".to_owned())
 }
 
 fn status_dot(status: AgentStatus, cx: &App) -> impl IntoElement {
