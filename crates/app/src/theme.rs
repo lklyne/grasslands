@@ -140,11 +140,15 @@ pub fn init(cx: &mut App) {
     cx.set_global(ThemeSettings::from_json(&read_settings_file(), defaults));
 
     cx.on_action(|_: &ToggleTheme, cx| {
-        let appearance = if cx.theme().is_dark() {
-            Appearance::Light
+        let (appearance, direction) = if cx.theme().is_dark() {
+            (Appearance::Light, cues::Direction::Forward)
         } else {
-            Appearance::Dark
+            (Appearance::Dark, cues::Direction::Back)
         };
+        crate::sounds::play(
+            cues::Cue::Toggle,
+            cues::PlayOptions::default().direction(direction),
+        );
         update_settings(cx, |settings| settings.appearance = appearance);
     });
 }

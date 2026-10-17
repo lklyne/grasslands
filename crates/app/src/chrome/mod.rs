@@ -30,6 +30,7 @@ use crate::herdr::{
     SplitDirection,
 };
 use crate::overlay::{self, Capture, LayerId, Overlay};
+use crate::sounds;
 use crate::state::{AppEvent, AppState};
 
 pub use command::HerdrCommand;
@@ -241,7 +242,8 @@ impl Chrome {
             .map_or(self.main_window, |overlay| overlay.read(cx).window_handle())
     }
 
-    /// A toast and a sound for an agent that needs you (blocked) or finished.
+    /// A toast (bottom right) and a sound for an agent that needs you
+    /// (blocked) or finished.
     /// While the window is in the background the toast also goes to the OS.
     fn agent_toast(&mut self, change: &StatusChange, window: &mut Window, cx: &mut Context<Self>) {
         let (kind, message) = match change.status {
@@ -266,17 +268,19 @@ impl Chrome {
             .with_type(kind)
             .title(format!("{}{workspace}", change.name))
             .message(message)
+            .placement(Anchor::BottomRight)
             .delivery(delivery)
             // The toast lives in the overlay window, so it can't dispatch
             // `FocusPane` to the main window's views; it asks herdr directly.
             .on_click(move |_, _, cx| {
+                sounds::play(cues::Cue::Navigate, sounds::subtle());
                 state.update(cx, |state, cx| {
                     state.mark_seen(&target, cx);
                     state.focus_pane(&target, cx).detach_and_log_err(cx);
                 });
             });
         self.floating(cx, move |window, cx| window.push_notification(note, cx));
-        dock::play_for(change.status);
+        dock::play_for(change.status, !window.is_window_active());
     }
 
     pub fn toast(
@@ -561,6 +565,7 @@ impl Chrome {
         let task = command.send(self.state.read(cx), cx);
         cx.spawn(async move |this, cx| {
             if let Err(error) = task.await {
+                sounds::play(cues::Cue::Error, sounds::subtle());
                 let message = error.to_string();
                 this.update(cx, |chrome, cx| {
                     chrome.floating(cx, move |window, cx| {

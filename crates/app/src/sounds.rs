@@ -6,7 +6,7 @@ use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-use cues::{Cue, Cues, PlayOptions, Theme};
+use cues::{Cue, Cues, Emphasis, PlayOptions, Theme};
 use gpui_kit::*;
 use serde_json::{Map, Value, json};
 
@@ -28,6 +28,28 @@ pub fn cues() -> Option<&'static Cues> {
             .ok()
     })
     .as_ref()
+}
+
+/// Plays `cue` on the shared output, if there is one. The cue to use for a
+/// moment is in `crates/cues/AGENTS.md`.
+/// Silent in tests and script runs, which drive the same code paths.
+pub fn play(cue: Cue, options: PlayOptions) {
+    if cfg!(test) || std::env::var_os("RT_SCRIPT").is_some() {
+        return;
+    }
+    if let Some(cues) = cues() {
+        cues.play(cue, options);
+    }
+}
+
+/// Options for a frequent action.
+pub fn subtle() -> PlayOptions {
+    PlayOptions::default().emphasis(Emphasis::Subtle)
+}
+
+/// Options for a rare action that matters.
+pub fn strong() -> PlayOptions {
+    PlayOptions::default().emphasis(Emphasis::Strong)
 }
 
 /// Whether the user has sounds on.

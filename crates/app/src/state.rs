@@ -18,7 +18,8 @@ use gpui_kit::*;
 
 use crate::attention::{Attention, StatusChange};
 use crate::herdr::{self, Client, ConnectionStatus, PaneId, SessionSync, Snapshot, Update};
-use crate::worktree;
+use crate::{sounds, worktree};
+use cues::{Cue, PlayOptions};
 
 /// herdr 0.9.5 sends no event when a pane's folder changes, so the focused
 /// pane's folder is re-read this often (one `pane.get`).
@@ -175,6 +176,15 @@ impl AppState {
             Update::State(snapshot) => self.replace_snapshot(snapshot, cx),
             Update::Event(event) => cx.emit(AppEvent::Herdr(Arc::from(event))),
             Update::Status(status) => {
+                match (&self.connection, &status) {
+                    (ConnectionStatus::Connected, ConnectionStatus::Reconnecting { .. }) => {
+                        sounds::play(Cue::Warning, PlayOptions::default());
+                    }
+                    (ConnectionStatus::Reconnecting { .. }, ConnectionStatus::Connected) => {
+                        sounds::play(Cue::Success, sounds::subtle());
+                    }
+                    _ => {}
+                }
                 self.connection = status;
                 cx.notify();
             }
@@ -289,6 +299,7 @@ impl AppState {
         direction: herdr::SplitDirection,
         cx: &App,
     ) -> Task<herdr::Result<herdr::PaneInfo>> {
+        sounds::play(Cue::Open, sounds::subtle());
         let mut split = herdr::PaneSplit::new(pane_id.map(str::to_owned), direction);
         split.focus = true;
         split.right_click = Some(herdr::RightClickTarget::Pane);
@@ -297,12 +308,14 @@ impl AppState {
 
     #[track_caller]
     pub fn close_pane(&self, pane_id: &str, cx: &App) -> Task<herdr::Result<()>> {
+        sounds::play(Cue::Close, sounds::subtle());
         let pane_id = pane_id.to_owned();
         self.call(cx, move |c| c.pane_close(&pane_id))
     }
 
     #[track_caller]
     pub fn swap_panes(&self, source: &str, target: &str, cx: &App) -> Task<herdr::Result<()>> {
+        sounds::play(Cue::Tap, sounds::strong());
         let (source, target) = (source.to_owned(), target.to_owned());
         self.call(cx, move |c| c.pane_swap(&source, &target).map(drop))
     }
@@ -314,6 +327,7 @@ impl AppState {
         destination: herdr::PaneMoveDestination,
         cx: &App,
     ) -> Task<herdr::Result<()>> {
+        sounds::play(Cue::Tap, sounds::strong());
         let pane_id = pane_id.to_owned();
         self.call(cx, move |c| {
             c.pane_move(&pane_id, &destination, true).map(drop)
@@ -350,6 +364,9 @@ impl AppState {
 
     #[track_caller]
     pub fn focus_tab(&self, tab_id: &str, cx: &App) -> Task<herdr::Result<()>> {
+        if self.snapshot.focused_tab_id.as_deref() != Some(tab_id) {
+            sounds::play(Cue::Select, PlayOptions::default());
+        }
         let tab_id = tab_id.to_owned();
         self.call(cx, move |c| c.tab_focus(&tab_id))
     }
@@ -360,6 +377,7 @@ impl AppState {
         workspace_id: Option<&str>,
         cx: &App,
     ) -> Task<herdr::Result<herdr::TabInfo>> {
+        sounds::play(Cue::Open, sounds::subtle());
         let params = herdr::NewTab {
             workspace_id: workspace_id.map(str::to_owned),
             focus: true,
@@ -370,6 +388,7 @@ impl AppState {
 
     #[track_caller]
     pub fn rename_tab(&self, tab_id: &str, label: &str, cx: &App) -> Task<herdr::Result<()>> {
+        sounds::play(Cue::Tap, sounds::subtle());
         let (tab_id, label) = (tab_id.to_owned(), label.to_owned());
         self.call(cx, move |c| c.tab_rename(&tab_id, &label))
     }
@@ -382,6 +401,7 @@ impl AppState {
 
     #[track_caller]
     pub fn close_tab(&self, tab_id: &str, cx: &App) -> Task<herdr::Result<()>> {
+        sounds::play(Cue::Close, sounds::subtle());
         let tab_id = tab_id.to_owned();
         self.call(cx, move |c| c.tab_close(&tab_id))
     }
@@ -390,6 +410,9 @@ impl AppState {
 
     #[track_caller]
     pub fn focus_workspace(&self, workspace_id: &str, cx: &App) -> Task<herdr::Result<()>> {
+        if self.snapshot.focused_workspace_id.as_deref() != Some(workspace_id) {
+            sounds::play(Cue::Select, PlayOptions::default());
+        }
         let id = workspace_id.to_owned();
         self.call(cx, move |c| c.workspace_focus(&id))
     }
@@ -401,6 +424,7 @@ impl AppState {
         label: Option<String>,
         cx: &App,
     ) -> Task<herdr::Result<herdr::WorkspaceInfo>> {
+        sounds::play(Cue::Open, sounds::subtle());
         let params = herdr::NewWorkspace {
             cwd: cwd.map(|p| p.to_string_lossy().into_owned()),
             label,
@@ -419,8 +443,16 @@ impl AppState {
         label: &str,
         cx: &App,
     ) -> Task<herdr::Result<()>> {
+        sounds::play(Cue::Tap, sounds::subtle());
         let (id, label) = (workspace_id.to_owned(), label.to_owned());
         self.call(cx, move |c| c.workspace_rename(&id, &label))
+    }
+
+    /// Puts every workspace in `order` (all of them, first to last).
+    #[track_caller]
+    pub fn reorder_workspaces(&self, order: Vec<String>, cx: &App) -> Task<herdr::Result<()>> {
+        sounds::play(Cue::Tap, sounds::strong());
+        self.call(cx, move |c| c.workspace_move_block(&order, None))
     }
 
     /// Closes immediately; confirm first if it holds running agents.
@@ -431,6 +463,7 @@ impl AppState {
         close_group: bool,
         cx: &App,
     ) -> Task<herdr::Result<()>> {
+        sounds::play(Cue::Close, sounds::strong());
         let id = workspace_id.to_owned();
         self.call(cx, move |c| c.workspace_close(&id, close_group))
     }

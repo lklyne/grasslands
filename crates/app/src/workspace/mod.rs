@@ -225,6 +225,7 @@ impl Workspace {
             .unwrap_or(self.editor.read(cx).tabs().len()) as isize
             + 1;
         let index = (self.selected_index(cx) as isize + step).rem_euclid(count) as usize;
+        crate::sounds::play(cues::Cue::Select, cues::PlayOptions::default());
         self.select_index(index, window, cx);
     }
 
@@ -241,6 +242,7 @@ impl Workspace {
 
     /// Opens the Changes tab, or re-reads it if open, and shows it.
     fn open_changes(&mut self, _: &OpenChanges, window: &mut Window, cx: &mut Context<Self>) {
+        crate::sounds::play(cues::Cue::Open, crate::sounds::subtle());
         match &self.changes {
             Some(changes) => changes.update(cx, |changes, cx| changes.reload(cx)),
             None => {

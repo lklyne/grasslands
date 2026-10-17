@@ -57,15 +57,21 @@ pub fn set_badge(count: usize) {
 }
 
 /// Plays the sound for an agent that just reached `status`: `Attention` when
-/// it's blocked, `Ready` when it's done.
-pub fn play_for(status: AgentStatus) {
+/// it's blocked, `Ready` when it's done (strong while the app is in the
+/// background, since it finished while you were away).
+pub fn play_for(status: AgentStatus, background: bool) {
     let cue = match status {
         AgentStatus::Blocked => cues::Cue::Attention,
         AgentStatus::Done => cues::Cue::Ready,
         _ => return,
     };
+    let options = if background && cue == cues::Cue::Ready {
+        sounds::strong()
+    } else {
+        cues::PlayOptions::default()
+    };
     match sounds::cues() {
-        Some(cues) => cues.play(cue, cues::PlayOptions::default()),
+        Some(_) => sounds::play(cue, options),
         None if sounds::enabled() => play_system(status),
         None => {}
     }
