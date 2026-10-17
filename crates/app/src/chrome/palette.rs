@@ -9,7 +9,7 @@ use gpui_kit::component::command::{Command, CommandGroup, CommandItem, CommandSt
 use gpui_kit::*;
 
 use super::{Chrome, HerdrCommand, MenuCommand, MenuTarget, pane_context, update_later};
-use crate::actions::{FocusPane, Quit, ToggleTheme};
+use crate::actions::{FocusPane, OpenSettings, Quit, ToggleTheme};
 use crate::attention::{agent_name, status_label};
 use crate::herdr::{PluginActionInfo, PluginInvocationContext, SplitDirection};
 use crate::state::AppState;
@@ -140,6 +140,10 @@ fn groups(state: &AppState, plugin_actions: &[PluginActionInfo]) -> Vec<Group> {
     app.push((
         "View: Toggle Light/Dark".into(),
         MenuCommand::Action(Rc::new(ToggleTheme)),
+    ));
+    app.push((
+        "Settings…".into(),
+        MenuCommand::Action(Rc::new(OpenSettings)),
     ));
     app.push(("Quit grasslands".into(), MenuCommand::Action(Rc::new(Quit))));
 

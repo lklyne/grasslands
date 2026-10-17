@@ -15,6 +15,7 @@ mod herdr;
 mod logging;
 mod overlay;
 mod prompt;
+mod settings;
 mod sidebar;
 mod state;
 mod terminal_area;
@@ -40,6 +41,7 @@ fn main() {
             gpui_kit::init(cx);
             actions::init(cx);
             theme::init(cx);
+            settings::init(cx);
             editor::init(cx);
             terminal_area::init(cx);
             sidebar::init(cx);
@@ -60,7 +62,13 @@ fn open_main_window(cx: &mut App) -> anyhow::Result<()> {
     };
     let (window, _) = gpui_kit::open_window(options, cx, |window, cx| {
         theme::sync_with_system(window, cx);
-        cx.new(|cx| Workspace::new(state, window, cx))
+        cx.new(|cx| {
+            cx.observe_window_appearance(window, |_, window, cx| {
+                theme::sync_with_system(window, cx);
+            })
+            .detach();
+            Workspace::new(state, window, cx)
+        })
     })?;
     // Files named on the command line open in the editor.
     window.update(cx, |_, window, cx| {

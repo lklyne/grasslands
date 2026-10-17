@@ -10,7 +10,7 @@ use gpui_kit::*;
 
 use crate::chrome::MenuTarget;
 
-actions!(app, [Quit, ToggleTheme, CommandPalette]);
+actions!(app, [Quit, ToggleTheme, CommandPalette, OpenSettings]);
 
 /// Open a file in the editor. Sent by the file tree, the command palette, and
 /// anything else that wants a file on screen.
@@ -51,11 +51,13 @@ pub fn init(cx: &mut App) {
     cx.bind_keys([
         KeyBinding::new("cmd-q", Quit, None),
         KeyBinding::new("cmd-k", CommandPalette, None),
+        KeyBinding::new("cmd-,", OpenSettings, None),
     ]);
     cx.set_menus(vec![
         Menu {
             name: "grasslands".into(),
             items: vec![
+                MenuItem::action("Settings…", OpenSettings),
                 MenuItem::action("Command Palette", CommandPalette),
                 MenuItem::separator(),
                 MenuItem::action("Quit grasslands", Quit),
