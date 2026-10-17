@@ -69,6 +69,12 @@ impl PlayOptions {
         self.context.duration = Some(duration);
         self
     }
+
+    /// Multiplies the cue's pitch, within an octave either way.
+    pub fn pitch(mut self, pitch: f64) -> Self {
+        self.context.pitch = Some(pitch);
+        self
+    }
 }
 
 enum Command {

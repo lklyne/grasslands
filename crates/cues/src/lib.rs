@@ -96,4 +96,8 @@ pub struct Context {
     pub direction: Option<Direction>,
     /// How long a `count` runs, clamped to 300–2000 ms. Other cues ignore it.
     pub duration: Option<std::time::Duration>,
+    /// A pitch multiplier of our own (cuelume has none), such as how far a
+    /// reorder has travelled. Applied on top of the cue's shaping, within an
+    /// octave either way (0.5–2).
+    pub pitch: Option<f64>,
 }

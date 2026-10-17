@@ -8,10 +8,12 @@ use super::themes::{Recipe, Variation};
 use crate::{Context, Cue, Direction, Emphasis, Input, KeyRole, Part};
 
 /// Scales for a recipe's pitch, level and length, its bright layers and its tail. `sweep` is -1 to
-/// play glides backwards; `time` moves when layers start.
+/// play glides backwards; `time` moves when layers start. `transpose` is our own pitch (cuelume has
+/// none): it applies after `pitch`'s clamp, so it can move a cue further.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) struct Shape {
     pitch: f64,
+    transpose: f64,
     level: f64,
     length: f64,
     bright: f64,
@@ -23,6 +25,7 @@ pub(super) struct Shape {
 /// Every factor 1. Multiplying by 1 is exact, so a full `Shape` stands in for context.ts's partial ones.
 const IDENTITY: Shape = Shape {
     pitch: 1.0,
+    transpose: 1.0,
     level: 1.0,
     length: 1.0,
     bright: 1.0,
@@ -31,6 +34,9 @@ const IDENTITY: Shape = Shape {
     time: 1.0,
 };
 const BRIGHT_HZ: f64 = 2500.0;
+/// An octave either way.
+const MIN_TRANSPOSE: f64 = 0.5;
+const MAX_TRANSPOSE: f64 = 2.0;
 
 const fn emphasis_shape(emphasis: Emphasis) -> Shape {
     match emphasis {
@@ -139,6 +145,7 @@ impl Shape {
     fn times(self, by: Shape) -> Shape {
         Shape {
             pitch: self.pitch * by.pitch,
+            transpose: self.transpose * by.transpose,
             level: self.level * by.level,
             length: self.length * by.length,
             bright: self.bright * by.bright,
@@ -177,6 +184,12 @@ pub(super) fn shape_for(
             ..IDENTITY
         });
     }
+    if let Some(pitch) = context.pitch.filter(|pitch| pitch.is_finite()) {
+        shape = shape.times(Shape {
+            transpose: pitch.clamp(MIN_TRANSPOSE, MAX_TRANSPOSE),
+            ..IDENTITY
+        });
+    }
     if let (Cue::Count, Some(duration)) = (cue, context.duration) {
         let ms = (duration.as_secs_f64() * 1000.0).clamp(COUNT_MIN_MS, COUNT_MAX_MS);
         shape = shape.times(Shape {
@@ -208,7 +221,7 @@ fn layer_factors(layer: &Layer, shape: &Shape) -> Factors {
     };
     let tail = if layer.offset > 0.0 { shape.tail } else { 1.0 };
     Factors {
-        pitch: shape.pitch.clamp(0.75, 1.25),
+        pitch: shape.pitch.clamp(0.75, 1.25) * shape.transpose,
         gain: (shape.level * bright * tail).clamp(0.0, 1.5),
         length: shape.length.clamp(0.6, 1.6),
     }
