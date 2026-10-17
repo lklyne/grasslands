@@ -205,7 +205,7 @@ impl BasePanel for AgentList {
 
 impl Panel for AgentList {
     fn title(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-        div().text_xs().child("Agents")
+        div().text_sm().child("Agents")
     }
 
     fn toolbar_buttons(&mut self, _: &mut Window, cx: &mut Context<Self>) -> Option<Vec<Button>> {

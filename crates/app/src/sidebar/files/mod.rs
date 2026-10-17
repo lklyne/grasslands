@@ -548,7 +548,7 @@ impl Panel for FileTree {
             ),
             None => "Files".to_owned(),
         };
-        div().text_xs().child(name)
+        div().text_sm().child(name)
     }
 
     fn toolbar_buttons(&mut self, _: &mut Window, cx: &mut Context<Self>) -> Option<Vec<Button>> {
