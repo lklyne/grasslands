@@ -1,0 +1,14 @@
+#!/bin/sh
+# Renders cuelume's reference corpus for crates/cues' parity test: every theme, cue, emphasis, part,
+# walk step and channel, through cuelume's own offline renderer (scripts/sound.mjs), into target/cues-refs.
+# Needs git, Node 22 and network for the first run. Then: scripts/dev-run cargo test -p cues -- --ignored
+set -eu
+root=$(cd "$(dirname "$0")/.." && pwd)
+ref="$root/target/cuelume-ref"
+commit=2a1ba4f
+if [ ! -d "$ref/.git" ]; then
+  git clone --quiet https://github.com/danielwh2/cuelume "$ref"
+fi
+git -C "$ref" checkout --quiet "$commit"
+(cd "$ref" && npm ci --silent && npm run --silent build)
+node "$root/scripts/cues-refs.mjs" "$ref" "$root/target/cues-refs" "$commit"
