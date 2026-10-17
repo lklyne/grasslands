@@ -30,7 +30,7 @@ use gpui_kit::component::{
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
-use crate::actions::{CommandPalette, OpenContextMenu};
+use crate::actions::OpenContextMenu;
 use crate::chrome::{self, HerdrCommand, MenuCommand, MenuTarget};
 use crate::herdr::{Agent, AgentStatus, Snapshot, WorkspaceInfo, WorktreeParams};
 use crate::state::{AppEvent, AppState};
@@ -602,6 +602,8 @@ impl WorkspaceList {
             .debug_selector(move || format!("ws-{id}"))
             .group(row_group)
             .relative()
+            // Inset inside the highlight, which spans the panel like herdr's.
+            .px_1()
             .cursor_pointer()
             .when(focused, |this| this.bg(theme.sidebar_accent))
             .hover(|this| this.bg(theme.sidebar_accent.opacity(0.6)))
@@ -728,11 +730,6 @@ impl Panel for WorkspaceList {
                 let _ = b.update(cx, |this, cx| this.new_worktree(None, window, cx));
             }),
         )
-        .item(
-            PopupMenuItem::new("Command Palette…").on_click(|_, window, cx| {
-                window.dispatch_action(Box::new(CommandPalette), cx);
-            }),
-        )
     }
 
     fn zoom_control(&self, _: &App) -> Option<PanelControl> {
@@ -763,6 +760,8 @@ impl Render for WorkspaceList {
             // Under the dock's title bar, like the main area's tab strip.
             .border_t_1()
             .border_color(theme.border)
+            // herdr leaves a blank row under " spaces".
+            .pt(LINE)
             .overflow_y_scroll()
             .font_family(theme.mono_font_family.clone())
             .text_size(theme.mono_font_size)
