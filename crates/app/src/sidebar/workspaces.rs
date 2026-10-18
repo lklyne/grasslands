@@ -516,6 +516,19 @@ impl WorkspaceList {
         self.collapsed.contains(machine)
     }
 
+    /// Where a workspace's row was drawn last frame, if it was.
+    pub fn drawn_row(&self, machine: &MachineId, workspace_id: &str) -> Option<Bounds<Pixels>> {
+        self.drawn_rows
+            .borrow()
+            .get(&row_key(machine, workspace_id))
+            .copied()
+    }
+
+    /// Where a machine's header was drawn last frame, if it was.
+    pub fn drawn_header(&self, machine: &MachineId) -> Option<Bounds<Pixels>> {
+        self.drawn_headers.borrow().get(machine).copied()
+    }
+
     /// Ticks as a drag from row `from` enters row `over`, a semitone lower
     /// for each row further down the list than where it started (higher going
     /// up). The first move only notes where the drag is.

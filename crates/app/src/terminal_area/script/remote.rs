@@ -256,11 +256,11 @@ impl Run {
     }
 }
 
-fn remote<'a>(area: &TerminalArea, cx: &'a App) -> Option<&'a crate::state::Machine> {
+pub(super) fn remote<'a>(area: &TerminalArea, cx: &'a App) -> Option<&'a crate::state::Machine> {
     area.state.read(cx).machines().find(|m| m.label() == LABEL)
 }
 
-fn focus(
+pub(super) fn focus(
     cx: &mut Cx,
     state: &Entity<AppState>,
     machine: &MachineId,
@@ -276,14 +276,14 @@ fn focus(
 }
 
 /// Whether the area shows `workspace` on `machine`.
-fn shows(area: &TerminalArea, cx: &App, machine: &MachineId, workspace: &str) -> bool {
+pub(super) fn shows(area: &TerminalArea, cx: &App, machine: &MachineId, workspace: &str) -> bool {
     area.state.read(cx).selected() == machine
         && TerminalArea::active_tab(&area.snapshot(cx))
             .is_some_and(|tab| tab.info.workspace_id == workspace)
 }
 
 /// Every pane laid out has an attached terminal, and there is one.
-fn all_attached(area: &TerminalArea, cx: &App) -> bool {
+pub(super) fn all_attached(area: &TerminalArea, cx: &App) -> bool {
     let snapshot = area.snapshot(cx);
     let drawn = area.drawn.borrow();
     !drawn.panes.is_empty()
@@ -303,7 +303,7 @@ fn first_view(area: &TerminalArea, cx: &App) -> Option<(String, EntityId)> {
     Some((pane, view.terminal.entity_id()))
 }
 
-async fn docker(cx: &mut Cx, args: &[&str]) {
+pub(super) async fn docker(cx: &mut Cx, args: &[&str]) {
     let args: Vec<String> = args.iter().map(|a| (*a).to_owned()).collect();
     let status = cx
         .background_executor()

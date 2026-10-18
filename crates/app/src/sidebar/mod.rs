@@ -14,6 +14,16 @@ pub fn init(cx: &mut App) {
     files::init(cx);
 }
 
+/// The spaces panel, for the terminal area's script hooks.
+struct Spaces(WeakEntity<workspaces::WorkspaceList>);
+
+impl Global for Spaces {}
+
+/// The spaces panel, if one is open.
+pub fn spaces(cx: &App) -> Option<Entity<workspaces::WorkspaceList>> {
+    cx.try_global::<Spaces>()?.0.upgrade()
+}
+
 /// The three sidebar panels.
 pub struct SidebarPanels {
     pub spaces: Entity<workspaces::WorkspaceList>,
@@ -27,6 +37,7 @@ impl SidebarPanels {
         let agents = cx.new(|cx| workspaces::AgentList::new(state.clone(), cx));
         let files = cx.new(|cx| files::FileTree::new(state, window, cx));
         workspaces::start_script(spaces.downgrade(), agents.downgrade(), window, cx);
+        cx.set_global(Spaces(spaces.downgrade()));
         Self {
             spaces,
             agents,

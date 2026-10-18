@@ -498,10 +498,12 @@ impl AppState {
         }
     }
 
-    /// Runs `herdr machine <args>` for a saved machine, then re-reads the list.
+    /// Runs `herdr machine <command> <profile id> <args>` for a saved
+    /// machine, then re-reads the list.
     fn machine_command(
         &mut self,
         id: &MachineId,
+        command: &str,
         args: Vec<String>,
         cx: &mut Context<Self>,
     ) -> Task<anyhow::Result<()>> {
@@ -510,9 +512,8 @@ impl AppState {
         else {
             return Task::ready(Err(anyhow::anyhow!("{id} isn't a saved machine")));
         };
-        let mut argv = vec!["machine".to_owned()];
+        let mut argv = vec!["machine".to_owned(), command.to_owned(), profile_id.clone()];
         argv.extend(args);
-        argv.push(profile_id.clone());
         let run = cx.background_executor().spawn(async move {
             let output = std::process::Command::new(&bin)
                 .args(&argv)
@@ -545,11 +546,7 @@ impl AppState {
         cx: &mut Context<Self>,
     ) -> Task<anyhow::Result<()>> {
         sounds::play(Cue::Tap, sounds::subtle());
-        self.machine_command(
-            id,
-            vec!["rename".into(), "--label".into(), label.into()],
-            cx,
-        )
+        self.machine_command(id, "rename", vec!["--label".into(), label.into()], cx)
     }
 
     pub fn disable_machine(
@@ -558,7 +555,7 @@ impl AppState {
         cx: &mut Context<Self>,
     ) -> Task<anyhow::Result<()>> {
         sounds::play(Cue::Tap, sounds::subtle());
-        self.machine_command(id, vec!["disable".into()], cx)
+        self.machine_command(id, "disable", Vec::new(), cx)
     }
 
     pub fn enable_machine(
@@ -567,7 +564,7 @@ impl AppState {
         cx: &mut Context<Self>,
     ) -> Task<anyhow::Result<()>> {
         sounds::play(Cue::Tap, sounds::subtle());
-        self.machine_command(id, vec!["enable".into()], cx)
+        self.machine_command(id, "enable", Vec::new(), cx)
     }
 
     /// Removes the saved machine from herdr; confirm first.
@@ -577,7 +574,7 @@ impl AppState {
         cx: &mut Context<Self>,
     ) -> Task<anyhow::Result<()>> {
         sounds::play(Cue::Close, sounds::strong());
-        self.machine_command(id, vec!["remove".into()], cx)
+        self.machine_command(id, "remove", Vec::new(), cx)
     }
 
     /// Retries a machine's connection now. For Local, checks herdr again

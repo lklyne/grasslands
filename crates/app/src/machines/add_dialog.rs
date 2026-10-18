@@ -104,8 +104,8 @@ pub fn open_add_machine(
                                 .text_sm()
                                 .text_color(cx.theme().muted_foreground)
                                 .child(
-                                    "Next, herdr's setup runs in a terminal tab so you can \
-                                     answer sign-in or install prompts.",
+                                    "Next, herdr's setup runs in a terminal beside the \
+                                     terminals so you can answer sign-in or install prompts.",
                                 ),
                         ),
                 )
