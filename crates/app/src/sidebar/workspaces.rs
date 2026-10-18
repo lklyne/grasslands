@@ -1129,11 +1129,13 @@ impl WorkspaceList {
     /// Asks for an SSH host (suggesting `~/.ssh/config`'s), then runs
     /// `herdr machine add` in a terminal beside the terminal area.
     pub fn add_machine(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let hosts = ssh_config::default_path()
-            .map(|path| ssh_config::hosts(&path))
-            .unwrap_or_default();
+        let hosts = cx.background_executor().spawn(async {
+            ssh_config::default_path()
+                .map(|path| ssh_config::hosts(&path))
+                .unwrap_or_default()
+        });
         let state = self.state.clone();
-        machines::open_add_machine(
+        machines::open_add_machine_with(
             hosts,
             move |host, _, cx| {
                 state.update(cx, |state, cx| {
