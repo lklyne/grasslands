@@ -42,6 +42,7 @@ use super::groups::{Kind, Slot};
 use super::{AgentList, WorkspaceList, agents, close_workspace, rename_workspace};
 use crate::attention::{agent_name, status_label};
 use crate::overlay;
+use crate::state::MachineId;
 
 pub(super) fn start(
     spaces: WeakEntity<WorkspaceList>,
@@ -161,12 +162,14 @@ fn run_step(
                 None => eprintln!("[sidebar-script] no repo {name}"),
             }
         }
-        "rename" => rename_workspace(arg, window, cx),
-        "close" => close_workspace(arg, window, cx),
+        "rename" => rename_workspace(&selected(this, cx), arg, window, cx),
+        "close" => close_workspace(&selected(this, cx), arg, window, cx),
         "move" => {
             let (dragged, target) = arg.split_once(' ').unwrap_or((arg, ""));
             match (slot(this, dragged, cx), slot(this, target.trim(), cx)) {
-                (Some(dragged), Some(target)) => this.reorder(&dragged, &target, cx),
+                (Some(dragged), Some(target)) => {
+                    this.reorder(&selected(this, cx), &dragged, &target, cx)
+                }
                 _ => eprintln!("[sidebar-script] no row for {arg}"),
             }
         }
@@ -175,10 +178,15 @@ fn run_step(
     }
 }
 
+/// The machine the script works on: the selected one.
+fn selected(this: &WorkspaceList, cx: &App) -> MachineId {
+    this.state.read(cx).selected().clone()
+}
+
 /// The row showing `workspace_id`, as a drag source or drop target.
 fn slot(this: &WorkspaceList, workspace_id: &str, cx: &App) -> Option<Slot> {
     let snapshot = this.state.read(cx).snapshot().clone();
-    this.entries(&snapshot)
+    this.entries(&selected(this, cx), &snapshot)
         .iter()
         .find(|e| e.info.workspace_id == workspace_id)
         .map(Slot::of)
@@ -186,7 +194,9 @@ fn slot(this: &WorkspaceList, workspace_id: &str, cx: &App) -> Option<Slot> {
 
 fn repo_named(this: &WorkspaceList, name: &str, cx: &App) -> Option<Repo> {
     let snapshot = this.state.read(cx).snapshot().clone();
-    this.repos(&snapshot).into_iter().find(|r| r.name == name)
+    this.repos(&selected(this, cx), &snapshot)
+        .into_iter()
+        .find(|r| r.name == name)
 }
 
 fn log(this: &WorkspaceList, label: &str, sort: Option<super::AgentSort>, cx: &App) {
@@ -195,14 +205,15 @@ fn log(this: &WorkspaceList, label: &str, sort: Option<super::AgentSort>, cx: &A
         "[sidebar-script] {label}: focused workspace {:?}, pane {:?}, agents {sort:?}",
         snapshot.focused_workspace_id, snapshot.focused_pane_id,
     );
-    for entry in this.entries(&snapshot) {
+    let machine = selected(this, cx);
+    for entry in this.entries(&machine, &snapshot) {
         let info = entry.info;
         let lead = match entry.kind {
             Kind::Parent
                 if entry
                     .repo
                     .as_ref()
-                    .is_some_and(|r| this.folded.contains(&r.key)) =>
+                    .is_some_and(|r| this.is_folded(&machine, &r.key)) =>
             {
                 "▸ "
             }
@@ -210,7 +221,7 @@ fn log(this: &WorkspaceList, label: &str, sort: Option<super::AgentSort>, cx: &A
             Kind::Child => "   ",
             Kind::Plain => " ",
         };
-        let checkout = this.checkout(&snapshot, info);
+        let checkout = this.checkout(&machine, &snapshot, info);
         eprintln!(
             "[sidebar-script]   {lead}{} {} [{}] status={}",
             info.label,

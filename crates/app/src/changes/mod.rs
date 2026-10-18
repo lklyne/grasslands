@@ -21,6 +21,7 @@ use crate::state::{AppEvent, AppState};
 const REFRESH: Duration = Duration::from_secs(3);
 
 pub struct Changes {
+    state: Entity<AppState>,
     diff: Entity<DiffState>,
     root: Option<PathBuf>,
     /// The patch on screen; `None` before the first read or outside git.
@@ -38,6 +39,7 @@ impl Changes {
                 this.patch = None;
                 this.loaded = false;
                 this.reload(cx);
+                cx.notify();
             }
         });
         let refresh = cx.spawn(async move |this, cx| {
@@ -53,6 +55,7 @@ impl Changes {
         // width it just measured); redraw with it, or wrapping stays blank.
         let redraw = cx.observe(&diff, |_, _, cx| cx.notify());
         let mut this = Self {
+            state: state.clone(),
             diff,
             root: state.read(cx).active_worktree().cloned(),
             patch: None,
@@ -128,6 +131,16 @@ impl Focusable for Changes {
 
 impl Render for Changes {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Changes reads this Mac's disk, like the file panel.
+        let machine = self.state.read(cx).selected_machine();
+        if !machine.id().is_local() {
+            let label = machine.label().to_owned();
+            return div()
+                .size_full()
+                .bg(cx.theme().background)
+                .child(crate::machines::remote_files_empty(&label, cx))
+                .into_any_element();
+        }
         let theme = cx.theme();
         let muted = theme.muted_foreground;
         let diff = self.diff.read(cx);
@@ -189,5 +202,6 @@ impl Render for Changes {
             .bg(theme.background)
             .child(header)
             .child(body)
+            .into_any_element()
     }
 }

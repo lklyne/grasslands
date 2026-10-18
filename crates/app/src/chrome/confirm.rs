@@ -147,6 +147,7 @@ pub(super) fn needed_for(command: &Command, snapshot: &Snapshot) -> Option<Confi
         Command::CloseWorkspace {
             workspace_id,
             close_group,
+            ..
         } => {
             let members = if *close_group {
                 group_members(snapshot, workspace_id)
@@ -263,6 +264,7 @@ mod tests {
     #[test]
     fn closing_a_worktree_group_always_needs_confirmation() {
         let command = Command::CloseWorkspace {
+            machine: crate::state::MachineId::Local,
             workspace_id: "w1".into(),
             close_group: true,
         };
@@ -284,6 +286,7 @@ mod tests {
     #[test]
     fn group_close_on_a_linked_worktree_confirms_like_a_plain_close() {
         let command = Command::CloseWorkspace {
+            machine: crate::state::MachineId::Local,
             workspace_id: "w2".into(),
             close_group: true,
         };

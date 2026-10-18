@@ -81,8 +81,19 @@ pub fn render(
         Stage::Done => done(state, cx),
         Stage::Needed(check) => needed(state, check, terminal.is_some(), cx),
     };
+    Some(screen("herdr-setup", card, terminal, cx))
+}
+
+/// A setup card, centred in the terminal area, or on the left with the
+/// `terminal` running its command on the right.
+pub(crate) fn screen(
+    id: &'static str,
+    card: AnyElement,
+    terminal: Option<AnyElement>,
+    cx: &App,
+) -> AnyElement {
     let card = v_flex()
-        .id("herdr-setup")
+        .id(id)
         .size_full()
         .items_center()
         .justify_center()
@@ -90,23 +101,21 @@ pub fn render(
         .overflow_y_scroll()
         .child(card);
     let Some(terminal) = terminal else {
-        return Some(card.into_any_element());
+        return card.into_any_element();
     };
-    Some(
-        h_flex()
-            .size_full()
-            .child(div().w(px(380.)).flex_none().h_full().child(card))
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .h_full()
-                    .border_l_1()
-                    .border_color(cx.theme().border)
-                    .child(terminal),
-            )
-            .into_any_element(),
-    )
+    h_flex()
+        .size_full()
+        .child(div().w(px(380.)).flex_none().h_full().child(card))
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .h_full()
+                .border_l_1()
+                .border_color(cx.theme().border)
+                .child(terminal),
+        )
+        .into_any_element()
 }
 
 /// "Can't reach herdr" while the first read hasn't arrived and the last
@@ -234,7 +243,7 @@ fn fix_button(state: &Entity<AppState>, fix: Fix) -> Button {
 
 /// The command a fix runs, with a copy button, for anyone who'd rather run
 /// it in their own terminal.
-fn command_line(command: String, cx: &App) -> impl IntoElement {
+pub(crate) fn command_line(command: String, cx: &App) -> impl IntoElement {
     let theme = cx.theme();
     h_flex()
         .max_w(px(480.))
@@ -257,7 +266,7 @@ fn command_line(command: String, cx: &App) -> impl IntoElement {
         )
 }
 
-fn progress(title: &str, description: Option<&str>) -> AnyElement {
+pub(crate) fn progress(title: &str, description: Option<&str>) -> AnyElement {
     let header = EmptyHeader::new()
         .media(EmptyMedia::new().child(Spinner::new()))
         .title(EmptyTitle::new().child(title.to_owned()));
@@ -270,7 +279,7 @@ fn progress(title: &str, description: Option<&str>) -> AnyElement {
     Empty::new().header(header).into_any_element()
 }
 
-fn header(
+pub(crate) fn header(
     icon: Icon,
     title: impl Into<SharedString>,
     description: impl Into<SharedString>,

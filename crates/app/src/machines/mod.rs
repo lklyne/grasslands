@@ -4,6 +4,7 @@
 //! plain data and callbacks, so the app wires them to its machine connections.
 
 mod add_dialog;
+mod run;
 pub mod ssh_config;
 
 use std::rc::Rc;
@@ -20,6 +21,7 @@ use gpui_kit::*;
 use crate::chrome::{self, Callback, Confirmation, MenuCommand, MenuEntry};
 
 pub use add_dialog::open_add_machine;
+pub use run::{RunCard, run_card};
 pub use ssh_config::SshHost;
 
 /// What a machine's header and screens show about its connection.
@@ -451,7 +453,7 @@ mod tests {
             .into_iter()
             .filter_map(|entry| match entry {
                 MenuEntry::Item { label, .. } => Some(label.to_string()),
-                MenuEntry::Separator => None,
+                MenuEntry::Separator | MenuEntry::Submenu { .. } => None,
             })
             .collect()
     }

@@ -3,7 +3,7 @@
 
 use std::fmt;
 
-use crate::herdr::{ConnectionStatus, MachineProfile, MachineStatus};
+use crate::herdr::{ConnectionStatus, MachineProfile, MachineStatus, machines};
 use cues::Cue;
 
 /// Which herdr server: the local one, or a saved machine by profile id.
@@ -64,8 +64,13 @@ pub fn diff_profiles(running: &[&MachineProfile], saved: &[MachineProfile]) -> P
     diff
 }
 
+/// Debug builds connect by label (`GRASSLANDS_DEV_MACHINES`), so a rename
+/// in or out of that list counts as a new connection too.
 fn same_connection(a: &MachineProfile, b: &MachineProfile) -> bool {
-    a.target == b.target && a.session == b.session && a.enabled == b.enabled
+    a.target == b.target
+        && a.session == b.session
+        && a.enabled == b.enabled
+        && machines::dev_allowed(&a.label) == machines::dev_allowed(&b.label)
 }
 
 /// The selected machine after the list changed: it stays if it still

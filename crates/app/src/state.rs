@@ -29,8 +29,10 @@ use crate::{sounds, worktree};
 use cues::{Cue, PlayOptions};
 
 mod machine_list;
+mod machine_run;
 
 pub use machine_list::MachineId;
+pub use machine_run::{MachineRun, MachineTask, RunStage};
 
 /// herdr 0.9.5 sends no event when a pane's folder changes, so the focused
 /// pane's folder is re-read this often (one `pane.get`).
@@ -38,6 +40,8 @@ const CWD_POLL: Duration = Duration::from_secs(2);
 /// herdr sends nothing when its saved machines change, so the list is re-read
 /// this often (and on demand, after the app changes it).
 const MACHINES_POLL: Duration = Duration::from_secs(30);
+/// How long a machine has to connect after a sign-in, setup or add exits.
+const RUN_CHECK: Duration = Duration::from_secs(30);
 
 #[derive(Debug, Clone)]
 pub enum AppEvent {
@@ -170,6 +174,10 @@ pub struct AppState {
     local_worktree: Option<PathBuf>,
     /// Local's focused pane folder the active worktree was last resolved from.
     focused_dir: Option<PathBuf>,
+    /// A sign-in, setup or add running in a terminal on Local, and its outcome.
+    machine_run: Option<MachineRun>,
+    runs: u64,
+    _run_check: Option<Task<()>>,
     _cwd_poll: Option<Task<()>>,
     _check: Option<Task<()>>,
     _machines_poll: Option<Task<()>>,
@@ -227,6 +235,9 @@ impl AppState {
             selected: MachineId::Local,
             local_worktree: std::env::current_dir().ok(),
             focused_dir: None,
+            machine_run: None,
+            runs: 0,
+            _run_check: None,
             _cwd_poll: None,
             _check: None,
             _machines_poll: None,
@@ -583,6 +594,148 @@ impl AppState {
                     link.reconnect();
                 }
             }
+        }
+    }
+
+    /// The sign-in, setup or add on screen, if any.
+    pub fn machine_run(&self) -> Option<&MachineRun> {
+        self.machine_run.as_ref()
+    }
+
+    /// Runs herdr's own command for `task` in a terminal on Local (the
+    /// terminal area shows it), replacing any earlier run. A sign-in or
+    /// setup selects its machine.
+    pub fn start_machine_run(&mut self, task: MachineTask, cx: &mut Context<Self>) {
+        let Some(bin) = self.herdr_config.as_ref().map(|c| c.bin.clone()) else {
+            return;
+        };
+        if let MachineTask::Add { host } = &task
+            && (host.is_empty() || host.starts_with('-') || host.contains(char::is_whitespace))
+        {
+            tracing::warn!("add machine: {host:?} isn't an SSH host");
+            return;
+        }
+        let profile = match &task {
+            MachineTask::SignIn(id) | MachineTask::SetUp(id) => {
+                self.machine(id).and_then(Machine::profile).cloned()
+            }
+            MachineTask::Add { .. } => None,
+        };
+        let known = self
+            .machines
+            .iter()
+            .filter_map(Machine::profile)
+            .map(|p| p.id.clone())
+            .collect();
+        self.runs += 1;
+        let Some(run) = MachineRun::new(self.runs, task, &bin, profile.as_ref(), known) else {
+            tracing::warn!("machine run: no saved profile");
+            return;
+        };
+        tracing::info!("machine run: {}", run.display);
+        if let Some(machine) = run.machine.clone() {
+            self.select_machine(&machine, cx);
+        }
+        sounds::play(Cue::Loading, PlayOptions::default());
+        self.machine_run = Some(run);
+        self._run_check = None;
+        cx.notify();
+    }
+
+    /// The run's terminal process ended: retry its machine (or re-read the
+    /// list after an add), then give it [`RUN_CHECK`] to connect.
+    pub fn machine_run_exited(&mut self, cx: &mut Context<Self>) {
+        let Some(run) = self
+            .machine_run
+            .as_mut()
+            .filter(|r| r.stage == RunStage::Running)
+        else {
+            return;
+        };
+        run.stage = RunStage::Checking;
+        let (task, run_id) = (run.task.clone(), run.id);
+        match task {
+            MachineTask::SignIn(id) | MachineTask::SetUp(id) => self.reconnect_machine(&id, cx),
+            MachineTask::Add { .. } => self.refresh_machines(cx),
+        }
+        self._run_check = Some(cx.spawn(async move |this, cx| {
+            let started = std::time::Instant::now();
+            loop {
+                cx.background_executor()
+                    .timer(Duration::from_millis(500))
+                    .await;
+                let last = started.elapsed() >= RUN_CHECK;
+                let settled = this.update(cx, |this, cx| this.check_machine_run(run_id, last, cx));
+                if !matches!(settled, Ok(false)) {
+                    break;
+                }
+            }
+        }));
+        cx.notify();
+    }
+
+    /// Whether run `run_id` has settled: its machine connected (done), or
+    /// `last` and it hasn't (failed).
+    fn check_machine_run(&mut self, run_id: u64, last: bool, cx: &mut Context<Self>) -> bool {
+        let added = self.machine_run.as_ref().and_then(|run| match run.task {
+            MachineTask::Add { .. } if run.machine.is_none() => machine_run::added(
+                &run.known,
+                self.machines.iter().filter_map(Machine::profile),
+            )
+            .map(|p| MachineId::Remote(p.id.clone())),
+            _ => None,
+        });
+        let Some(run) = self
+            .machine_run
+            .as_mut()
+            .filter(|r| r.id == run_id && r.stage == RunStage::Checking)
+        else {
+            return true;
+        };
+        if added.is_some() {
+            run.machine = added;
+        }
+        let connected = run
+            .machine
+            .as_ref()
+            .and_then(|id| self.machines.iter().find(|m| &m.id == id))
+            .is_some_and(|m| m.status == MachineStatus::Connected);
+        let stage = if connected {
+            sounds::play(Cue::Success, sounds::strong());
+            RunStage::Done
+        } else if last {
+            sounds::play(Cue::Error, PlayOptions::default());
+            RunStage::Failed
+        } else {
+            return false;
+        };
+        if let Some(run) = self.machine_run.as_mut() {
+            run.stage = stage;
+        }
+        cx.notify();
+        true
+    }
+
+    /// Closes the run's screen and terminal. A finished add selects the
+    /// machine it added.
+    pub fn finish_machine_run(&mut self, cx: &mut Context<Self>) {
+        let Some(run) = self.machine_run.take() else {
+            return;
+        };
+        self._run_check = None;
+        if run.stage == RunStage::Done
+            && matches!(run.task, MachineTask::Add { .. })
+            && let Some(machine) = &run.machine
+        {
+            self.select_machine(machine, cx);
+        }
+        cx.notify();
+    }
+
+    /// Runs the last run's task again.
+    pub fn retry_machine_run(&mut self, cx: &mut Context<Self>) {
+        if let Some(task) = self.machine_run.as_ref().map(|r| r.task.clone()) {
+            self.start_machine_run(task, cx);
         }
     }
 
@@ -1055,13 +1208,23 @@ impl AppState {
         workspace_id: Option<&str>,
         cx: &App,
     ) -> Task<herdr::Result<herdr::TabInfo>> {
+        self.new_tab_on(&self.selected, workspace_id, cx)
+    }
+
+    #[track_caller]
+    pub fn new_tab_on(
+        &self,
+        machine: &MachineId,
+        workspace_id: Option<&str>,
+        cx: &App,
+    ) -> Task<herdr::Result<herdr::TabInfo>> {
         sounds::play(Cue::Open, sounds::subtle());
         let params = herdr::NewTab {
             workspace_id: workspace_id.map(str::to_owned),
             focus: true,
             ..Default::default()
         };
-        self.call(cx, move |c| c.tab_create(&params).map(|t| t.tab))
+        self.call_on(machine, cx, move |c| c.tab_create(&params).map(|t| t.tab))
     }
 
     #[track_caller]
@@ -1123,6 +1286,19 @@ impl AppState {
         label: Option<String>,
         cx: &App,
     ) -> Task<herdr::Result<herdr::WorkspaceInfo>> {
+        self.new_workspace_on(&self.selected, cwd, label, cx)
+    }
+
+    /// A new, focused workspace on `machine`. The caller selects the machine
+    /// to show it.
+    #[track_caller]
+    pub fn new_workspace_on(
+        &self,
+        machine: &MachineId,
+        cwd: Option<PathBuf>,
+        label: Option<String>,
+        cx: &App,
+    ) -> Task<herdr::Result<herdr::WorkspaceInfo>> {
         sounds::play(Cue::Open, sounds::subtle());
         let params = herdr::NewWorkspace {
             cwd: cwd.map(|p| p.to_string_lossy().into_owned()),
@@ -1130,7 +1306,7 @@ impl AppState {
             focus: true,
             ..Default::default()
         };
-        self.call(cx, move |c| {
+        self.call_on(machine, cx, move |c| {
             c.workspace_create(&params).map(|w| w.workspace)
         })
     }
@@ -1142,16 +1318,37 @@ impl AppState {
         label: &str,
         cx: &App,
     ) -> Task<herdr::Result<()>> {
+        self.rename_workspace_on(&self.selected, workspace_id, label, cx)
+    }
+
+    #[track_caller]
+    pub fn rename_workspace_on(
+        &self,
+        machine: &MachineId,
+        workspace_id: &str,
+        label: &str,
+        cx: &App,
+    ) -> Task<herdr::Result<()>> {
         sounds::play(Cue::Tap, sounds::subtle());
         let (id, label) = (workspace_id.to_owned(), label.to_owned());
-        self.call(cx, move |c| c.workspace_rename(&id, &label))
+        self.call_on(machine, cx, move |c| c.workspace_rename(&id, &label))
     }
 
     /// Puts every workspace in `order` (all of them, first to last).
     #[track_caller]
     pub fn reorder_workspaces(&self, order: Vec<String>, cx: &App) -> Task<herdr::Result<()>> {
+        self.reorder_workspaces_on(&self.selected, order, cx)
+    }
+
+    #[track_caller]
+    pub fn reorder_workspaces_on(
+        &self,
+        machine: &MachineId,
+        order: Vec<String>,
+        cx: &App,
+    ) -> Task<herdr::Result<()>> {
         sounds::play(Cue::Tap, sounds::strong());
-        self.call(cx, move |c| c.workspace_move_block(&order, None))
+        self.call_on(machine, cx, move |c| c.workspace_move_block(&order, None))
     }
 
     /// Closes immediately; confirm first if it holds running agents.
@@ -1162,9 +1359,20 @@ impl AppState {
         close_group: bool,
         cx: &App,
     ) -> Task<herdr::Result<()>> {
+        self.close_workspace_on(&self.selected, workspace_id, close_group, cx)
+    }
+
+    #[track_caller]
+    pub fn close_workspace_on(
+        &self,
+        machine: &MachineId,
+        workspace_id: &str,
+        close_group: bool,
+        cx: &App,
+    ) -> Task<herdr::Result<()>> {
         sounds::play(Cue::Close, sounds::strong());
         let id = workspace_id.to_owned();
-        self.call(cx, move |c| c.workspace_close(&id, close_group))
+        self.call_on(machine, cx, move |c| c.workspace_close(&id, close_group))
     }
 
     #[track_caller]

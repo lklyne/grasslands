@@ -3,7 +3,7 @@
 //! The main area's tabs (herdr's and the open files) are in the strip above
 //! it; see `main_area`.
 
-use gpui_kit::component::{ActiveTheme as _, TitleBar};
+use gpui_kit::component::{ActiveTheme as _, TitleBar, h_flex};
 use gpui_kit::*;
 
 use super::Workspace;
@@ -32,22 +32,39 @@ impl Workspace {
         self.drawn_tabs.borrow()
     }
 
+    /// The focused workspace's name; on a remote machine, "<name> — <machine>".
     pub(super) fn render_titlebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let snapshot = self.state.read(cx).snapshot();
+        let state = self.state.read(cx);
+        let snapshot = state.snapshot();
         let name = snapshot
             .focused_workspace_id
             .as_deref()
             .and_then(|id| snapshot.workspace(id))
             .map(|w| w.info.label.clone())
             .unwrap_or_default();
+        let machine = state.selected_machine();
+        let machine = (!machine.id().is_local() && !name.is_empty())
+            .then(|| format!("— {}", machine.label()));
+        let theme = cx.theme();
         TitleBar::new().child(
-            div()
+            h_flex()
                 .min_w_0()
-                .truncate()
+                .gap_1()
                 .text_sm()
                 .font_weight(FontWeight::MEDIUM)
-                .text_color(cx.theme().foreground)
-                .child(name),
+                .child(
+                    div()
+                        .min_w_0()
+                        .truncate()
+                        .text_color(theme.foreground)
+                        .child(name),
+                )
+                .children(machine.map(|machine| {
+                    div()
+                        .flex_shrink_0()
+                        .text_color(theme.muted_foreground)
+                        .child(machine)
+                })),
         )
     }
 }

@@ -14,6 +14,14 @@
 //! asks first when agents are running. + on a repo's row makes a worktree of
 //! that repo. Drag a row to reorder (`workspace.move_block`): a repo group
 //! moves as one block, a linked worktree only within its group.
+//!
+//! With saved SSH machines the list groups workspaces by machine, as herdr's
+//! own sidebar does (docs/decisions/0019-remote-machines.md): a "Local"
+//! header, then one collapsible header per machine with its status and a ···
+//! menu. A machine that isn't connected keeps its last workspaces, dimmed
+//! and inert. Every row's commands go to its own machine; a remote
+//! workspace's repo grouping comes from herdr alone (git2 reads this Mac's
+//! disk).
 
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
@@ -33,9 +41,10 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use crate::actions::OpenContextMenu;
-use crate::chrome::{self, HerdrCommand, MenuCommand, MenuTarget};
+use crate::chrome::{self, Callback, Chrome, HerdrCommand, MenuCommand, MenuEntry, MenuTarget};
 use crate::herdr::{Agent, AgentStatus, Snapshot, WorkspaceInfo, WorktreeParams};
-use crate::state::{AppEvent, AppState};
+use crate::machines::{self, MachineActions, MachineState, machine_header, ssh_config};
+use crate::state::{AppEvent, AppState, Machine, MachineId, MachineTask};
 use git::{Checkout, HeadWatcher, Placement, Repo};
 use groups::{Entry, Kind, Slot};
 
@@ -64,8 +73,10 @@ pub enum AgentSort {
 
 pub struct WorkspaceList {
     state: Entity<AppState>,
-    /// Repo groups (by key) folded to their parent rows.
-    folded: HashSet<String>,
+    /// Each machine's repo groups (by key) folded to their parent rows.
+    folded: HashMap<MachineId, HashSet<String>>,
+    /// Machines whose groups are collapsed to their header.
+    collapsed: HashSet<MachineId>,
     /// git2's answer per workspace folder (`None`: not in git).
     checkouts: HashMap<PathBuf, Option<Checkout>>,
     /// Folders being read for the first time.
@@ -74,9 +85,11 @@ pub struct WorkspaceList {
     /// The dragged row and the row the drag last ticked over, so each new
     /// row ticks once.
     drag_tick: Option<(usize, usize)>,
-    /// Where each workspace's row was drawn last frame, for the script's
-    /// in-app pointer input.
+    /// Where each workspace's row was drawn last frame (by [`row_key`]), for
+    /// the script's in-app pointer input.
     drawn_rows: Rc<RefCell<HashMap<String, Bounds<Pixels>>>>,
+    /// Where each machine's header was drawn last frame, by machine.
+    drawn_headers: Rc<RefCell<HashMap<MachineId, Bounds<Pixels>>>>,
     focus: FocusHandle,
     _observe: Subscription,
     _subscribe: Subscription,
@@ -86,6 +99,7 @@ pub struct WorkspaceList {
 /// A workspace row being dragged to a new place in the list.
 #[derive(Clone)]
 struct DraggedWorkspace {
+    machine: MachineId,
     slot: Slot,
     /// Its row in the list, to show which side of a target it will land on.
     row: usize,
@@ -188,6 +202,15 @@ fn text(s: impl Into<SharedString>) -> Div {
     div().flex_shrink_0().whitespace_nowrap().child(s.into())
 }
 
+/// What [`WorkspaceList::drawn_rows`] calls a workspace's row: its id on
+/// Local, `<machine>/<id>` elsewhere (ids repeat across machines).
+pub(super) fn row_key(machine: &MachineId, workspace_id: &str) -> String {
+    match machine {
+        MachineId::Local => workspace_id.to_owned(),
+        MachineId::Remote(_) => format!("{machine}/{workspace_id}"),
+    }
+}
+
 /// The folder a workspace's branch is read from: herdr's checkout path, or
 /// the folder of the focused pane in its active tab.
 fn checkout_dir(snapshot: &Snapshot, info: &WorkspaceInfo) -> Option<PathBuf> {
@@ -210,7 +233,8 @@ impl WorkspaceList {
     pub fn new(state: Entity<AppState>, cx: &mut Context<Self>) -> Self {
         let observe = cx.observe(&state, |_, _, cx| cx.notify());
         let subscribe = cx.subscribe(&state, |this, _, event, cx| match event {
-            AppEvent::SnapshotReplaced => this.sync_checkouts(cx),
+            // Local's cache can change while another machine is selected.
+            AppEvent::SnapshotReplaced | AppEvent::MachinesChanged => this.sync_checkouts(cx),
             // The focused pane moved to another checkout; catch up on any
             // branch change the watcher could have missed.
             AppEvent::ActiveWorktreeChanged(_) => this.refresh_checkouts(cx),
@@ -250,12 +274,14 @@ impl WorkspaceList {
         };
         let mut this = Self {
             state,
-            folded: HashSet::new(),
+            folded: HashMap::new(),
+            collapsed: HashSet::new(),
             checkouts: HashMap::new(),
             reading: HashSet::new(),
             heads,
             drag_tick: None,
             drawn_rows: Rc::default(),
+            drawn_headers: Rc::default(),
             focus: cx.focus_handle(),
             _observe: observe,
             _subscribe: subscribe,
@@ -265,10 +291,19 @@ impl WorkspaceList {
         this
     }
 
-    /// Reads folders of workspaces seen for the first time and forgets ones
-    /// no workspace uses any more.
+    /// Local's cache: the only machine whose folders git2 can read.
+    fn local_snapshot(&self, cx: &App) -> std::sync::Arc<Snapshot> {
+        self.state
+            .read(cx)
+            .machine(&MachineId::Local)
+            .map(|m| m.snapshot().clone())
+            .unwrap_or_default()
+    }
+
+    /// Reads folders of Local's workspaces seen for the first time and
+    /// forgets ones no workspace uses any more.
     fn sync_checkouts(&mut self, cx: &mut Context<Self>) {
-        let snapshot = self.state.read(cx).snapshot().clone();
+        let snapshot = self.local_snapshot(cx);
         let wanted: HashSet<PathBuf> = snapshot
             .workspaces
             .iter()
@@ -348,31 +383,55 @@ impl WorkspaceList {
         }
     }
 
-    fn checkout(&self, snapshot: &Snapshot, info: &WorkspaceInfo) -> Option<&Checkout> {
+    /// git2's checkout for a Local workspace; `None` on other machines.
+    fn checkout(
+        &self,
+        machine: &MachineId,
+        snapshot: &Snapshot,
+        info: &WorkspaceInfo,
+    ) -> Option<&Checkout> {
+        if !machine.is_local() {
+            return None;
+        }
         self.checkouts.get(&checkout_dir(snapshot, info)?)?.as_ref()
     }
 
     /// herdr's repo info, else what git2 found in the workspace's folder.
-    fn placement(&self, snapshot: &Snapshot, info: &WorkspaceInfo) -> Option<Placement> {
+    fn placement(
+        &self,
+        machine: &MachineId,
+        snapshot: &Snapshot,
+        info: &WorkspaceInfo,
+    ) -> Option<Placement> {
         info.worktree
             .as_ref()
             .map(Placement::from_herdr)
             .or_else(|| {
-                self.checkout(snapshot, info)
+                self.checkout(machine, snapshot, info)
                     .and_then(|c| c.placement.clone())
             })
     }
 
-    fn entries<'a>(&self, snapshot: &'a Snapshot) -> Vec<Entry<'a>> {
+    fn is_folded(&self, machine: &MachineId, repo_key: &str) -> bool {
+        self.folded
+            .get(machine)
+            .is_some_and(|keys| keys.contains(repo_key))
+    }
+
+    fn entries<'a>(&self, machine: &MachineId, snapshot: &'a Snapshot) -> Vec<Entry<'a>> {
         let infos: Vec<&WorkspaceInfo> = snapshot.workspaces.iter().map(|w| &w.info).collect();
-        groups::entries(&infos, |info| self.placement(snapshot, info), &self.folded)
+        groups::entries(
+            &infos,
+            |info| self.placement(machine, snapshot, info),
+            self.folded.get(machine).unwrap_or(&HashSet::new()),
+        )
     }
 
     /// Every repo some workspace is in, in herdr's order.
-    fn repos(&self, snapshot: &Snapshot) -> Vec<Repo> {
+    fn repos(&self, machine: &MachineId, snapshot: &Snapshot) -> Vec<Repo> {
         let mut repos: Vec<Repo> = Vec::new();
         for w in &snapshot.workspaces {
-            if let Some(p) = self.placement(snapshot, &w.info)
+            if let Some(p) = self.placement(machine, snapshot, &w.info)
                 && !repos.iter().any(|r| r.key == p.repo.key)
             {
                 repos.push(p.repo);
@@ -383,9 +442,14 @@ impl WorkspaceList {
 
     /// The workspaces a row speaks for: itself, or for the parent row of a
     /// folded group, the whole group (herdr's `displayed_workspace_status`).
-    fn members<'a>(&self, snapshot: &'a Snapshot, entry: &Entry<'a>) -> Vec<&'a WorkspaceInfo> {
+    fn members<'a>(
+        &self,
+        machine: &MachineId,
+        snapshot: &'a Snapshot,
+        entry: &Entry<'a>,
+    ) -> Vec<&'a WorkspaceInfo> {
         let folded_key = match (&entry.kind, &entry.repo) {
-            (Kind::Parent, Some(repo)) if self.folded.contains(&repo.key) => &repo.key,
+            (Kind::Parent, Some(repo)) if self.is_folded(machine, &repo.key) => &repo.key,
             _ => return vec![entry.info],
         };
         snapshot
@@ -395,33 +459,61 @@ impl WorkspaceList {
             .filter(|info| {
                 info.workspace_id == entry.info.workspace_id
                     || self
-                        .placement(snapshot, info)
+                        .placement(machine, snapshot, info)
                         .is_some_and(|p| p.linked && &p.repo.key == folded_key)
             })
             .collect()
     }
 
-    /// `workspace.focus`; the terminal area follows herdr's focused workspace.
+    /// `workspace.focus` on the selected machine; the terminal area follows
+    /// herdr's focused workspace.
     pub fn activate_workspace(&mut self, workspace_id: &str, cx: &mut Context<Self>) {
-        self.state
-            .read(cx)
-            .focus_workspace(workspace_id, cx)
-            .detach_and_log_err(cx);
+        let machine = self.state.read(cx).selected().clone();
+        self.activate_workspace_on(&machine, workspace_id, cx);
     }
 
-    /// Folds or unfolds a repo group, by repo key.
+    /// `workspace.focus` on `machine`, selecting it first.
+    pub fn activate_workspace_on(
+        &mut self,
+        machine: &MachineId,
+        workspace_id: &str,
+        cx: &mut Context<Self>,
+    ) {
+        self.state.update(cx, |state, cx| {
+            state
+                .focus_workspace_on(machine, workspace_id, cx)
+                .detach_and_log_err(cx);
+        });
+    }
+
+    /// Folds or unfolds one of the selected machine's repo groups, by key.
     pub fn toggle_group(&mut self, repo_key: &str, cx: &mut Context<Self>) {
-        let opened = self.folded.remove(repo_key);
+        let machine = self.state.read(cx).selected().clone();
+        self.toggle_group_on(&machine, repo_key, cx);
+    }
+
+    fn toggle_group_on(&mut self, machine: &MachineId, repo_key: &str, cx: &mut Context<Self>) {
+        let folded = self.folded.entry(machine.clone()).or_default();
+        let opened = folded.remove(repo_key);
         if !opened {
-            self.folded.insert(repo_key.to_owned());
+            folded.insert(repo_key.to_owned());
         }
-        let cue = if opened {
-            cues::Cue::Open
-        } else {
-            cues::Cue::Close
-        };
-        crate::sounds::play(cue, crate::sounds::subtle());
+        fold_cue(opened);
         cx.notify();
+    }
+
+    /// Collapses a machine's group to its header, or opens it.
+    pub fn toggle_machine(&mut self, machine: &MachineId, cx: &mut Context<Self>) {
+        let opened = self.collapsed.remove(machine);
+        if !opened {
+            self.collapsed.insert(machine.clone());
+        }
+        fold_cue(opened);
+        cx.notify();
+    }
+
+    pub fn is_collapsed(&self, machine: &MachineId) -> bool {
+        self.collapsed.contains(machine)
     }
 
     /// Ticks as a drag from row `from` enters row `over`, a semitone lower
@@ -444,27 +536,49 @@ impl WorkspaceList {
         crate::sounds::play(cues::Cue::Select, options);
     }
 
-    /// Drops `dragged` where `target` is; see [`groups::reordered`].
-    fn reorder(&mut self, dragged: &Slot, target: &Slot, cx: &mut Context<Self>) {
+    /// Drops `dragged` where `target` is, both on `machine`; see
+    /// [`groups::reordered`].
+    fn reorder(
+        &mut self,
+        machine: &MachineId,
+        dragged: &Slot,
+        target: &Slot,
+        cx: &mut Context<Self>,
+    ) {
         let state = self.state.read(cx);
-        let snapshot = state.snapshot();
+        let Some(snapshot) = state.machine(machine).map(Machine::snapshot) else {
+            return;
+        };
         let infos: Vec<&WorkspaceInfo> = snapshot.workspaces.iter().map(|w| &w.info).collect();
         let entries = groups::entries(
             &infos,
-            |info| self.placement(snapshot, info),
+            |info| self.placement(machine, snapshot, info),
             &HashSet::new(),
         );
         if let Some(order) = groups::reordered(&entries, dragged, target) {
-            state.reorder_workspaces(order, cx).detach_and_log_err(cx);
+            state
+                .reorder_workspaces_on(machine, order, cx)
+                .detach_and_log_err(cx);
         }
     }
 
-    /// A new workspace in the active worktree's folder, focused. herdr names
-    /// it; rename it from its menu.
+    /// A new workspace on the selected machine, focused. herdr names it;
+    /// rename it from its menu.
     pub fn new_workspace(&mut self, cx: &mut Context<Self>) {
-        let state = self.state.read(cx);
-        let cwd = state.active_worktree().cloned();
-        state.new_workspace(cwd, None, cx).detach_and_log_err(cx);
+        let machine = self.state.read(cx).selected().clone();
+        self.new_workspace_on(&machine, cx);
+    }
+
+    /// A new workspace on `machine`, selected and focused: on Local in the
+    /// active worktree's folder, elsewhere in herdr's default folder.
+    pub fn new_workspace_on(&mut self, machine: &MachineId, cx: &mut Context<Self>) {
+        self.state.update(cx, |state, cx| {
+            state.select_machine(machine, cx);
+            let cwd = state.active_worktree().cloned();
+            state
+                .new_workspace_on(machine, cwd, None, cx)
+                .detach_and_log_err(cx);
+        });
     }
 
     /// Asks for a branch name, then `worktree.create` in the repo at
@@ -476,6 +590,18 @@ impl WorkspaceList {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let machine = self.state.read(cx).selected().clone();
+        self.new_worktree_on(machine, repo_root, window, cx);
+    }
+
+    /// [`Self::new_worktree`] in a repo on `machine`.
+    fn new_worktree_on(
+        &mut self,
+        machine: MachineId,
+        repo_root: Option<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let this = cx.entity().downgrade();
         crate::prompt::ask_name(
             "New Worktree",
@@ -483,7 +609,7 @@ impl WorkspaceList {
             "",
             move |branch, window, cx| {
                 let _ = this.update(cx, |this, cx| {
-                    this.create_worktree(branch, repo_root.as_deref(), window, cx);
+                    this.create_worktree_on(&machine, branch, repo_root.as_deref(), window, cx);
                 });
             },
             window,
@@ -500,22 +626,38 @@ impl WorkspaceList {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let machine = self.state.read(cx).selected().clone();
+        self.create_worktree_on(&machine, branch, repo_root, window, cx);
+    }
+
+    /// [`Self::create_worktree`] on `machine`, which herdr then shows the
+    /// new workspace on; it is selected.
+    fn create_worktree_on(
+        &mut self,
+        machine: &MachineId,
+        branch: &str,
+        repo_root: Option<&str>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let branch = branch.trim();
         if branch.is_empty() {
             return;
         }
-        let state = self.state.read(cx);
-        let params = WorktreeParams {
-            workspace_id: match repo_root {
-                Some(_) => None,
-                None => state.snapshot().focused_workspace_id.clone(),
-            },
-            cwd: repo_root.map(str::to_owned),
-            branch: Some(branch.to_owned()),
-            focus: true,
-            ..Default::default()
-        };
-        let task = state.create_worktree(params, cx);
+        let task = self.state.update(cx, |state, cx| {
+            state.select_machine(machine, cx);
+            let params = WorktreeParams {
+                workspace_id: match repo_root {
+                    Some(_) => None,
+                    None => state.snapshot().focused_workspace_id.clone(),
+                },
+                cwd: repo_root.map(str::to_owned),
+                branch: Some(branch.to_owned()),
+                focus: true,
+                ..Default::default()
+            };
+            state.create_worktree(params, cx)
+        });
         cx.spawn_in(window, async move |_, cx| {
             let result = task.await;
             let cue = if result.is_ok() {
@@ -539,18 +681,27 @@ impl WorkspaceList {
 
     /// One workspace on one line: status glyph and label, then (except for a
     /// group's linked worktrees, as in herdr) its branch and ahead/behind.
+    /// An `inert` row (its machine isn't connected) draws dimmed and takes
+    /// no input.
     fn render_space(
         &self,
         row: usize,
+        machine: &Machine,
         entry: &Entry,
-        snapshot: &Snapshot,
-        cx: &mut Context<Self>,
+        cx: &Context<Self>,
     ) -> AnyElement {
         let state = self.state.read(cx);
+        let snapshot = machine.snapshot();
+        let machine_id = machine.id().clone();
+        let inert = !machine_id.is_local() && MachineState::of(machine.status()).0.is_dimmed();
         let info = entry.info;
         let id = info.workspace_id.clone();
-        let focused = snapshot.focused_workspace_id.as_deref() == Some(id.as_str());
-        let members = self.members(snapshot, entry);
+        let key = row_key(&machine_id, &id);
+        // Each machine has a focused workspace; the selected machine's is
+        // the one on screen.
+        let focused = state.selected() == &machine_id
+            && snapshot.focused_workspace_id.as_deref() == Some(id.as_str());
+        let members = self.members(&machine_id, snapshot, entry);
         let agents: Vec<&Agent> = snapshot
             .agents
             .iter()
@@ -558,27 +709,28 @@ impl WorkspaceList {
             .collect();
         let unseen = agents
             .iter()
-            .any(|a| state.attention().is_unseen_done(snapshot, &a.pane_id));
+            .any(|a| machine.attention().is_unseen_done(snapshot, &a.pane_id));
         let mut status = rolled_up(members.iter().map(|m| m.agent_status));
         // herdr's `done` means unseen; this app also counts looks herdr
         // can't see, and a seen result is idle again.
         if status == AgentStatus::Done && !unseen {
             status = AgentStatus::Idle;
         }
-        let checkout = self.checkout(snapshot, info);
+        let checkout = self.checkout(&machine_id, snapshot, info);
         let branch_line = (entry.kind != Kind::Child)
             .then(|| checkout.and_then(|c| c.branch.clone()))
             .flatten()
             .map(|branch| (branch, checkout.and_then(|c| c.ahead_behind)));
         let theme = cx.theme();
-        let row_group = SharedString::from(format!("ws-row-{id}"));
+        let row_group = SharedString::from(format!("ws-row-{key}"));
 
         let lead = match (&entry.kind, &entry.repo) {
             (Kind::Parent, Some(repo)) => {
-                let key = repo.key.clone();
-                let open = !self.folded.contains(&key);
+                let repo_key = repo.key.clone();
+                let open = !self.is_folded(&machine_id, &repo_key);
+                let fold_machine = machine_id.clone();
                 div()
-                    .id(SharedString::from(format!("fold-{key}")))
+                    .id(SharedString::from(format!("fold-{machine_id}-{repo_key}")))
                     .debug_selector({
                         let name = repo.name.clone();
                         move || format!("fold-{name}")
@@ -595,7 +747,7 @@ impl WorkspaceList {
                     )
                     .on_click(cx.listener(move |this, _, _, cx| {
                         cx.stop_propagation();
-                        this.toggle_group(&key, cx);
+                        this.toggle_group_on(&fold_machine, &repo_key, cx);
                     }))
                     .into_any_element()
             }
@@ -646,6 +798,8 @@ impl WorkspaceList {
             .map(|r| r.root.clone());
         let actions_width = ACTION * if new_in.is_some() { 3. } else { 2. } + px(4.);
         let (more_id, close_id) = (id.clone(), id.clone());
+        let (more_machine, close_machine, new_machine) =
+            (machine_id.clone(), machine_id.clone(), machine_id.clone());
         let action = |label: &'static str, name: String| {
             div()
                 .id(SharedString::from(name))
@@ -667,39 +821,49 @@ impl WorkspaceList {
             .group_hover(row_group.clone(), |this| this.visible())
             .when_some(new_in, |this, root| {
                 this.child(
-                    action("+", format!("ws-new-{id}"))
+                    action("+", format!("ws-new-{key}"))
                         .tooltip(|window, cx| Tooltip::new("New worktree").build(window, cx))
                         .on_click(cx.listener(move |this, _, window, cx| {
                             cx.stop_propagation();
-                            this.new_worktree(Some(root.clone()), window, cx);
+                            this.new_worktree_on(
+                                new_machine.clone(),
+                                Some(root.clone()),
+                                window,
+                                cx,
+                            );
                         })),
                 )
             })
             .child(
-                action("…", format!("ws-more-{id}")).on_click(move |event, window, cx| {
+                action("…", format!("ws-more-{key}")).on_click(move |event, window, cx| {
                     cx.stop_propagation();
-                    open_workspace_menu(&more_id, event.position(), window, cx);
+                    open_workspace_menu(&more_machine, &more_id, event.position(), window, cx);
                 }),
             )
             .child(
-                action("×", format!("ws-close-{id}")).on_click(move |_, window, cx| {
+                action("×", format!("ws-close-{key}")).on_click(move |_, window, cx| {
                     cx.stop_propagation();
-                    close_workspace(&close_id, window, cx);
+                    close_workspace(&close_machine, &close_id, window, cx);
                 }),
             );
 
         let (row_id, menu_id) = (id.clone(), id.clone());
+        let (row_machine, menu_machine, drop_machine) =
+            (machine_id.clone(), machine_id.clone(), machine_id.clone());
         let slot = Slot::of(entry);
         let dragged = DraggedWorkspace {
+            machine: machine_id.clone(),
             slot: slot.clone(),
             row,
             label: info.label.clone().into(),
         };
         let (accept_slot, drop_slot) = (slot.clone(), slot);
+        let accept_machine = machine_id.clone();
         let drag_border = theme.drag_border;
+        let selector = format!("ws-{key}");
         h_flex()
-            .id(SharedString::from(format!("ws-{id}")))
-            .debug_selector(move || format!("ws-{id}"))
+            .id(SharedString::from(format!("ws-{key}")))
+            .debug_selector(move || selector)
             .group(row_group)
             .relative()
             .flex_shrink_0()
@@ -708,22 +872,29 @@ impl WorkspaceList {
             .pr_2()
             .gap_1()
             .rounded_sm()
-            .cursor_pointer()
+            .when(inert, |this| this.opacity(0.45))
             .when(focused, |this| this.bg(theme.sidebar_accent))
-            .hover(|this| this.bg(theme.sidebar_accent.opacity(0.6)).pr(actions_width))
-            .on_click(cx.listener(move |this, _, _, cx| this.activate_workspace(&row_id, cx)))
-            .on_mouse_down(MouseButton::Right, move |event, window, cx| {
-                open_workspace_menu(&menu_id, event.position, window, cx);
+            .when(!inert, |this| {
+                this.cursor_pointer()
+                    .hover(|this| this.bg(theme.sidebar_accent.opacity(0.6)).pr(actions_width))
             })
-            .on_drag(dragged, |dragged, _, _, cx| {
-                crate::sounds::play(cues::Cue::Select, cues::PlayOptions::default());
-                crate::workspace::keep_terminals_during_drag(cx);
-                cx.new(|_| dragged.clone())
+            .when(!inert, |this| {
+                this.on_click(cx.listener(move |this, _, _, cx| {
+                    this.activate_workspace_on(&row_machine, &row_id, cx)
+                }))
+                .on_mouse_down(MouseButton::Right, move |event, window, cx| {
+                    open_workspace_menu(&menu_machine, &menu_id, event.position, window, cx);
+                })
+                .on_drag(dragged, |dragged, _, _, cx| {
+                    crate::sounds::play(cues::Cue::Select, cues::PlayOptions::default());
+                    crate::workspace::keep_terminals_during_drag(cx);
+                    cx.new(|_| dragged.clone())
+                })
             })
             .can_drop(move |dragged, _, _| {
-                dragged
-                    .downcast_ref::<DraggedWorkspace>()
-                    .is_some_and(|d| groups::accepts(&d.slot, &accept_slot))
+                dragged.downcast_ref::<DraggedWorkspace>().is_some_and(|d| {
+                    d.machine == accept_machine && groups::accepts(&d.slot, &accept_slot)
+                })
             })
             // The line marks the side the row will land on.
             .drag_over::<DraggedWorkspace>(move |style, dragged, _, _| {
@@ -743,19 +914,18 @@ impl WorkspaceList {
             ))
             .on_drop(cx.listener(move |this, dragged: &DraggedWorkspace, _, cx| {
                 this.drag_tick = None;
-                this.reorder(&dragged.slot, &drop_slot, cx);
+                this.reorder(&drop_machine, &dragged.slot, &drop_slot, cx);
             }))
             .child(div().flex_shrink_0().w(CHEVRON).child(lead))
             .child(status_icon(status, cx))
             .child(label)
             .children(branch)
-            .child(actions)
+            .when(!inert, |this| this.child(actions))
             .child({
                 let drawn = self.drawn_rows.clone();
-                let id = info.workspace_id.clone();
                 canvas(
                     move |bounds, _, _| {
-                        drawn.borrow_mut().insert(id, bounds);
+                        drawn.borrow_mut().insert(key, bounds);
                     },
                     |_, _, _, _| {},
                 )
@@ -766,7 +936,232 @@ impl WorkspaceList {
     }
 }
 
+/// Folding or unfolding a group sounds the same everywhere.
+fn fold_cue(opened: bool) {
+    let cue = if opened {
+        cues::Cue::Open
+    } else {
+        cues::Cue::Close
+    };
+    crate::sounds::play(cue, crate::sounds::subtle());
+}
+
+impl WorkspaceList {
+    /// A machine's group header. Local's has no menu.
+    fn render_header(&self, machine: &Machine, cx: &Context<Self>) -> AnyElement {
+        let id = machine.id().clone();
+        let (state, _) = MachineState::of(machine.status());
+        let this = cx.entity().downgrade();
+        let toggle_id = id.clone();
+        let mut header = machine_header(id.to_string(), machine.label().to_owned(), state)
+            .collapsed(self.collapsed.contains(&id))
+            .on_toggle({
+                let this = this.clone();
+                move |_, cx| {
+                    this.update(cx, |this, cx| this.toggle_machine(&toggle_id, cx))
+                        .ok();
+                }
+            });
+        if !id.is_local() {
+            let menu_id = id.clone();
+            header = header.on_menu(move |position, window, cx| {
+                this.update(cx, |this, cx| {
+                    this.open_machine_menu(&menu_id, position, window, cx)
+                })
+                .ok();
+            });
+        }
+        let drawn = self.drawn_headers.clone();
+        div()
+            .relative()
+            .child(header)
+            .child(
+                canvas(
+                    move |bounds, _, _| {
+                        drawn.borrow_mut().insert(id, bounds);
+                    },
+                    |_, _, _, _| {},
+                )
+                .absolute()
+                .size_full(),
+            )
+            .into_any_element()
+    }
+
+    /// The ··· menu of a saved machine, at `position` in the main window.
+    pub fn open_machine_menu(
+        &mut self,
+        id: &MachineId,
+        position: Point<Pixels>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(machine) = self.state.read(cx).machine(id) else {
+            return;
+        };
+        let (status, _) = MachineState::of(machine.status());
+        let label = machine.label().to_owned();
+        let entries = machines::machine_menu(&label, status, self.machine_actions(id, window, cx));
+        machines::open_machine_menu(entries, position, window, cx);
+    }
+
+    /// What a machine's menu does. Each callback talks to `AppState` only
+    /// (a confirmation calls back from the overlay window); a failed herdr
+    /// command becomes an error toast.
+    fn machine_actions(
+        &self,
+        id: &MachineId,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> MachineActions {
+        let state = self.state.clone();
+        let chrome = chrome::get(window, cx).map(|c| c.downgrade());
+        let report = move |title: &'static str, task: Task<anyhow::Result<()>>, cx: &mut App| {
+            let chrome = chrome.clone();
+            cx.spawn(async move |cx| {
+                let Err(error) = task.await else {
+                    return;
+                };
+                crate::sounds::play(cues::Cue::Error, crate::sounds::subtle());
+                if let Some(chrome) = chrome {
+                    toast_error(&chrome, title, error.to_string(), cx);
+                }
+            })
+            .detach();
+        };
+        let with = |f: fn(&mut AppState, &MachineId, &mut Context<AppState>)| -> Callback {
+            let (state, id) = (state.clone(), id.clone());
+            Rc::new(move |_, cx| state.update(cx, |state, cx| f(state, &id, cx)))
+        };
+        let (rename_state, rename_id, rename_report) = (state.clone(), id.clone(), report.clone());
+        let (enable_state, enable_id, enable_report) = (state.clone(), id.clone(), report.clone());
+        let (remove_state, remove_id) = (state.clone(), id.clone());
+        MachineActions {
+            on_reconnect: with(|state, id, cx| state.reconnect_machine(id, cx)),
+            on_fix: with(|state, id, cx| {
+                if let Some(task) = state.machine(id).and_then(MachineTask::fix) {
+                    state.start_machine_run(task, cx);
+                }
+            }),
+            on_rename: Rc::new(move |label, _, cx| {
+                let task = rename_state
+                    .update(cx, |state, cx| state.rename_machine(&rename_id, &label, cx));
+                rename_report("Rename machine", task, cx);
+            }),
+            on_set_enabled: Rc::new(move |enable, _, cx| {
+                let task = enable_state.update(cx, |state, cx| {
+                    if enable {
+                        state.enable_machine(&enable_id, cx)
+                    } else {
+                        state.disable_machine(&enable_id, cx)
+                    }
+                });
+                enable_report(
+                    if enable {
+                        "Enable machine"
+                    } else {
+                        "Disable machine"
+                    },
+                    task,
+                    cx,
+                );
+            }),
+            on_remove: Rc::new(move |_, cx| {
+                let task =
+                    remove_state.update(cx, |state, cx| state.remove_machine(&remove_id, cx));
+                report("Remove machine", task, cx);
+            }),
+        }
+    }
+
+    /// The Workspaces "+" menu: New Workspace (on the selected machine), New
+    /// Workspace on › (Local and each connected machine), Add Machine….
+    pub fn open_new_menu(
+        &mut self,
+        position: Point<Pixels>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let this = cx.entity().downgrade();
+        let mut entries = vec![MenuEntry::item(
+            "New Workspace",
+            list_command(&this, |this, _, cx| this.new_workspace(cx)),
+        )];
+        let state = self.state.read(cx);
+        if state.machines().count() > 1 {
+            let targets = state
+                .machines()
+                .filter(|m| m.id().is_local() || !MachineState::of(m.status()).0.is_dimmed())
+                .map(|m| {
+                    let id = m.id().clone();
+                    MenuEntry::item(
+                        m.label().to_owned(),
+                        list_command(&this, move |this, _, cx| this.new_workspace_on(&id, cx)),
+                    )
+                })
+                .collect();
+            entries.push(MenuEntry::Submenu {
+                label: "New Workspace on".into(),
+                entries: targets,
+            });
+        }
+        entries.push(MenuEntry::Separator);
+        entries.push(MenuEntry::item(
+            "Add Machine…",
+            list_command(&this, |this, window, cx| this.add_machine(window, cx)),
+        ));
+        machines::open_machine_menu(entries, position, window, cx);
+    }
+
+    /// Asks for an SSH host (suggesting `~/.ssh/config`'s), then runs
+    /// `herdr machine add` in a terminal beside the terminal area.
+    pub fn add_machine(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let hosts = ssh_config::default_path()
+            .map(|path| ssh_config::hosts(&path))
+            .unwrap_or_default();
+        let state = self.state.clone();
+        machines::open_add_machine(
+            hosts,
+            move |host, _, cx| {
+                state.update(cx, |state, cx| {
+                    state.start_machine_run(MachineTask::Add { host }, cx)
+                });
+            },
+            window,
+            cx,
+        );
+    }
+}
+
+/// A menu entry's command that runs `f` on the list.
+fn list_command(
+    this: &WeakEntity<WorkspaceList>,
+    f: impl Fn(&mut WorkspaceList, &mut Window, &mut Context<WorkspaceList>) + 'static,
+) -> MenuCommand {
+    let this = this.clone();
+    MenuCommand::Callback(Rc::new(move |window, cx| {
+        this.update(cx, |this, cx| f(this, window, cx)).ok();
+    }))
+}
+
+/// An error toast through the chrome, from any context.
+fn toast_error(
+    chrome: &WeakEntity<Chrome>,
+    title: &'static str,
+    message: String,
+    cx: &mut AsyncApp,
+) {
+    chrome
+        .update(cx, |chrome, cx| {
+            chrome.floating(cx, move |window, cx| {
+                window.push_notification(Notification::error(message).title(title), cx);
+            });
+        })
+        .ok();
+}
+
 fn open_workspace_menu(
+    machine: &MachineId,
     workspace_id: &str,
     position: Point<Pixels>,
     window: &mut Window,
@@ -775,6 +1170,7 @@ fn open_workspace_menu(
     window.dispatch_action(
         Box::new(OpenContextMenu {
             target: MenuTarget::Workspace {
+                machine: machine.clone(),
                 workspace_id: workspace_id.to_owned(),
             },
             position,
@@ -784,11 +1180,17 @@ fn open_workspace_menu(
 }
 
 /// Closes through the chrome, which asks first when agents are running there.
-pub(super) fn close_workspace(workspace_id: &str, window: &mut Window, cx: &mut App) {
+pub(super) fn close_workspace(
+    machine: &MachineId,
+    workspace_id: &str,
+    window: &mut Window,
+    cx: &mut App,
+) {
     let Some(chrome) = chrome::get(window, cx) else {
         return;
     };
     let command = HerdrCommand::CloseWorkspace {
+        machine: machine.clone(),
         workspace_id: workspace_id.to_owned(),
         close_group: false,
     };
@@ -796,11 +1198,17 @@ pub(super) fn close_workspace(workspace_id: &str, window: &mut Window, cx: &mut 
 }
 
 /// The chrome's rename prompt for a workspace.
-pub(super) fn rename_workspace(workspace_id: &str, window: &mut Window, cx: &mut App) {
+pub(super) fn rename_workspace(
+    machine: &MachineId,
+    workspace_id: &str,
+    window: &mut Window,
+    cx: &mut App,
+) {
     let Some(chrome) = chrome::get(window, cx) else {
         return;
     };
     let command = MenuCommand::Rename(MenuTarget::Workspace {
+        machine: machine.clone(),
         workspace_id: workspace_id.to_owned(),
     });
     chrome.update(cx, |chrome, cx| {
@@ -835,8 +1243,10 @@ impl Panel for WorkspaceList {
         Some(vec![
             Button::new("spaces-new")
                 .icon(IconName::Plus)
-                .tooltip("New Workspace")
-                .on_click(cx.listener(|this, _, _, cx| this.new_workspace(cx))),
+                .tooltip("New")
+                .on_click(cx.listener(|this, event: &ClickEvent, window, cx| {
+                    this.open_new_menu(event.position(), window, cx)
+                })),
         ])
     }
 
@@ -868,22 +1278,58 @@ impl Panel for WorkspaceList {
     }
 }
 
-impl Render for WorkspaceList {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let snapshot = self.state.read(cx).snapshot().clone();
-        self.drawn_rows.borrow_mut().clear();
-        let entries = self.entries(&snapshot);
-        let rows: Vec<AnyElement> = entries
+impl WorkspaceList {
+    /// One machine's rows, numbered from `first` for drag ticks; an empty
+    /// note when a connected machine has no workspaces.
+    fn render_machine_rows(
+        &self,
+        machine: &Machine,
+        first: usize,
+        indent_empty: bool,
+        cx: &Context<Self>,
+    ) -> Vec<AnyElement> {
+        let snapshot = machine.snapshot().clone();
+        let entries = self.entries(machine.id(), &snapshot);
+        let mut rows: Vec<AnyElement> = entries
             .iter()
             .enumerate()
-            .map(|(row, entry)| self.render_space(row, entry, &snapshot, cx))
+            .map(|(row, entry)| self.render_space(first + row, machine, entry, cx))
             .collect();
+        let ready = machine.id().is_local()
+            || (snapshot.generation != 0 && !MachineState::of(machine.status()).0.is_dimmed());
+        if rows.is_empty() && ready {
+            rows.push(
+                text("No workspaces")
+                    .px_2()
+                    .when(indent_empty, |this| this.pl(px(6.) + CHEVRON + px(16.)))
+                    .text_color(cx.theme().muted_foreground)
+                    .into_any_element(),
+            );
+        }
+        rows
+    }
+}
+
+impl Render for WorkspaceList {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.drawn_rows.borrow_mut().clear();
+        self.drawn_headers.borrow_mut().clear();
+        let state = self.state.clone();
+        let state = state.read(cx);
+        let mut rows: Vec<AnyElement> = Vec::new();
+        // With no saved machines the list is Local's alone, without headers.
+        let grouped = state.machines().count() > 1;
+        for machine in state.machines() {
+            if grouped {
+                rows.push(self.render_header(machine, cx));
+                if self.collapsed.contains(machine.id()) {
+                    continue;
+                }
+            }
+            let first = rows.len();
+            rows.extend(self.render_machine_rows(machine, first, grouped, cx));
+        }
         let theme = cx.theme();
-        let empty = rows.is_empty().then(|| {
-            text("No workspaces")
-                .px_2()
-                .text_color(theme.muted_foreground)
-        });
         v_flex()
             .id("workspace-rows")
             .track_focus(&self.focus)
@@ -895,7 +1341,6 @@ impl Render for WorkspaceList {
             .overflow_y_scroll()
             .text_sm()
             .children(rows)
-            .children(empty)
     }
 }
 

@@ -3,7 +3,7 @@
 //! `herdr_client` directly.
 
 pub mod machines {
-    pub use herdr_client::{list_machines, socket_dir};
+    pub use herdr_client::{dev_allowed, list_machines, socket_dir};
 }
 #[allow(
     unused_imports,

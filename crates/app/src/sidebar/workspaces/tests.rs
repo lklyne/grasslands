@@ -398,8 +398,12 @@ fn workspace_in_a_git_folder_shows_its_branch(cx: &mut TestAppContext) {
     cx.run_until_parked();
     let branch = list.read_with(cx, |list, cx| {
         let snapshot = list.state.read(cx).snapshot().clone();
-        list.checkout(&snapshot, &snapshot.workspaces[0].info)
-            .and_then(|c| c.branch.clone())
+        list.checkout(
+            &crate::state::MachineId::Local,
+            &snapshot,
+            &snapshot.workspaces[0].info,
+        )
+        .and_then(|c| c.branch.clone())
     });
     assert_eq!(branch.as_deref(), Some("topic"));
 }

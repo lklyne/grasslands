@@ -27,6 +27,7 @@ use gpui_kit::*;
 use super::{Chrome, HerdrCommand, MenuTarget};
 use crate::attention::{agent_name, status_label};
 use crate::overlay;
+use crate::state::MachineId;
 
 /// Pause between steps so each one renders (and can be screenshotted).
 const STEP: Duration = Duration::from_millis(400);
@@ -160,7 +161,10 @@ fn run_step(
             let target = match first {
                 "pane" => MenuTarget::Pane { pane_id: id },
                 "tab" => MenuTarget::Tab { tab_id: id },
-                "workspace" => MenuTarget::Workspace { workspace_id: id },
+                "workspace" => MenuTarget::Workspace {
+                    machine: MachineId::Local,
+                    workspace_id: id,
+                },
                 other => return Err(format!("unknown menu target {other:?}")),
             };
             chrome.context_menu(target, point(px(320.), px(200.)), Vec::new(), window, cx);
@@ -171,10 +175,12 @@ fn run_step(
                 "close-pane" => HerdrCommand::ClosePane { pane_id: id },
                 "close-tab" => HerdrCommand::CloseTab { tab_id: id },
                 "close-workspace" => HerdrCommand::CloseWorkspace {
+                    machine: MachineId::Local,
                     workspace_id: id,
                     close_group: false,
                 },
                 "close-group" => HerdrCommand::CloseWorkspace {
+                    machine: MachineId::Local,
                     workspace_id: id,
                     close_group: true,
                 },

@@ -125,7 +125,7 @@ fn context_menu_opens_with_pane_actions(cx: &mut TestAppContext) {
                     .into_iter()
                     .filter_map(|entry| match entry {
                         MenuEntry::Item { label, .. } => Some(label.to_string()),
-                        MenuEntry::Separator => None,
+                        MenuEntry::Separator | MenuEntry::Submenu { .. } => None,
                     })
                     .collect::<Vec<_>>()
             })

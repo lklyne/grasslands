@@ -31,7 +31,7 @@ use crate::herdr::{
 use crate::overlay;
 use crate::setup::Stage;
 use crate::sidebar::files::DraggedPath;
-use crate::state::{AppEvent, AppState, MachineId};
+use crate::state::{AppEvent, AppState, MachineId, MachineTask, RunStage};
 
 use self::terminals::{AttachCommands, Launch, SetupTerminal, Terminals};
 
@@ -244,6 +244,9 @@ pub struct TerminalArea {
     tab_drag_tick: Option<(usize, usize)>,
     /// The terminal beside the herdr setup screen, running the last fix.
     setup_terminal: Option<SetupTerminal>,
+    /// The terminal beside a machine's sign-in, setup or add
+    /// (`AppState::machine_run`), whichever machine is selected.
+    machine_terminal: Option<SetupTerminal>,
     _subscriptions: Vec<Subscription>,
     _liveness: Task<()>,
 }
@@ -258,6 +261,7 @@ impl TerminalArea {
         let subscriptions = vec![
             cx.observe_in(&state, window, |this, _, window, cx| {
                 this.sync_setup_terminal(window, cx);
+                this.sync_machine_terminal(window, cx);
                 cx.notify();
             }),
             // Coming back to the window after fixing herdr elsewhere (a
@@ -291,6 +295,7 @@ impl TerminalArea {
             focus_on_show: None,
             tab_drag_tick: None,
             setup_terminal: None,
+            machine_terminal: None,
             _subscriptions: subscriptions,
             _liveness: Self::watch_liveness(cx),
         };
@@ -339,6 +344,48 @@ impl TerminalArea {
         }
     }
 
+    /// Starts a terminal for each new machine run and drops it once the run
+    /// is closed.
+    fn sync_machine_terminal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let run = self
+            .state
+            .read(cx)
+            .machine_run()
+            .map(|run| (run.id, run.command.clone()));
+        // The run's screen covers Local's setup screen, terminal and all.
+        if let Some(setup) = &self.setup_terminal {
+            let show = self.visible && self.terminals.selected().is_local() && run.is_none();
+            setup
+                .terminal
+                .update(cx, |terminal, _| terminal.set_visible(show));
+        }
+        let Some((id, command)) = run else {
+            if let Some(old) = self.machine_terminal.take() {
+                old.terminal
+                    .update(cx, |terminal, _| terminal.set_visible(false));
+            }
+            return;
+        };
+        if self.machine_terminal.as_ref().is_some_and(|t| t.run == id) {
+            return;
+        }
+        if let Some(old) = self.machine_terminal.take() {
+            old.terminal
+                .update(cx, |terminal, _| terminal.set_visible(false));
+        }
+        match self.terminals.spawn_setup(command, window, cx) {
+            Ok(terminal) => {
+                terminal.update(cx, |terminal, _| terminal.set_visible(self.visible));
+                self.machine_terminal = Some(SetupTerminal { run: id, terminal });
+            }
+            Err(error) => {
+                tracing::error!("machine terminal: {error:#}");
+                self.state
+                    .update(cx, |state, cx| state.machine_run_exited(cx));
+            }
+        }
+    }
+
     /// An attach process can end without any herdr event (another client
     /// took the terminal over), so check once a second and redraw to show
     /// the pane as detached.
@@ -364,6 +411,19 @@ impl TerminalArea {
                         .is_some_and(|setup| !setup.terminal.read(cx).is_alive());
                     if fixing && ended {
                         this.state.update(cx, |state, cx| state.fix_exited(cx));
+                    }
+                    let running = this
+                        .state
+                        .read(cx)
+                        .machine_run()
+                        .is_some_and(|run| run.stage == RunStage::Running);
+                    let ended = this
+                        .machine_terminal
+                        .as_ref()
+                        .is_some_and(|t| !t.terminal.read(cx).is_alive());
+                    if running && ended {
+                        this.state
+                            .update(cx, |state, cx| state.machine_run_exited(cx));
                     }
                 });
                 if alive.is_err() {
@@ -682,6 +742,10 @@ impl TerminalArea {
             setup
                 .terminal
                 .update(cx, |terminal, _| terminal.set_visible(show));
+        }
+        if let Some(run) = &self.machine_terminal {
+            run.terminal
+                .update(cx, |terminal, _| terminal.set_visible(visible));
         }
         cx.notify();
     }
@@ -1643,14 +1707,53 @@ impl TerminalArea {
         let on_reconnect: crate::chrome::Callback = Rc::new(move |_, cx| {
             state.update(cx, |state, cx| state.reconnect_machine(&id, cx));
         });
+        let on_fix = MachineTask::fix(machine).map(|task| {
+            let state = self.state.clone();
+            let fix: crate::chrome::Callback = Rc::new(move |_, cx| {
+                let task = task.clone();
+                state.update(cx, |state, cx| state.start_machine_run(task, cx));
+            });
+            fix
+        });
         Some(crate::machines::offline_screen(
             machine.label(),
             status,
             detail,
             on_reconnect,
-            None,
+            on_fix,
             cx,
         ))
+    }
+
+    /// A machine's sign-in, setup or add: the card, with its terminal.
+    fn render_machine_run(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let state = self.state.read(cx);
+        let run = state.machine_run()?;
+        let machine = run.machine.as_ref().and_then(|id| state.machine(id));
+        let detail = machine.and_then(|m| crate::machines::MachineState::of(m.status()).1);
+        let close_state = self.state.clone();
+        let retry_state = self.state.clone();
+        let card = crate::machines::run_card(
+            crate::machines::RunCard {
+                task: &run.task,
+                stage: &run.stage,
+                label: machine.map(|m| m.label()),
+                detail,
+            },
+            Rc::new(move |_, cx| {
+                close_state.update(cx, |state, cx| state.finish_machine_run(cx));
+            }),
+            Rc::new(move |_, cx| {
+                retry_state.update(cx, |state, cx| state.retry_machine_run(cx));
+            }),
+            cx,
+        );
+        let terminal = self
+            .machine_terminal
+            .as_ref()
+            .filter(|_| self.visible)
+            .map(|t| t.terminal.clone().into_any_element());
+        Some(crate::setup::screen("machine-run", card, terminal, cx))
     }
 
     fn render_empty(&self, message: String, cx: &mut Context<Self>) -> AnyElement {
@@ -1726,11 +1829,13 @@ impl Render for TerminalArea {
             .as_ref()
             .filter(|_| self.visible && local)
             .map(|setup| setup.terminal.clone().into_any_element());
-        let setup = if local {
-            crate::setup::render(&self.state, setup_terminal, cx)
-        } else {
-            None
-        };
+        let setup = self.render_machine_run(cx).or_else(|| {
+            if local {
+                crate::setup::render(&self.state, setup_terminal, cx)
+            } else {
+                None
+            }
+        });
         let setup = setup.or_else(|| self.render_machine_problem(cx));
         let body = match (setup, Self::active_tab(&snapshot)) {
             (Some(setup), _) => setup,

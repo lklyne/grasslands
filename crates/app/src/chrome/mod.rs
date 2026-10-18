@@ -41,12 +41,30 @@ pub fn init(_cx: &mut App) {
 }
 
 /// What a context menu is about. The terminal area opens one per pane and
-/// tab, the sidebar per workspace and agent.
+/// tab, the sidebar per workspace and agent. Panes and tabs are the selected
+/// machine's; the sidebar lists every machine's workspaces.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MenuTarget {
-    Pane { pane_id: String },
-    Tab { tab_id: String },
-    Workspace { workspace_id: String },
+    Pane {
+        pane_id: String,
+    },
+    Tab {
+        tab_id: String,
+    },
+    Workspace {
+        machine: MachineId,
+        workspace_id: String,
+    },
+}
+
+impl MenuTarget {
+    /// The machine the target is on; `None` for the selected one.
+    fn machine(&self) -> Option<&MachineId> {
+        match self {
+            Self::Workspace { machine, .. } => Some(machine),
+            Self::Pane { .. } | Self::Tab { .. } => None,
+        }
+    }
 }
 
 /// A UI callback run by a menu entry or a confirmation.
@@ -73,6 +91,11 @@ pub enum MenuEntry {
         label: SharedString,
         command: MenuCommand,
         disabled: bool,
+    },
+    /// Opens `entries` beside the menu.
+    Submenu {
+        label: SharedString,
+        entries: Vec<MenuEntry>,
     },
     Separator,
 }
@@ -434,10 +457,18 @@ impl Chrome {
         cx.notify();
     }
 
+    /// The cache of `machine`, or of the selected machine.
+    fn snapshot_of<'a>(&self, machine: Option<&MachineId>, cx: &'a App) -> &'a Snapshot {
+        let state = self.state.read(cx);
+        machine
+            .and_then(|id| state.machine(id))
+            .map_or_else(|| state.snapshot(), |m| m.snapshot())
+    }
+
     /// The herdr actions that make sense for `target`.
     pub fn default_entries(&self, target: &MenuTarget, cx: &App) -> Vec<MenuEntry> {
         use HerdrCommand as C;
-        let snapshot = self.state.read(cx).snapshot();
+        let snapshot = self.snapshot_of(target.machine(), cx);
         match target {
             MenuTarget::Pane { pane_id } => {
                 let id = || pane_id.clone();
@@ -473,7 +504,13 @@ impl Chrome {
                             tab_id: tab_id.clone(),
                         },
                     ),
-                    MenuEntry::herdr("New Tab", C::NewTab { workspace_id }),
+                    MenuEntry::herdr(
+                        "New Tab",
+                        C::NewTab {
+                            machine: self.state.read(cx).selected().clone(),
+                            workspace_id,
+                        },
+                    ),
                 ];
                 // A pane alone in its tab has no header to right-click, so
                 // the tab offers splitting its focused pane.
@@ -503,16 +540,33 @@ impl Chrome {
                 ]);
                 entries
             }
-            MenuTarget::Workspace { workspace_id } => {
+            MenuTarget::Workspace {
+                machine,
+                workspace_id,
+            } => {
                 let id = || workspace_id.clone();
+                let on = || machine.clone();
                 let mut entries = vec![
-                    MenuEntry::herdr("Focus Workspace", C::FocusWorkspace { workspace_id: id() }),
-                    MenuEntry::herdr("New Tab", C::NewTab { workspace_id: id() }),
+                    MenuEntry::herdr(
+                        "Focus Workspace",
+                        C::FocusWorkspace {
+                            machine: on(),
+                            workspace_id: id(),
+                        },
+                    ),
+                    MenuEntry::herdr(
+                        "New Tab",
+                        C::NewTab {
+                            machine: on(),
+                            workspace_id: id(),
+                        },
+                    ),
                     MenuEntry::item("Rename Workspace…", MenuCommand::Rename(target.clone())),
                     MenuEntry::Separator,
                     MenuEntry::herdr(
                         "Close Workspace",
                         C::CloseWorkspace {
+                            machine: on(),
                             workspace_id: id(),
                             close_group: false,
                         },
@@ -522,6 +576,7 @@ impl Chrome {
                     entries.push(MenuEntry::herdr(
                         "Close Worktree Group",
                         C::CloseWorkspace {
+                            machine: on(),
                             workspace_id: id(),
                             close_group: true,
                         },
@@ -533,8 +588,14 @@ impl Chrome {
     }
 
     /// Plugin actions declared for the target's context, invoked with it.
+    /// They are the selected machine's plugins, so another machine's
+    /// workspace gets none.
     fn plugin_entries(&self, target: &MenuTarget, cx: &App) -> Vec<MenuEntry> {
-        let snapshot = self.state.read(cx).snapshot();
+        let state = self.state.read(cx);
+        if target.machine().is_some_and(|m| m != state.selected()) {
+            return Vec::new();
+        }
+        let snapshot = state.snapshot();
         let (kind, context) = invocation_context(target, snapshot);
         self.plugin_actions
             .iter()
@@ -568,7 +629,7 @@ impl Chrome {
     /// Sends a herdr command, asking first when it would close a running
     /// agent or a whole worktree group (herdr closes immediately).
     pub fn run(&mut self, command: HerdrCommand, window: &mut Window, cx: &mut Context<Self>) {
-        let confirmation = confirm::needed_for(&command, self.state.read(cx).snapshot());
+        let confirmation = confirm::needed_for(&command, self.snapshot_of(command.machine(), cx));
         let Some(confirmation) = confirmation else {
             self.send(command, window, cx);
             return;
@@ -585,7 +646,7 @@ impl Chrome {
 
     /// Sends without asking; a failure becomes an error toast.
     fn send(&mut self, command: HerdrCommand, _window: &mut Window, cx: &mut Context<Self>) {
-        let task = command.send(self.state.read(cx), cx);
+        let task = command.send(&self.state, cx);
         cx.spawn(async move |this, cx| {
             if let Err(error) = task.await {
                 sounds::play(cues::Cue::Error, sounds::subtle());
@@ -620,7 +681,7 @@ impl Chrome {
     }
 
     fn prompt_rename(&mut self, target: MenuTarget, _window: &mut Window, cx: &mut Context<Self>) {
-        let snapshot = self.state.read(cx).snapshot();
+        let snapshot = self.snapshot_of(target.machine(), cx);
         let (title, current) = match &target {
             MenuTarget::Pane { pane_id } => (
                 "Rename Pane",
@@ -630,7 +691,7 @@ impl Chrome {
                 "Rename Tab",
                 snapshot.tab(tab_id).map(|t| t.info.label.clone()),
             ),
-            MenuTarget::Workspace { workspace_id } => (
+            MenuTarget::Workspace { workspace_id, .. } => (
                 "Rename Workspace",
                 snapshot
                     .workspace(workspace_id)
@@ -718,30 +779,48 @@ fn build_menu(
     cx: &mut App,
 ) -> Entity<PopupMenu> {
     let chrome = chrome.clone();
-    PopupMenu::build(window, cx, move |mut menu, _, _| {
-        for entry in entries {
-            menu = match entry {
-                MenuEntry::Separator => menu.separator(),
-                MenuEntry::Item {
-                    label,
-                    command,
-                    disabled,
-                } => {
-                    let chrome = chrome.clone();
-                    menu.item(PopupMenuItem::new(label).disabled(disabled).on_click(
-                        move |_, _, cx| {
+    PopupMenu::build(window, cx, move |menu, window, cx| {
+        add_entries(menu, &chrome, &entries, window, cx).min_w(px(200.))
+    })
+}
+
+fn add_entries(
+    mut menu: PopupMenu,
+    chrome: &WeakEntity<Chrome>,
+    entries: &[MenuEntry],
+    window: &mut Window,
+    cx: &mut Context<PopupMenu>,
+) -> PopupMenu {
+    for entry in entries {
+        menu = match entry {
+            MenuEntry::Separator => menu.separator(),
+            MenuEntry::Submenu { label, entries } => {
+                let (chrome, entries) = (chrome.clone(), entries.clone());
+                menu.submenu(label.clone(), window, cx, move |menu, window, cx| {
+                    add_entries(menu, &chrome, &entries, window, cx).min_w(px(160.))
+                })
+            }
+            MenuEntry::Item {
+                label,
+                command,
+                disabled,
+            } => {
+                let (chrome, command) = (chrome.clone(), command.clone());
+                menu.item(
+                    PopupMenuItem::new(label.clone())
+                        .disabled(*disabled)
+                        .on_click(move |_, _, cx| {
                             let command = command.clone();
                             update_later(&chrome, cx, move |chrome, window, cx| {
                                 chrome.close_context_menu(window, cx);
                                 chrome.run_menu_command(command, window, cx);
                             });
-                        },
-                    ))
-                }
-            };
-        }
-        menu.min_w(px(200.))
-    })
+                        }),
+                )
+            }
+        };
+    }
+    menu
 }
 
 /// Runs `f` on the chrome, with the main window, after the current update.
@@ -776,7 +855,11 @@ fn rename_command(target: &MenuTarget, label: String) -> HerdrCommand {
             tab_id: tab_id.clone(),
             label,
         },
-        MenuTarget::Workspace { workspace_id } => HerdrCommand::RenameWorkspace {
+        MenuTarget::Workspace {
+            machine,
+            workspace_id,
+        } => HerdrCommand::RenameWorkspace {
+            machine: machine.clone(),
             workspace_id: workspace_id.clone(),
             label,
         },
@@ -828,7 +911,7 @@ fn invocation_context(
                 },
             )
         }
-        MenuTarget::Workspace { workspace_id } => (
+        MenuTarget::Workspace { workspace_id, .. } => (
             PluginActionContext::Workspace,
             PluginInvocationContext {
                 invocation_source: Some(SOURCE.to_owned()),

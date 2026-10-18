@@ -156,6 +156,11 @@ pub struct FixCommand {
 }
 
 impl FixCommand {
+    /// Runs `argv`, the first element being the program.
+    pub fn from_argv(argv: Vec<OsString>) -> Self {
+        Self::new(argv)
+    }
+
     fn new(argv: Vec<OsString>) -> Self {
         let display = argv
             .iter()

@@ -442,6 +442,7 @@ impl Run {
         // Opened from an open context menu (a sidebar menu, then a click on
         // a "New Folder" button), the prompt replaces the menu.
         let target = MenuTarget::Workspace {
+            machine: crate::state::MachineId::Local,
             workspace_id: workspace_id.to_owned(),
         };
         cx.update(|window, cx| {
@@ -545,6 +546,7 @@ impl Run {
     async fn rename_dialog(&mut self, cx: &mut Cx, workspace_id: &str) {
         let before = self.focused(cx);
         let target = MenuTarget::Workspace {
+            machine: crate::state::MachineId::Local,
             workspace_id: workspace_id.to_owned(),
         };
         cx.update(|window, cx| {

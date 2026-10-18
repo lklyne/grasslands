@@ -76,6 +76,7 @@ pub(super) fn open(
 
 fn groups(state: &AppState, plugin_actions: &[PluginActionInfo]) -> Vec<Group> {
     let snapshot = state.snapshot();
+    let machine = || state.selected().clone();
     let focused = snapshot.focused_pane();
 
     let mut app: Vec<(SharedString, MenuCommand)> = Vec::new();
@@ -107,6 +108,7 @@ fn groups(state: &AppState, plugin_actions: &[PluginActionInfo]) -> Vec<Group> {
             herdr(
                 "Tab: New",
                 C::NewTab {
+                    machine: machine(),
                     workspace_id: pane.workspace_id.clone(),
                 },
             ),
@@ -125,12 +127,14 @@ fn groups(state: &AppState, plugin_actions: &[PluginActionInfo]) -> Vec<Group> {
             (
                 "Workspace: Rename…".into(),
                 MenuCommand::Rename(MenuTarget::Workspace {
+                    machine: machine(),
                     workspace_id: pane.workspace_id.clone(),
                 }),
             ),
             herdr(
                 "Workspace: Close",
                 C::CloseWorkspace {
+                    machine: machine(),
                     workspace_id: pane.workspace_id.clone(),
                     close_group: false,
                 },
