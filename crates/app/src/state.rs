@@ -313,20 +313,25 @@ impl AppState {
         &self.selected_machine().attention
     }
 
-    /// Blocked agents plus unseen finished ones on every machine: the dock
-    /// badge count.
-    pub fn attention_count(&self) -> usize {
+    /// Local and each connected machine: the ones whose agents are listed
+    /// (an offline machine's last cache is stale).
+    pub fn live_machines(&self) -> impl Iterator<Item = &Machine> {
         self.machines
             .iter()
+            .filter(|m| m.id.is_local() || m.status == MachineStatus::Connected)
+    }
+
+    /// Blocked agents plus unseen finished ones on the live machines: the
+    /// dock badge count, matching the agent list.
+    pub fn attention_count(&self) -> usize {
+        self.live_machines()
             .map(|m| m.attention.count(&m.snapshot))
             .sum()
     }
 
-    /// Every agent on Local and on each connected machine, with its machine.
+    /// Every agent on the live machines, with its machine.
     pub fn agents(&self) -> impl Iterator<Item = (&MachineId, &Agent)> {
-        self.machines
-            .iter()
-            .filter(|m| m.id.is_local() || m.status == MachineStatus::Connected)
+        self.live_machines()
             .flat_map(|m| m.snapshot.agents.iter().map(move |agent| (&m.id, agent)))
     }
 
@@ -1783,6 +1788,25 @@ mod tests {
         let task = cx.update(|cx| state.read(cx).close_pane_on(&gone_machine(), "w1:p1", cx));
         let result = cx.foreground_executor().block_test(task);
         assert!(matches!(result, Err(herdr::Error::Refused(m)) if m.contains("no longer saved")));
+    }
+
+    #[gpui::test]
+    fn an_offline_machine_adds_nothing_to_the_badge(cx: &mut TestAppContext) {
+        let state = cx.new(|cx| AppState::new(Ok(offline_config()), cx));
+        let count = state.update(cx, |state, _| {
+            let mut blocked = agent("w1:p1");
+            blocked.agent_status = herdr::AgentStatus::Blocked;
+            let snapshot = Arc::new(Snapshot {
+                agents: vec![blocked],
+                ..Snapshot::default()
+            });
+            state.add_test_machine("b87d", "dockerbox", snapshot);
+            if let Some(machine) = state.machine_mut(&remote()) {
+                machine.status = herdr::MachineStatus::Offline("gone".into());
+            }
+            state.attention_count()
+        });
+        assert_eq!(count, 0);
     }
 
     #[gpui::test]

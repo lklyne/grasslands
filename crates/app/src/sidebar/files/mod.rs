@@ -109,10 +109,14 @@ impl FileTree {
         let tree = cx.new(|cx| TreeState::new(cx));
         let query = cx.new(|cx| InputState::new(window, cx).placeholder("Search files"));
         let subscriptions = [
-            cx.subscribe(&state, |this, _, event, cx| {
-                if let AppEvent::ActiveWorktreeChanged(root) = event {
-                    this.set_root(root.clone(), cx);
+            cx.subscribe(&state, |this, state, event, cx| match event {
+                AppEvent::ActiveWorktreeChanged(root) => this.set_root(root.clone(), cx),
+                // The remote placeholder names the selected machine.
+                AppEvent::MachineSelected(_) => cx.notify(),
+                AppEvent::MachinesChanged if !state.read(cx).selected().is_local() => {
+                    cx.notify();
                 }
+                _ => {}
             }),
             cx.subscribe(&tree, |this, _, event, cx| this.on_tree_event(event, cx)),
             cx.subscribe(&query, |this, _, event: &InputEvent, cx| {

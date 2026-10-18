@@ -64,8 +64,7 @@ pub(super) fn ordered(snapshot: &Snapshot, sort: AgentSort) -> Vec<&Agent> {
 /// "grouped" keeps the machines' order; "priority" merges them.
 fn ordered_everywhere(state: &AppState, sort: AgentSort) -> Vec<(&Machine, &Agent)> {
     let mut agents: Vec<(&Machine, &Agent)> = state
-        .machines()
-        .filter(|m| m.id().is_local() || *m.status() == crate::herdr::MachineStatus::Connected)
+        .live_machines()
         .flat_map(|m| ordered(m.snapshot(), sort).into_iter().map(move |a| (m, a)))
         .collect();
     if sort == AgentSort::Priority {
