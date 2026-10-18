@@ -637,6 +637,12 @@ impl MachineLink {
     }
 
     /// Retry now, skipping the backoff wait.
+    /// The machine's files over this link's master; `None` until connected.
+    /// STUB: always `None` until the transport agent builds it.
+    pub fn remote_fs(&self) -> Option<std::sync::Arc<crate::RemoteFs>> {
+        None
+    }
+
     pub fn reconnect(&self) {
         let _ = self.inbox.send(Msg::Reconnect);
     }

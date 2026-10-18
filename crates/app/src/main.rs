@@ -13,6 +13,7 @@ mod attention;
 mod changes;
 mod chrome;
 mod editor;
+mod fs;
 mod herdr;
 mod logging;
 mod machines;

@@ -18,6 +18,8 @@ mod watch;
 #[cfg(test)]
 mod tests;
 
+pub use search::Results as SearchResults;
+
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
