@@ -194,7 +194,7 @@ impl Workspace {
     fn changes_index(&self, cx: &App) -> Option<usize> {
         self.changes
             .as_ref()
-            .map(|_| self.editor.read(cx).tabs().len() + 1)
+            .map(|_| self.editor.read(cx).tabs(cx).len() + 1)
     }
 
     /// Selects titlebar tab `index`: 0 is herdr, then the file tabs, then
@@ -225,7 +225,7 @@ impl Workspace {
     fn cycle(&mut self, step: isize, window: &mut Window, cx: &mut Context<Self>) {
         let count = self
             .changes_index(cx)
-            .unwrap_or(self.editor.read(cx).tabs().len()) as isize
+            .unwrap_or(self.editor.read(cx).tabs(cx).len()) as isize
             + 1;
         let index = (self.selected_index(cx) as isize + step).rem_euclid(count) as usize;
         crate::sounds::play(cues::Cue::Select, cues::PlayOptions::default());
@@ -233,13 +233,14 @@ impl Workspace {
     }
 
     fn open_file(&mut self, action: &OpenFile, window: &mut Window, cx: &mut Context<Self>) {
-        self.editor
-            .update(cx, |editor, cx| editor.open(&action.path, window, cx));
+        self.editor.update(cx, |editor, cx| {
+            editor.open(&action.machine, &action.path, window, cx)
+        });
     }
 
     fn open_file_at(&mut self, action: &OpenFileAt, window: &mut Window, cx: &mut Context<Self>) {
         self.editor.update(cx, |editor, cx| {
-            editor.open_at(&action.path, action.line, window, cx)
+            editor.open_at(&action.machine, &action.path, action.line, window, cx)
         });
     }
 
