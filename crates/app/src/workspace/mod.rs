@@ -89,6 +89,8 @@ pub struct Workspace {
     /// it will land (native views would cover the drop indicator). Drags
     /// marked with [`keep_terminals_during_drag`] don't count.
     dragging: bool,
+    /// A drag was under way at the last render.
+    drag_seen: bool,
     editor: Entity<Editor>,
     /// The Changes tab, while it is open.
     changes: Option<Entity<Changes>>,
@@ -136,6 +138,7 @@ impl Workspace {
             docks,
             main_panel,
             dragging: false,
+            drag_seen: false,
             editor,
             changes: None,
             terminal_area,
@@ -300,6 +303,18 @@ impl Render for Workspace {
             .is_some_and(|keep| keep.0);
         if !active && keep {
             cx.set_global(KeepTerminalsDuringDrag(false));
+        }
+        // GPUI paints the drag preview into every window that draws during a
+        // drag (the overlay too, for its toasts and tooltips) but redraws only
+        // the one the drag ended in; any other would keep showing it.
+        if active {
+            self.drag_seen = true;
+        } else if std::mem::take(&mut self.drag_seen) {
+            window.defer(cx, |_, cx| {
+                for handle in cx.windows() {
+                    handle.update(cx, |_, window, _| window.refresh()).ok();
+                }
+            });
         }
         // GPUI only leaves keyboard modality on a mouse move or press, and a
         // drag from Finder brings neither, so every hitbox stays unhovered
