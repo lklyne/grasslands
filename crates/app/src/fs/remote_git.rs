@@ -247,6 +247,33 @@ mod tests {
     }
 
     #[test]
+    fn summary_should_match_local_on_main_with_upstream() {
+        let dir = fixtures::temp_dir("remote-upstream");
+        let origin = dir.join("origin.git");
+        git2::Repository::init_bare(&origin).unwrap();
+        let local = dir.join("local");
+        std::fs::create_dir_all(&local).unwrap();
+        let repo = fixtures::repo_on_main(&local);
+        repo.remote("origin", origin.to_str().unwrap()).unwrap();
+        let mut remote_ref = repo.find_remote("origin").unwrap();
+        remote_ref
+            .push(&["refs/heads/main:refs/heads/main"], None)
+            .unwrap();
+        remote_ref.fetch(&["main"], None, None).unwrap();
+        repo.find_branch("main", git2::BranchType::Local)
+            .unwrap()
+            .set_upstream(Some("origin/main"))
+            .unwrap();
+        std::fs::write(local.join("a.txt"), "one\ntwo\nthree\n").unwrap();
+        fixtures::commit_all(&repo, "ahead");
+        let summary = remote(&local);
+        assert_eq!(
+            (summary.as_ref().and_then(|s| s.parent.as_deref()), summary.clone()),
+            (Some("origin/main"), local_git::read(&local))
+        );
+    }
+
+    #[test]
     fn summary_should_match_local_before_first_commit() {
         let dir = fixtures::temp_dir("remote-unborn");
         git2::Repository::init_opts(&dir, git2::RepositoryInitOptions::new().initial_head("dev"))

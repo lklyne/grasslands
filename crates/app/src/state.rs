@@ -1716,9 +1716,11 @@ pub fn offline_config() -> herdr::Config {
 mod tests {
     use gpui_kit::{AppContext as _, TestAppContext};
 
+    use std::cell::RefCell;
+    use std::rc::Rc;
     use std::sync::Arc;
 
-    use super::{AppState, MachineId, offline_config};
+    use super::{ActiveRoot, AppEvent, AppState, MachineId, offline_config};
     use crate::herdr::{self, ConnectionStatus, Snapshot};
     use crate::setup::Stage;
 
@@ -1805,6 +1807,56 @@ mod tests {
         });
         let after = cx.read(|cx| state.read(cx).active_worktree().cloned());
         assert_eq!(after, before);
+    }
+
+    #[gpui::test]
+    fn the_active_root_names_the_selected_machine(cx: &mut TestAppContext) {
+        let state = with_remote(cx);
+        state.update(cx, |state, cx| {
+            state.set_worktree(&remote(), Some("/home/lyle/api".into()), cx);
+            state.select_machine(&remote(), cx);
+        });
+        let root = cx.read(|cx| state.read(cx).active_root());
+        assert_eq!(
+            root,
+            Some(ActiveRoot {
+                machine: remote(),
+                path: "/home/lyle/api".into()
+            })
+        );
+    }
+
+    #[gpui::test]
+    fn selecting_a_machine_announces_its_root(cx: &mut TestAppContext) {
+        let state = with_remote(cx);
+        let roots = Rc::new(RefCell::new(Vec::new()));
+        let _subscription = cx.update(|cx| {
+            let roots = roots.clone();
+            cx.subscribe(&state, move |_, event, _| {
+                if let AppEvent::ActiveRootChanged(root) = event {
+                    roots.borrow_mut().push(root.as_ref().map(|r| r.machine.clone()));
+                }
+            })
+        });
+        state.update(cx, |state, cx| {
+            state.set_worktree(&remote(), Some("/home/lyle".into()), cx);
+            state.select_machine(&remote(), cx);
+        });
+        assert_eq!(roots.borrow().as_slice(), &[Some(remote())]);
+    }
+
+    #[gpui::test]
+    fn local_files_are_always_available(cx: &mut TestAppContext) {
+        let state = with_remote(cx);
+        let local = cx.read(|cx| state.read(cx).fs_for(&MachineId::Local).map(|f| f.is_local()));
+        assert_eq!(local, Some(true));
+    }
+
+    #[gpui::test]
+    fn a_machine_without_a_link_has_no_files(cx: &mut TestAppContext) {
+        let state = with_remote(cx);
+        let files = cx.read(|cx| state.read(cx).fs_for(&remote()).is_some());
+        assert!(!files);
     }
 
     #[gpui::test]

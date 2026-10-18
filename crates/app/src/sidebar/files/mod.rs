@@ -79,6 +79,8 @@ pub struct FileTree {
     model: Option<FileModel>,
     /// The machine the root is on.
     machine: MachineId,
+    /// Why a saved machine's root can't be listed, shown in place of the tree.
+    root_error: Option<String>,
     watcher: Option<RootWatcher>,
     fs_changes: async_channel::Sender<Vec<PathBuf>>,
     focus: FocusHandle,
@@ -192,6 +194,7 @@ impl FileTree {
             tree,
             model: None,
             machine: MachineId::Local,
+            root_error: None,
             watcher: None,
             fs_changes,
             focus: cx.focus_handle(),
@@ -230,6 +233,7 @@ impl FileTree {
             root.path
         });
         self.model = root.map(FileModel::new);
+        self.root_error = None;
         if let Some(root) = self.root().map(Path::to_path_buf) {
             // GPUI's test scheduler rejects wakeups from the watcher's thread;
             // tests call `on_fs_changes` directly and test the watcher alone.
@@ -384,6 +388,12 @@ impl FileTree {
         };
         let mut failed = None;
         for (dir, listing) in listings {
+            if dir == root && !self.machine.is_local() {
+                self.root_error = listing
+                    .as_ref()
+                    .err()
+                    .map(|error| format!("Can't read {}: {error}", root.display()));
+            }
             match listing {
                 Ok(entries) => model.set_listing(dir, entries),
                 // A dropped connection isn't an empty folder: keep what's shown.
@@ -1211,9 +1221,18 @@ impl Render for FileTree {
                     .text_color(cx.theme().muted_foreground),
             ),
         );
-        let body = match &self.results {
-            Some(results) => render_results(results, &self.machine, cx),
-            None => {
+        let body = match (&self.results, &self.root_error) {
+            (_, Some(message)) => v_flex()
+                .flex_1()
+                .items_center()
+                .justify_center()
+                .p_4()
+                .text_sm()
+                .text_color(cx.theme().muted_foreground)
+                .child(message.clone())
+                .into_any_element(),
+            (Some(results), None) => render_results(results, &self.machine, cx),
+            (None, None) => {
                 let rows = this.clone();
                 let machine = self.machine.clone();
                 let is_local = machine.is_local();
