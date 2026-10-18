@@ -1,8 +1,8 @@
-# Draft cask for github.com/lklyne/homebrew-tap (Casks/grasslands.rb).
+# Template for github.com/lklyne/homebrew-tap (Casks/grasslands.rb).
 # Install: brew install --cask lklyne/tap/grasslands
 #
-# PLACEHOLDER: version and sha256 are not real. Set them from the release
-# asset when cutting a release (see README.md next to this file).
+# version and sha256 here are placeholders; the tap holds the real ones
+# (see README.md next to this file).
 cask "grasslands" do
   version "0.1.0" # PLACEHOLDER
   sha256 "0000000000000000000000000000000000000000000000000000000000000000" # PLACEHOLDER
@@ -22,13 +22,6 @@ cask "grasslands" do
   depends_on formula: "herdr"
 
   app "grasslands.app"
-
-  # Only while releases are unsigned; delete once they're notarized.
-  # See README.md, "Signing".
-  postflight do
-    system_command "/usr/bin/xattr",
-                   args: ["-dr", "com.apple.quarantine", "#{appdir}/grasslands.app"]
-  end
 
   caveats <<~EOS
     grasslands needs herdr 0.9.5. It attaches to herdr's terminals with
