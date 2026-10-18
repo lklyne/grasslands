@@ -27,6 +27,7 @@ use serde_json::json;
 mod chrome;
 mod drags;
 mod settings;
+mod setup;
 mod titlebar;
 
 use super::{ClosePane, NewTab, SplitDown, SplitRight, TerminalArea};
@@ -38,7 +39,16 @@ pub fn requested() -> Option<String> {
 }
 
 pub fn start(scenario: String, area: Entity<TerminalArea>, window: &mut Window, cx: &mut App) {
-    if !["terminals", "chrome", "titlebar", "settings", "drags"].contains(&scenario.as_str()) {
+    if ![
+        "terminals",
+        "chrome",
+        "titlebar",
+        "settings",
+        "drags",
+        "setup",
+    ]
+    .contains(&scenario.as_str())
+    {
         eprintln!("script: unknown scenario {scenario:?}");
         return;
     }
@@ -54,6 +64,7 @@ pub fn start(scenario: String, area: Entity<TerminalArea>, window: &mut Window, 
                 "titlebar" => run.titlebar(cx).await,
                 "settings" => run.settings(cx).await,
                 "drags" => run.drags(cx).await,
+                "setup" => run.setup(cx).await,
                 _ => run.terminals(cx).await,
             };
             if let Err(error) = result {
