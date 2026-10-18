@@ -42,7 +42,9 @@ fn open(cx: &mut App) -> anyhow::Result<()> {
     // Open on the display the user is working on, not the main one.
     let display_id = cx.active_window().and_then(|window| {
         window
-            .update(cx, |_, window, cx| window.display(cx).map(|display| display.id()))
+            .update(cx, |_, window, cx| {
+                window.display(cx).map(|display| display.id())
+            })
             .ok()
             .flatten()
     });

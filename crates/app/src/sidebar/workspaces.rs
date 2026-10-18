@@ -710,10 +710,7 @@ impl WorkspaceList {
             .rounded_sm()
             .cursor_pointer()
             .when(focused, |this| this.bg(theme.sidebar_accent))
-            .hover(|this| {
-                this.bg(theme.sidebar_accent.opacity(0.6))
-                    .pr(actions_width)
-            })
+            .hover(|this| this.bg(theme.sidebar_accent.opacity(0.6)).pr(actions_width))
             .on_click(cx.listener(move |this, _, _, cx| this.activate_workspace(&row_id, cx)))
             .on_mouse_down(MouseButton::Right, move |event, window, cx| {
                 open_workspace_menu(&menu_id, event.position, window, cx);

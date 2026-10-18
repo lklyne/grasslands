@@ -90,8 +90,13 @@ impl Run {
         // Released outside the window: GPUI cancels the drag.
         self.drag_tab(cx, a, Target::Outside).await?;
         Self::sleep(cx, 500).await;
-        self.check_order(cx, &workspace_id, &want, "a tab released outside the window")
-            .await;
+        self.check_order(
+            cx,
+            &workspace_id,
+            &want,
+            "a tab released outside the window",
+        )
+        .await;
 
         // Cancelled mid-drag by the app (`stop_active_drag`), then released.
         self.drag_tab(cx, a, Target::Cancel).await?;
@@ -119,7 +124,10 @@ impl Run {
                 Target::Tab(id) => d.tabs.get(id).map(|b| center(*b)),
                 Target::Terminal => d.panes.values().next().map(|b| center(*b)),
                 Target::Outside => Some(point(px(-200.), px(-200.))),
-                Target::Cancel => d.tabs.get(tab_id).map(|b| center(*b) + point(px(0.), px(120.))),
+                Target::Cancel => d
+                    .tabs
+                    .get(tab_id)
+                    .map(|b| center(*b) + point(px(0.), px(120.))),
             };
             (d.tabs.get(tab_id).map(|b| center(*b)), to)
         })?;
@@ -182,13 +190,16 @@ impl Run {
         let workspace_id = workspace_id.to_owned();
         let matched = self
             .until(cx, Duration::from_secs(5), |area, _, cx| {
-                area.snapshot(cx).workspace(&workspace_id).is_some_and(|w| {
-                    w.tabs.iter().map(|t| &t.info.tab_id).eq(want.iter())
-                })
+                area.snapshot(cx)
+                    .workspace(&workspace_id)
+                    .is_some_and(|w| w.tabs.iter().map(|t| &t.info.tab_id).eq(want.iter()))
             })
             .await;
         let got = self.tab_order(cx, &workspace_id).unwrap_or_default();
-        self.check(matched, &format!("{what}: herdr order {got:?}, want {want:?}"));
+        self.check(
+            matched,
+            &format!("{what}: herdr order {got:?}, want {want:?}"),
+        );
     }
 }
 
