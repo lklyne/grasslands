@@ -340,7 +340,9 @@ fn clicking_a_finished_agent_marks_it_seen(cx: &mut TestAppContext) {
     let row = cx.debug_bounds("agent-w2:p1").unwrap().center();
     cx.simulate_click(row, Modifiers::none());
     cx.run_until_parked();
-    let unseen = state.read_with(cx, |s, _| s.attention().is_unseen_done(s.snapshot(), "w2:p1"));
+    let unseen = state.read_with(cx, |s, _| {
+        s.attention().is_unseen_done(s.snapshot(), "w2:p1")
+    });
     assert!(!unseen);
 }
 

@@ -196,7 +196,10 @@ mod tests {
 
     #[test]
     fn going_offline_from_connected_warns() {
-        let cue = status_cue(&MachineStatus::Connected, &MachineStatus::Offline("x".into()));
+        let cue = status_cue(
+            &MachineStatus::Connected,
+            &MachineStatus::Offline("x".into()),
+        );
         assert_eq!(cue, Some(Cue::Warning));
     }
 

@@ -25,14 +25,14 @@ use gpui_kit::*;
 use crate::actions::OpenContextMenu;
 use crate::chrome::{Confirmation, MenuTarget};
 use crate::herdr::{
-    AgentStatus, PaneDirection, PaneInfo, PaneMoveDestination, RightClickTarget, Snapshot,
-    SplitDirection, SplitTree, Tab,
+    AgentStatus, MachineStatus, PaneDirection, PaneInfo, PaneMoveDestination, RightClickTarget,
+    Snapshot, SplitDirection, SplitTree, Tab,
 };
 use crate::overlay;
 use crate::sidebar::files::DraggedPath;
-use crate::state::{AppEvent, AppState};
+use crate::state::{AppEvent, AppState, MachineId};
 
-use self::terminals::{Launch, Terminals};
+use self::terminals::{AttachCommands, Launch, Terminals};
 
 actions!(
     terminal_area,
@@ -216,6 +216,9 @@ fn record_bounds(
 
 pub struct TerminalArea {
     state: Entity<AppState>,
+    /// How Local's terminals attach; `None` when the app refused its herdr
+    /// endpoint, so a guarded build can never reach the wrong session.
+    launch: Option<Launch>,
     terminals: Terminals,
     focus: FocusHandle,
     overrides: HashMap<SplitKey, RatioOverride>,
@@ -225,7 +228,7 @@ pub struct TerminalArea {
     /// Terminal ids whose attach process was running at the last check.
     attached: HashSet<String>,
     /// Panes already told to forward right-clicks to their program.
-    right_click_set: HashSet<String>,
+    right_click_set: HashSet<(MachineId, String)>,
     /// False while the window shows something else in its place (a file
     /// tab); every native view is hidden then.
     visible: bool,
@@ -255,12 +258,13 @@ impl TerminalArea {
                 this.on_app_event(event, window, cx);
             }),
             cx.observe_global_in::<gpui_kit::component::Theme>(window, |this, _, cx| {
-                this.terminals.reload(None, cx);
+                this.terminals.reload_all(cx);
             }),
         ];
         let mut this = Self {
             state,
-            terminals: Terminals::new(launch),
+            launch,
+            terminals: Terminals::new(),
             focus: cx.focus_handle(),
             overrides: HashMap::new(),
             drag: None,
@@ -355,9 +359,75 @@ impl TerminalArea {
         self.state.read(cx).snapshot().clone()
     }
 
+    /// How to attach `terminal_id` on `machine`: `None` while a remote
+    /// machine's herdr isn't found yet.
+    fn attach_command(
+        &self,
+        machine: &MachineId,
+        terminal_id: &str,
+        cx: &App,
+    ) -> Option<Result<String, String>> {
+        match machine {
+            MachineId::Local => Some(
+                self.launch
+                    .as_ref()
+                    .map(|launch| launch.attach_command(terminal_id))
+                    .ok_or_else(|| "herdr is disconnected".to_owned()),
+            ),
+            MachineId::Remote(_) => self
+                .state
+                .read(cx)
+                .machine(machine)?
+                .attach_command(terminal_id)
+                .map(Ok),
+        }
+    }
+
+    /// Commands for `machine`'s terminals that have no view yet.
+    fn attach_commands(
+        &self,
+        machine: &MachineId,
+        snapshot: &Snapshot,
+        cx: &App,
+    ) -> AttachCommands {
+        snapshot
+            .panes
+            .values()
+            .filter(|pane| !self.terminals.has(machine, &pane.terminal_id))
+            .filter_map(|pane| {
+                let command = self.attach_command(machine, &pane.terminal_id, cx)?;
+                Some((pane.terminal_id.clone(), command))
+            })
+            .collect()
+    }
+
+    /// Drops views on other machines whose panes closed, and every view on a
+    /// machine that's gone from the list. Their live views stay attached, so
+    /// switching back doesn't re-attach them.
+    fn sync_other_machines(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        for machine in self.terminals.other_machines() {
+            let snapshot = self
+                .state
+                .read(cx)
+                .machine(&machine)
+                .map(|m| m.snapshot().clone());
+            match snapshot {
+                None => self.terminals.forget_machine(&machine, cx),
+                // An empty cache is a sync that hasn't read yet, not a
+                // machine without panes.
+                Some(snapshot) if snapshot.generation == 0 => {}
+                Some(snapshot) => {
+                    self.terminals
+                        .reconcile(&machine, &snapshot, None, window, cx);
+                }
+            }
+        }
+    }
+
     fn on_app_event(&mut self, event: &AppEvent, window: &mut Window, cx: &mut Context<Self>) {
         match event {
             AppEvent::SnapshotReplaced => self.sync_with_snapshot(window, cx),
+            AppEvent::MachinesChanged => self.sync_other_machines(window, cx),
             // Keyboard focus follows herdr's focus, but only if it is already
             // in the terminal area: an agent focusing a pane must not pull
             // typing out of the editor.
@@ -375,7 +445,20 @@ impl TerminalArea {
     /// Reconciles terminals and per-pane settings with a fresh snapshot.
     fn sync_with_snapshot(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let snapshot = self.snapshot(cx);
-        let changes = self.terminals.reconcile(&snapshot, window, cx);
+        let machine = self.state.read(cx).selected().clone();
+        if self.terminals.selected() != &machine {
+            // Divider overrides and the shown tab are by herdr id, which
+            // another machine reuses.
+            self.terminals.select(&machine, cx);
+            self.overrides.clear();
+            self.drag = None;
+            self.shown_tab = None;
+            self.focus_on_show = None;
+        }
+        let commands = self.attach_commands(&machine, &snapshot, cx);
+        let changes = self
+            .terminals
+            .reconcile(&machine, &snapshot, Some(&commands), window, cx);
         if !changes.spawned.is_empty() || !changes.dropped.is_empty() {
             tracing::info!(
                 "terminals: spawned {:?}, dropped {:?}, total {}",
@@ -388,9 +471,12 @@ impl TerminalArea {
         // `right_click: "pane"`: programs in the pane get right-clicks; our
         // context menu is on the pane header.
         self.right_click_set
-            .retain(|pane_id| snapshot.panes.contains_key(pane_id));
+            .retain(|(on, pane_id)| on != &machine || snapshot.panes.contains_key(pane_id));
         for pane_id in snapshot.panes.keys() {
-            if self.right_click_set.insert(pane_id.clone()) {
+            if self
+                .right_click_set
+                .insert((machine.clone(), pane_id.clone()))
+            {
                 self.state
                     .read(cx)
                     .set_right_click(pane_id, RightClickTarget::Pane, cx)
@@ -1192,8 +1278,7 @@ impl TerminalArea {
             _ => {
                 let message = self
                     .terminals
-                    .failed
-                    .get(&terminal_id)
+                    .failure(&terminal_id)
                     .cloned()
                     .unwrap_or_else(|| "Detached: another client has this terminal.".to_owned());
                 let reattach_pane = pane.clone();
@@ -1219,7 +1304,11 @@ impl TerminalArea {
                             .border_color(theme.border)
                             .child("Reattach")
                             .on_click(cx.listener(move |this, _, window, cx| {
-                                this.terminals.reattach(&reattach_pane, window, cx);
+                                let machine = this.terminals.selected().clone();
+                                let command = this
+                                    .attach_command(&machine, &reattach_pane.terminal_id, cx)
+                                    .unwrap_or_else(|| Err(format!("{machine} isn't connected")));
+                                this.terminals.reattach(&reattach_pane, command, window, cx);
                                 cx.notify();
                             })),
                     )
@@ -1360,6 +1449,15 @@ impl TerminalArea {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let selected = self.state.read(cx).selected_machine();
+        if !selected.id().is_local() {
+            let message = format!("Can't drop files into {} terminals yet", selected.label());
+            crate::sounds::play(cues::Cue::Error, crate::sounds::subtle());
+            if let Some(chrome) = crate::chrome::get(window, cx) {
+                chrome.update(cx, |chrome, cx| chrome.toast(message, window, cx));
+            }
+            return;
+        }
         crate::sounds::play(cues::Cue::Tap, cues::PlayOptions::default());
         let snapshot = self.snapshot(cx);
         let Some(pane) = snapshot.pane(pane_id) else {
@@ -1477,12 +1575,28 @@ impl Render for TerminalArea {
             drawn.reattach.clear();
         }
 
-        let setup = crate::setup::render(&self.state, cx);
+        // The setup screen is about Local's herdr.
+        let setup = if self.state.read(cx).selected().is_local() {
+            crate::setup::render(&self.state, cx)
+        } else {
+            None
+        };
         let body = match (setup, Self::active_tab(&snapshot)) {
             (Some(setup), _) => setup,
             (None, None) => {
                 let state = self.state.read(cx);
-                let message = if let Some(config) = state.herdr_config.as_ref()
+                let machine = state.selected_machine();
+                let message = if !machine.id().is_local() {
+                    match machine.status() {
+                        MachineStatus::Connected if snapshot.generation != 0 => {
+                            format!("No workspaces on {}.", machine.label())
+                        }
+                        MachineStatus::Connected | MachineStatus::Connecting => {
+                            format!("Connecting to {}…", machine.label())
+                        }
+                        _ => format!("{} is offline", machine.label()),
+                    }
+                } else if let Some(config) = state.herdr_config.as_ref()
                     && snapshot.generation == 0
                 {
                     format!(

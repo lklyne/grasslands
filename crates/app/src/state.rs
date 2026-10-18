@@ -311,7 +311,9 @@ impl AppState {
             self.selected_machine().focused_pane.clone(),
         ));
         if was_local != self.selected.is_local() {
-            cx.emit(AppEvent::ActiveWorktreeChanged(self.active_worktree().cloned()));
+            cx.emit(AppEvent::ActiveWorktreeChanged(
+                self.active_worktree().cloned(),
+            ));
         }
         cx.notify();
     }
@@ -365,8 +367,9 @@ impl AppState {
             MachineId::Remote(id) => diff.start.iter().any(|p| &p.id == id),
         };
         let selected_restarted = restarted(&self.selected);
-        self.machines
-            .retain(|m| !restarted(&m.id) && !matches!(&m.id, MachineId::Remote(id) if diff.stop.contains(id)));
+        self.machines.retain(|m| {
+            !restarted(&m.id) && !matches!(&m.id, MachineId::Remote(id) if diff.stop.contains(id))
+        });
         for (id, label) in diff.relabel {
             if let Some(machine) = self.machine_mut(&MachineId::Remote(id)) {
                 machine.label = label;
@@ -397,7 +400,10 @@ impl AppState {
 
     fn start_machine(&self, profile: MachineProfile, cx: &mut Context<Self>) -> Option<Machine> {
         let Some(dir) = machines::socket_dir() else {
-            tracing::warn!("machine {}: no socket directory (HOME unset)", profile.label);
+            tracing::warn!(
+                "machine {}: no socket directory (HOME unset)",
+                profile.label
+            );
             return None;
         };
         let id = MachineId::Remote(profile.id.clone());
@@ -511,7 +517,11 @@ impl AppState {
         cx: &mut Context<Self>,
     ) -> Task<anyhow::Result<()>> {
         sounds::play(Cue::Tap, sounds::subtle());
-        self.machine_command(id, vec!["rename".into(), "--label".into(), label.into()], cx)
+        self.machine_command(
+            id,
+            vec!["rename".into(), "--label".into(), label.into()],
+            cx,
+        )
     }
 
     pub fn disable_machine(
@@ -557,6 +567,18 @@ impl AppState {
                 }
             }
         }
+    }
+
+    /// A remote machine with no link, for tests.
+    #[cfg(test)]
+    fn add_test_machine(&mut self, profile_id: &str, label: &str, snapshot: Arc<Snapshot>) {
+        let mut machine = Machine::new(
+            MachineId::Remote(profile_id.into()),
+            label.into(),
+            MachineStatus::Connected,
+        );
+        machine.snapshot = snapshot;
+        self.machines.push(machine);
     }
 
     fn refresh_local_status(&mut self) {
@@ -1197,8 +1219,108 @@ pub fn offline_config() -> herdr::Config {
 mod tests {
     use gpui_kit::{AppContext as _, TestAppContext};
 
-    use super::{AppState, offline_config};
-    use crate::herdr::{self, ConnectionStatus};
+    use std::sync::Arc;
+
+    use super::{AppState, MachineId, offline_config};
+    use crate::herdr::{self, ConnectionStatus, Snapshot};
+
+    fn agent(pane: &str) -> herdr::Agent {
+        herdr::Agent {
+            pane_id: pane.into(),
+            terminal_id: String::new(),
+            workspace_id: "w1".into(),
+            tab_id: "w1:t1".into(),
+            focused: false,
+            agent_status: herdr::AgentStatus::Working,
+            revision: 0,
+            name: None,
+            agent: Some("claude".into()),
+            display_agent: None,
+            cwd: None,
+            foreground_cwd: None,
+            title: None,
+            completion_seq: None,
+            state_change_seq: 0,
+            interactive_ready: false,
+            launch_pending: false,
+            state_labels: Default::default(),
+        }
+    }
+
+    fn remote() -> MachineId {
+        MachineId::Remote("b87d".into())
+    }
+
+    fn with_remote(cx: &mut TestAppContext) -> gpui_kit::Entity<AppState> {
+        let state = cx.new(|cx| AppState::new(Ok(offline_config()), cx));
+        state.update(cx, |state, _| {
+            let snapshot = Snapshot {
+                generation: 7,
+                agents: vec![agent("w1:p1")],
+                ..Snapshot::default()
+            };
+            state.add_test_machine("b87d", "dockerbox", Arc::new(snapshot));
+        });
+        state
+    }
+
+    #[gpui::test]
+    fn local_is_selected_at_launch(cx: &mut TestAppContext) {
+        let state = with_remote(cx);
+        let selected = cx.read(|cx| state.read(cx).selected().clone());
+        assert_eq!(selected, MachineId::Local);
+    }
+
+    #[gpui::test]
+    fn snapshot_follows_the_selected_machine(cx: &mut TestAppContext) {
+        let state = with_remote(cx);
+        state.update(cx, |state, cx| state.select_machine(&remote(), cx));
+        let generation = cx.read(|cx| state.read(cx).snapshot().generation);
+        assert_eq!(generation, 7);
+    }
+
+    #[gpui::test]
+    fn selecting_an_unknown_machine_keeps_the_selection(cx: &mut TestAppContext) {
+        let state = with_remote(cx);
+        state.update(cx, |state, cx| {
+            state.select_machine(&MachineId::Remote("gone".into()), cx);
+        });
+        let selected = cx.read(|cx| state.read(cx).selected().clone());
+        assert_eq!(selected, MachineId::Local);
+    }
+
+    #[gpui::test]
+    fn a_remote_machine_has_no_active_worktree(cx: &mut TestAppContext) {
+        let state = with_remote(cx);
+        state.update(cx, |state, cx| state.select_machine(&remote(), cx));
+        let root = cx.read(|cx| state.read(cx).active_worktree().cloned());
+        assert_eq!(root, None);
+    }
+
+    #[gpui::test]
+    fn selecting_local_again_restores_its_worktree(cx: &mut TestAppContext) {
+        let state = with_remote(cx);
+        let before = cx.read(|cx| state.read(cx).active_worktree().cloned());
+        state.update(cx, |state, cx| {
+            state.select_machine(&remote(), cx);
+            state.select_machine(&MachineId::Local, cx);
+        });
+        let after = cx.read(|cx| state.read(cx).active_worktree().cloned());
+        assert_eq!(after, before);
+    }
+
+    #[gpui::test]
+    fn agents_name_their_machine(cx: &mut TestAppContext) {
+        let state = with_remote(cx);
+        let machines: Vec<MachineId> = cx.read(|cx| {
+            state
+                .read(cx)
+                .agents()
+                .map(|(machine, _)| machine.clone())
+                .collect()
+        });
+        assert_eq!(machines, vec![remote()]);
+    }
 
     fn refused() -> herdr::Error {
         herdr::Error::Refused("socket outside the dev root".into())

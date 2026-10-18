@@ -5,6 +5,10 @@
 //! herdr restart hands out new terminal ids and so gets fresh views. The set
 //! is reconciled against every snapshot herdr-client delivers, which follows
 //! `pane.created`, `pane.closed` and `pane.moved` within one re-read.
+//!
+//! Terminal ids are per herdr server, so views are keyed by machine too. Only
+//! the selected machine's views are shown; another machine's stay attached
+//! (in the background) until their panes close or the machine goes away.
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -14,6 +18,7 @@ use gpui_kit::*;
 use gpui_libghostty::{TerminalConfiguration, TerminalOptions};
 
 use crate::herdr::{self, PaneInfo, Snapshot};
+use crate::state::MachineId;
 
 gpui_libghostty::bind_gpui!(gpui_kit);
 
@@ -47,7 +52,7 @@ impl Launch {
         }
     }
 
-    fn attach_command(&self, terminal_id: &str) -> String {
+    pub fn attach_command(&self, terminal_id: &str) -> String {
         let bin = shell_quote(&self.bin.to_string_lossy());
         match &self.session {
             Some(session) => format!(
@@ -74,18 +79,38 @@ fn shell_quote(value: &str) -> String {
     }
 }
 
+/// A terminal on one machine: herdr terminal ids are only unique per server.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct TerminalKey {
+    machine: MachineId,
+    terminal_id: String,
+}
+
+impl TerminalKey {
+    fn new(machine: &MachineId, terminal_id: &str) -> Self {
+        Self {
+            machine: machine.clone(),
+            terminal_id: terminal_id.to_owned(),
+        }
+    }
+}
+
+/// How to attach each new terminal in a reconcile, by terminal id: the
+/// command, or why it can't attach. A terminal missing from it waits (a
+/// remote machine whose herdr isn't found yet).
+pub type AttachCommands = HashMap<String, Result<String, String>>;
+
 pub struct Terminals {
-    /// `None` when the app refused its herdr endpoint: nothing is attached,
-    /// so a guarded build can never reach the wrong session.
-    launch: Option<Launch>,
-    views: HashMap<String, TerminalView>,
-    /// Spawn errors by terminal id, shown in place of the terminal.
-    pub failed: HashMap<String, String>,
+    /// The machine whose terminals `get`, `iter` and `show_only` see.
+    selected: MachineId,
+    views: HashMap<TerminalKey, TerminalView>,
+    /// Spawn errors, shown in place of the terminal.
+    failed: HashMap<TerminalKey, String>,
     /// Extra Ghostty config lines per terminal (later: a status shader).
-    overrides: HashMap<String, String>,
+    overrides: HashMap<TerminalKey, String>,
     config_dir: PathBuf,
     /// Terminals whose attach process has exited, already logged.
-    detached: HashSet<String>,
+    detached: HashSet<TerminalKey>,
 }
 
 /// What changed in one reconcile.
@@ -96,12 +121,12 @@ pub struct Reconciled {
 }
 
 impl Terminals {
-    pub fn new(launch: Option<Launch>) -> Self {
+    pub fn new() -> Self {
         let config_dir = std::env::temp_dir()
             .join(format!("grasslands-{}", std::process::id()))
             .join("ghostty");
         Self {
-            launch,
+            selected: MachineId::Local,
             views: HashMap::new(),
             failed: HashMap::new(),
             overrides: HashMap::new(),
@@ -110,48 +135,97 @@ impl Terminals {
         }
     }
 
+    pub fn selected(&self) -> &MachineId {
+        &self.selected
+    }
+
+    /// Points `get`, `iter` and `show_only` at another machine's terminals,
+    /// hiding the previous machine's. Its views stay attached.
+    pub fn select(&mut self, machine: &MachineId, cx: &mut App) {
+        if &self.selected == machine {
+            return;
+        }
+        self.hide_all(cx);
+        self.selected = machine.clone();
+    }
+
     /// Logs each terminal whose attach process exited, once per exit.
     pub fn report_detached(&mut self, cx: &App) {
-        for (id, view) in &self.views {
+        for (key, view) in &self.views {
             if view.terminal.read(cx).is_alive() {
-                self.detached.remove(id);
-            } else if self.detached.insert(id.clone()) {
+                self.detached.remove(key);
+            } else if self.detached.insert(key.clone()) {
                 tracing::warn!(
-                    "terminal {id} (pane {}): attach process exited",
+                    "terminal {} on {} (pane {}): attach process exited",
+                    key.terminal_id,
+                    key.machine,
                     view.pane_id
                 );
             }
         }
-        self.detached.retain(|id| self.views.contains_key(id));
+        self.detached.retain(|key| self.views.contains_key(key));
     }
 
+    /// The selected machine's view of `terminal_id`.
     pub fn get(&self, terminal_id: &str) -> Option<&TerminalView> {
-        self.views.get(terminal_id)
+        self.views
+            .get(&TerminalKey::new(&self.selected, terminal_id))
     }
 
+    /// Whether `machine` has a view (or a failure) for `terminal_id`.
+    pub fn has(&self, machine: &MachineId, terminal_id: &str) -> bool {
+        let key = TerminalKey::new(machine, terminal_id);
+        self.views.contains_key(&key) || self.failed.contains_key(&key)
+    }
+
+    /// Why the selected machine's `terminal_id` failed to spawn.
+    pub fn failure(&self, terminal_id: &str) -> Option<&String> {
+        self.failed
+            .get(&TerminalKey::new(&self.selected, terminal_id))
+    }
+
+    /// Views on every machine.
     pub fn len(&self) -> usize {
         self.views.len()
     }
 
+    /// The selected machine's views, by terminal id.
     pub fn iter(&self) -> impl Iterator<Item = (&String, &TerminalView)> {
-        self.views.iter()
-    }
-
-    /// The terminal id holding GPUI keyboard focus, if any.
-    pub fn focused(&self, window: &Window, cx: &App) -> Option<&str> {
         self.views
             .iter()
+            .filter(|(key, _)| key.machine == self.selected)
+            .map(|(key, view)| (&key.terminal_id, view))
+    }
+
+    /// The machines that have views, other than the selected one.
+    pub fn other_machines(&self) -> HashSet<MachineId> {
+        self.views
+            .keys()
+            .chain(self.failed.keys())
+            .map(|key| &key.machine)
+            .filter(|machine| **machine != self.selected)
+            .cloned()
+            .collect()
+    }
+
+    /// The selected machine's terminal holding GPUI keyboard focus, if any.
+    pub fn focused(&self, window: &Window, cx: &App) -> Option<&str> {
+        self.iter()
             .find(|(_, view)| view.terminal.focus_handle(cx).is_focused(window))
             .map(|(id, _)| id.as_str())
     }
 
-    /// Spawns views for new terminals and drops views whose terminal is gone.
-    /// A view whose attach process died while its terminal still exists (e.g.
-    /// another client took it over) is kept: the area shows it as detached
-    /// and offers [`Self::reattach`], rather than fighting the other client.
+    /// Drops `machine`'s views whose terminal is gone from `snapshot`, then
+    /// spawns views for its new terminals that `attach` has a command for
+    /// (`None`: drop only). A view whose attach process died while its
+    /// terminal still exists (e.g. another client took it over) is kept: the
+    /// area shows it as detached and offers [`Self::reattach`], rather than
+    /// fighting the other client.
     pub fn reconcile<T: 'static>(
         &mut self,
+        machine: &MachineId,
         snapshot: &Snapshot,
+        attach: Option<&AttachCommands>,
         window: &mut Window,
         cx: &mut Context<T>,
     ) -> Reconciled {
@@ -161,98 +235,129 @@ impl Terminals {
             .values()
             .map(|pane| (pane.terminal_id.as_str(), pane))
             .collect();
+        let is_live = |key: &TerminalKey| {
+            &key.machine != machine || live.contains_key(key.terminal_id.as_str())
+        };
 
-        let gone: Vec<String> = self
+        let gone: Vec<TerminalKey> = self
             .views
-            .iter()
-            .filter(|(id, _)| !live.contains_key(id.as_str()))
-            .map(|(id, _)| id.clone())
+            .keys()
+            .filter(|key| !is_live(key))
+            .cloned()
             .collect();
-        for id in gone {
-            if let Some(view) = self.views.remove(&id) {
-                // Dropping the entity frees the native surface and ends the
-                // attach process; hide first so nothing lingers on screen.
-                view.terminal
-                    .update(cx, |terminal, _| terminal.set_visible(false));
-                let _ = std::fs::remove_file(&view.config_path);
+        for key in gone {
+            if let Some(view) = self.views.remove(&key) {
+                Self::discard(view, cx);
             }
-            result.dropped.push(id);
+            result.dropped.push(key.terminal_id);
         }
-        self.failed.retain(|id, _| live.contains_key(id.as_str()));
-        self.overrides
-            .retain(|id, _| live.contains_key(id.as_str()));
+        self.failed.retain(|key, _| is_live(key));
+        self.overrides.retain(|key, _| is_live(key));
 
         for (terminal_id, pane) in live {
-            if let Some(view) = self.views.get_mut(terminal_id) {
+            let key = TerminalKey::new(machine, terminal_id);
+            if let Some(view) = self.views.get_mut(&key) {
                 view.pane_id.clone_from(&pane.pane_id);
                 continue;
             }
-            if self.failed.contains_key(terminal_id) {
+            if self.failed.contains_key(&key) {
                 continue;
             }
-            match self.spawn(pane, window, cx) {
+            let Some(command) = attach.and_then(|attach| attach.get(terminal_id)) else {
+                continue;
+            };
+            match self.spawn(&key, pane, command.clone(), window, cx) {
                 Ok(view) => {
-                    self.views.insert(terminal_id.to_owned(), view);
+                    self.views.insert(key, view);
                     result.spawned.push(terminal_id.to_owned());
                 }
                 Err(error) => {
-                    tracing::error!("terminal {terminal_id} (pane {}): {error:#}", pane.pane_id);
-                    self.failed
-                        .insert(terminal_id.to_owned(), format!("{error:#}"));
+                    tracing::error!(
+                        "terminal {terminal_id} on {machine} (pane {}): {error:#}",
+                        pane.pane_id
+                    );
+                    self.failed.insert(key, format!("{error:#}"));
                 }
             }
         }
         result
     }
 
-    /// Whether the terminal's attach process is still running.
+    /// Drops every view on `machine` (it was removed or restarted).
+    pub fn forget_machine(&mut self, machine: &MachineId, cx: &mut App) {
+        let keys: Vec<TerminalKey> = self
+            .views
+            .keys()
+            .filter(|key| &key.machine == machine)
+            .cloned()
+            .collect();
+        for key in keys {
+            if let Some(view) = self.views.remove(&key) {
+                Self::discard(view, cx);
+            }
+        }
+        self.failed.retain(|key, _| &key.machine != machine);
+        self.overrides.retain(|key, _| &key.machine != machine);
+    }
+
+    fn discard(view: TerminalView, cx: &mut App) {
+        // Dropping the entity frees the native surface and ends the attach
+        // process; hide first so nothing lingers on screen.
+        view.terminal
+            .update(cx, |terminal, _| terminal.set_visible(false));
+        let _ = std::fs::remove_file(&view.config_path);
+    }
+
+    /// Whether the selected machine's terminal's attach process is running.
     pub fn is_attached(&self, terminal_id: &str, cx: &App) -> bool {
-        self.views
-            .get(terminal_id)
+        self.get(terminal_id)
             .is_some_and(|view| view.terminal.read(cx).is_alive())
     }
 
-    /// Replaces a detached (or failed) view with a fresh attach.
+    /// Replaces a detached (or failed) view on the selected machine with a
+    /// fresh attach.
     pub fn reattach<T: 'static>(
         &mut self,
         pane: &PaneInfo,
+        command: Result<String, String>,
         window: &mut Window,
         cx: &mut Context<T>,
     ) {
-        if let Some(view) = self.views.remove(&pane.terminal_id) {
+        let key = TerminalKey::new(&self.selected, &pane.terminal_id);
+        if let Some(view) = self.views.remove(&key) {
             view.terminal
                 .update(cx, |terminal, _| terminal.set_visible(false));
         }
-        self.failed.remove(&pane.terminal_id);
-        match self.spawn(pane, window, cx) {
+        self.failed.remove(&key);
+        match self.spawn(&key, pane, command, window, cx) {
             Ok(view) => {
-                self.views.insert(pane.terminal_id.clone(), view);
+                self.views.insert(key, view);
             }
             Err(error) => {
-                self.failed
-                    .insert(pane.terminal_id.clone(), format!("{error:#}"));
+                self.failed.insert(key, format!("{error:#}"));
             }
         }
     }
 
     fn spawn<T: 'static>(
         &self,
+        key: &TerminalKey,
         pane: &PaneInfo,
+        command: Result<String, String>,
         window: &mut Window,
         cx: &mut Context<T>,
     ) -> anyhow::Result<TerminalView> {
-        let launch = self
-            .launch
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("herdr is disconnected"))?;
-        let config_path = self.write_config(&pane.terminal_id, cx)?;
+        let command = command.map_err(anyhow::Error::msg)?;
+        let config_path = self.write_config(key, cx)?;
+        // A remote pane's folder is on the remote machine.
         let cwd = pane
             .working_dir()
+            .filter(|_| key.machine.is_local())
             .map(PathBuf::from)
             .filter(|dir| dir.is_dir())
             .or_else(|| std::env::var_os("HOME").map(PathBuf::from))
             .unwrap_or_else(|| PathBuf::from("/"));
-        let mut options = TerminalOptions::new(launch.attach_command(&pane.terminal_id), cwd);
+        let mut options = TerminalOptions::new(command, cwd);
         options.configuration = TerminalConfiguration::File(config_path.clone());
         options.focus_on_spawn = false;
         options.quiet_login = true;
@@ -270,9 +375,10 @@ impl Terminals {
     /// Shows exactly the terminals in `visible` and hides the rest. A native
     /// view that drops out of the layout keeps its last frame, so it has to be
     /// hidden explicitly; a shown one appears at its next prepaint.
+    /// `visible` names the selected machine's terminals.
     pub fn show_only(&mut self, visible: &HashSet<&str>, cx: &mut App) {
-        for (id, view) in &mut self.views {
-            let show = visible.contains(id.as_str());
+        for (key, view) in &mut self.views {
+            let show = key.machine == self.selected && visible.contains(key.terminal_id.as_str());
             if view.shown != show {
                 view.shown = show;
                 view.terminal
@@ -287,29 +393,36 @@ impl Terminals {
     }
 
     /// Replaces one terminal's extra config lines and reloads it in place.
+    /// For one of the selected machine's terminals.
     pub fn set_overrides(&mut self, terminal_id: &str, lines: String, cx: &mut App) {
-        self.overrides.insert(terminal_id.to_owned(), lines);
-        self.reload(Some(terminal_id), cx);
+        let key = TerminalKey::new(&self.selected, terminal_id);
+        self.overrides.insert(key.clone(), lines);
+        self.reload(Some(&key), cx);
     }
 
     /// Rewrites config files (all, or one) and reloads them without
     /// restarting the terminals. Called when the theme changes.
-    pub fn reload(&mut self, only: Option<&str>, cx: &mut App) {
-        let ids: Vec<String> = self
+    pub fn reload_all(&mut self, cx: &mut App) {
+        self.reload(None, cx);
+    }
+
+    fn reload(&mut self, only: Option<&TerminalKey>, cx: &mut App) {
+        let keys: Vec<TerminalKey> = self
             .views
             .keys()
-            .filter(|id| only.is_none_or(|only| only == id.as_str()))
+            .filter(|key| only.is_none_or(|only| only == *key))
             .cloned()
             .collect();
-        for id in ids {
-            let path = match self.write_config(&id, cx) {
+        for key in keys {
+            let id = &key.terminal_id;
+            let path = match self.write_config(&key, cx) {
                 Ok(path) => path,
                 Err(error) => {
                     tracing::error!("ghostty config for {id}: {error:#}");
                     continue;
                 }
             };
-            if let Some(view) = self.views.get(&id) {
+            if let Some(view) = self.views.get(&key) {
                 let result = view
                     .terminal
                     .update(cx, |terminal, _| terminal.load_config_file(&path));
@@ -322,7 +435,7 @@ impl Terminals {
 
     /// The terminal's own config file: the user's Ghostty settings for the
     /// app, then colors from the app theme, then per-terminal overrides.
-    fn write_config(&self, terminal_id: &str, cx: &App) -> anyhow::Result<PathBuf> {
+    fn write_config(&self, key: &TerminalKey, cx: &App) -> anyhow::Result<PathBuf> {
         std::fs::create_dir_all(&self.config_dir)?;
         let mut contents = String::new();
         if let Some(user) = user_config_path().filter(|path| path.is_file()) {
@@ -330,13 +443,15 @@ impl Terminals {
             contents.push('\n');
         }
         contents.push_str(&theme_config(cx));
-        if let Some(extra) = self.overrides.get(terminal_id) {
+        if let Some(extra) = self.overrides.get(key) {
             contents.push_str(extra);
             contents.push('\n');
         }
-        let path = self
-            .config_dir
-            .join(format!("{}.ghostty", sanitize(terminal_id)));
+        let path = self.config_dir.join(format!(
+            "{}-{}.ghostty",
+            sanitize(&key.machine.to_string()),
+            sanitize(&key.terminal_id)
+        ));
         std::fs::write(&path, contents)?;
         Ok(path)
     }
