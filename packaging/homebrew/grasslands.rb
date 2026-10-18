@@ -18,7 +18,6 @@ cask "grasslands" do
   end
 
   depends_on arch: :arm64
-  depends_on formula: "herdr"
   depends_on macos: :ventura
 
   app "grasslands.app"
@@ -31,7 +30,10 @@ cask "grasslands" do
   ]
 
   caveats <<~EOS
-    grasslands needs herdr 0.9.5. It attaches to herdr's terminals with
-    --takeover, so a herdr TUI attached to the same panes loses them.
+    grasslands runs on herdr 0.9.5 or newer. Open grasslands to finish
+    setup: it uses the herdr on your PATH, and offers to install or update
+    it (through Homebrew, mise or herdr's installer) when it's missing or
+    old. It attaches to herdr's terminals with --takeover, so a herdr TUI
+    attached to the same panes loses them.
   EOS
 end

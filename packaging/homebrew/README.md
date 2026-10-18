@@ -38,4 +38,4 @@ The release builds on Apple Silicon only, so the cask has `depends_on arch: :arm
 
 ## herdr
 
-The cask has `depends_on formula: "herdr"`, which can't pin a version. If herdr ships a protocol change, users get the new herdr on `brew upgrade` before grasslands catches up. The caveat says 0.9.5 is the version that works. herdr-client doesn't check the server's `protocol` field yet; checking it at connect time and showing a clear error would make that failure obvious.
+The cask doesn't depend on the herdr formula. grasslands uses the herdr on the user's PATH, the same one their terminal runs, and a `depends_on` would put a second, Homebrew herdr next to one from herdr's own installer or mise. On launch the app runs `herdr status --json` and, when herdr is missing, older than 0.9.5, or running an older server, shows a setup screen that installs, updates or restarts it. See `docs/decisions/0018-herdr-setup.md`.
