@@ -26,6 +26,7 @@ use serde_json::json;
 
 mod chrome;
 mod drags;
+mod machines;
 mod settings;
 mod setup;
 mod titlebar;
@@ -46,6 +47,7 @@ pub fn start(scenario: String, area: Entity<TerminalArea>, window: &mut Window, 
         "settings",
         "drags",
         "setup",
+        "machine-ui",
     ]
     .contains(&scenario.as_str())
     {
@@ -65,6 +67,7 @@ pub fn start(scenario: String, area: Entity<TerminalArea>, window: &mut Window, 
                 "settings" => run.settings(cx).await,
                 "drags" => run.drags(cx).await,
                 "setup" => run.setup(cx).await,
+                "machine-ui" => run.machine_ui(cx).await,
                 _ => run.terminals(cx).await,
             };
             if let Err(error) = result {
