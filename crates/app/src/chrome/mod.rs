@@ -329,6 +329,19 @@ impl Chrome {
         self.refresh_plugin_actions(cx);
     }
 
+    /// Opens a context menu of just `entries` at `position` (main-window
+    /// coordinates), for menus about something herdr's snapshot doesn't
+    /// hold, such as a saved machine.
+    pub fn menu(
+        &mut self,
+        entries: Vec<MenuEntry>,
+        position: Point<Pixels>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.show_menu(entries, position, window, cx);
+    }
+
     fn show_menu(
         &mut self,
         entries: Vec<MenuEntry>,
