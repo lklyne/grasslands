@@ -589,6 +589,7 @@ impl TerminalArea {
             AppEvent::SnapshotReplaced => self.sync_with_snapshot(window, cx),
             AppEvent::MachinesChanged => self.sync_other_machines(window, cx),
             AppEvent::MachineConnected(machine) => self.reattach_machine(machine, window, cx),
+            AppEvent::MachineRestarted(machine) => self.terminals.forget_machine(machine, cx),
             // Keyboard focus follows herdr's focus, but only if it is already
             // in the terminal area: an agent focusing a pane must not pull
             // typing out of the editor.

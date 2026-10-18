@@ -71,6 +71,9 @@ pub enum AppEvent {
     /// A machine's link (re)connected. Terminals whose attach died with the
     /// old connection attach again.
     MachineConnected(MachineId),
+    /// A machine's link was replaced (its target, session or enabled flag
+    /// changed): its terminals' attaches died with the old link.
+    MachineRestarted(MachineId),
     /// Another machine was selected; `SnapshotReplaced` follows.
     MachineSelected(MachineId),
     /// The file tree renamed or moved a file or folder; open editor tabs at or
@@ -181,6 +184,7 @@ pub struct AppState {
     _cwd_poll: Option<Task<()>>,
     _check: Option<Task<()>>,
     _machines_poll: Option<Task<()>>,
+    _quit: Option<Subscription>,
 }
 
 impl EventEmitter<AppEvent> for AppState {}
@@ -218,6 +222,12 @@ impl AppState {
             this.check_herdr(cx);
             this._machines_poll = Some(Self::poll_machines(cx));
         }
+        // GPUI's quit ends the process without dropping entities, so the
+        // links (and their ssh masters) are stopped here.
+        this._quit = Some(cx.on_app_quit(|this, _| {
+            stop_links(this.take_links(|_| true));
+            async {}
+        }));
         this
     }
 
@@ -241,6 +251,7 @@ impl AppState {
             _cwd_poll: None,
             _check: None,
             _machines_poll: None,
+            _quit: None,
         }
     }
 
@@ -386,9 +397,21 @@ impl AppState {
             MachineId::Remote(id) => diff.start.iter().any(|p| &p.id == id),
         };
         let selected_restarted = restarted(&self.selected);
-        self.machines.retain(|m| {
-            !restarted(&m.id) && !matches!(&m.id, MachineId::Remote(id) if diff.stop.contains(id))
-        });
+        let replaced: Vec<MachineId> = self
+            .machines
+            .iter()
+            .map(|m| m.id.clone())
+            .filter(|id| restarted(id))
+            .collect();
+        let gone = |id: &MachineId| {
+            restarted(id) || matches!(id, MachineId::Remote(id) if diff.stop.contains(id))
+        };
+        // Stopping a link waits on ssh, so it happens off the main thread.
+        let links = self.take_links(gone);
+        cx.background_executor()
+            .spawn(async move { stop_links(links) })
+            .detach();
+        self.machines.retain(|m| !gone(&m.id));
         for (id, label) in diff.relabel {
             if let Some(machine) = self.machine_mut(&MachineId::Remote(id)) {
                 machine.label = label;
@@ -404,6 +427,9 @@ impl AppState {
             MachineId::Local => 0,
             MachineId::Remote(id) => 1 + saved.iter().position(|p| &p.id == id).unwrap_or(0),
         });
+        for id in replaced {
+            cx.emit(AppEvent::MachineRestarted(id));
+        }
         let selected = machine_list::reselect(&self.selected, self.machines.iter().map(|m| &m.id));
         if selected != self.selected {
             let was_local = self.selected.is_local();
@@ -415,6 +441,16 @@ impl AppState {
         }
         cx.emit(AppEvent::MachinesChanged);
         cx.notify();
+    }
+
+    /// Takes the links of the machines `which` picks, leaving those
+    /// machines linkless.
+    fn take_links(&mut self, which: impl Fn(&MachineId) -> bool) -> Vec<MachineLink> {
+        self.machines
+            .iter_mut()
+            .filter(|m| which(&m.id))
+            .filter_map(|m| m.link.take())
+            .collect()
     }
 
     fn start_machine(&self, profile: MachineProfile, cx: &mut Context<Self>) -> Option<Machine> {
@@ -1479,6 +1515,15 @@ impl AppState {
                 .map(drop)
         })
     }
+}
+
+/// Stops `links` at once, each on its own thread: each one waits on ssh.
+fn stop_links(links: Vec<MachineLink>) {
+    std::thread::scope(|scope| {
+        for link in links {
+            scope.spawn(move || drop(link));
+        }
+    });
 }
 
 /// The error for a command aimed at a machine no longer in the list.
