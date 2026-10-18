@@ -102,6 +102,7 @@ fn events_lost_should_trigger_resubscribe_and_fresh_snapshot() {
         session: None,
         socket_path,
         auto_start: false,
+        server_log: None,
     };
     let sync = SessionSync::start(endpoint).unwrap();
     let updates = sync.updates();

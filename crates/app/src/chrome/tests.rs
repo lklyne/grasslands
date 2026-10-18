@@ -26,6 +26,7 @@ fn offline() -> herdr::Config {
         session: None,
         socket_path: std::env::temp_dir().join("grasslands-chrome-test-no-herdr.sock"),
         auto_start: false,
+        server_log: None,
     }
 }
 
