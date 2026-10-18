@@ -2,7 +2,7 @@
 //!
 //! It holds one herdr connection per machine (Local, then herdr's saved SSH
 //! machines; see docs/decisions/0019-remote-machines.md), which one is
-//! selected, and Local's active worktree. `snapshot`, `call` and the command
+//! selected, and each machine's active worktree. `snapshot`, `call` and the command
 //! methods act on the selected machine. Views keep an
 //! `Entity<AppState>`, read it in `render`, and `cx.observe` it to re-render.
 //! Discrete changes that views must react to (not just redraw) are emitted
@@ -24,6 +24,7 @@ use crate::herdr::{
     self, Agent, Check, Client, ConnectionStatus, Fix, MIN_VERSION, MachineLink, MachineProfile,
     MachineStatus, PaneId, SessionSync, Snapshot, Update, Version, machines,
 };
+use crate::fs::Fs;
 use crate::setup::{FixRun, Setup, Stage};
 use crate::{sounds, worktree};
 use cues::{Cue, PlayOptions};
@@ -49,6 +50,10 @@ pub enum AppEvent {
     /// the editor swaps to that worktree's tab set. Always `None` while a
     /// remote machine is selected.
     ActiveWorktreeChanged(Option<PathBuf>),
+    /// The active worktree, as a machine and a path, changed: the focused
+    /// pane moved, or another machine was selected. The file tree, search
+    /// and Changes follow this one, on any machine (see `AppState::fs_for`).
+    ActiveRootChanged(Option<ActiveRoot>),
     /// The selected machine's herdr cache was replaced (any change: startup,
     /// events, reconnect, or another machine being selected). The new one is
     /// `AppState::snapshot`.
@@ -83,6 +88,13 @@ pub enum AppEvent {
     FileTrashed(PathBuf),
 }
 
+/// Where the active workspace's files are: a folder on a machine.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ActiveRoot {
+    pub machine: MachineId,
+    pub path: PathBuf,
+}
+
 /// One herdr server: Local, or a saved SSH machine.
 pub struct Machine {
     id: MachineId,
@@ -92,6 +104,10 @@ pub struct Machine {
     /// The latest herdr cache: workspaces → tabs → split trees, panes, agents.
     snapshot: Arc<Snapshot>,
     focused_pane: Option<PaneId>,
+    /// The worktree its focused pane works in (see `AppState::follow_dir`).
+    worktree: Option<PathBuf>,
+    /// The focused pane's folder `worktree` was last resolved from.
+    focused_dir: Option<PathBuf>,
     /// Status changes and unseen results, for toasts and badges.
     attention: Attention,
     /// Was connected, and hasn't been since: the next connection is a
@@ -115,6 +131,8 @@ impl Machine {
             connection: ConnectionStatus::Connecting,
             snapshot: Arc::default(),
             focused_pane: None,
+            worktree: None,
+            focused_dir: None,
             attention: Attention::default(),
             lost: false,
             client: None,
@@ -173,10 +191,6 @@ pub struct AppState {
     machines: Vec<Machine>,
     /// The machine whose workspace is active, as in herdr.
     selected: MachineId,
-    /// Local's active worktree, whichever machine is selected.
-    local_worktree: Option<PathBuf>,
-    /// Local's focused pane folder the active worktree was last resolved from.
-    focused_dir: Option<PathBuf>,
     /// A sign-in, setup or add running in a terminal on Local, and its outcome.
     machine_run: Option<MachineRun>,
     runs: u64,
@@ -243,13 +257,12 @@ impl AppState {
             MachineStatus::Offline(reason.clone()),
         );
         local.connection = ConnectionStatus::Disconnected { reason };
+        local.worktree = std::env::current_dir().ok();
         Self {
             herdr_config: None,
             setup: Setup::default(),
             machines: vec![local],
             selected: MachineId::Local,
-            local_worktree: std::env::current_dir().ok(),
-            focused_dir: None,
             machine_run: None,
             runs: 0,
             old_server_checked: None,
@@ -357,6 +370,7 @@ impl AppState {
                 self.active_worktree().cloned(),
             ));
         }
+        cx.emit(AppEvent::ActiveRootChanged(self.active_root()));
         cx.notify();
     }
 
@@ -522,6 +536,11 @@ impl AppState {
         }
         if connected {
             cx.emit(AppEvent::MachineConnected(id.clone()));
+            // Its files can be read now: find the focused pane's worktree.
+            if let Some(machine) = self.machine_mut(id) {
+                machine.focused_dir = None;
+            }
+            self.follow_focused_pane(id, cx);
         }
         cx.emit(AppEvent::MachinesChanged);
         cx.notify();
@@ -979,33 +998,42 @@ impl AppState {
         })
     }
 
-    /// Follows Local's focused pane into another folder (`cd`, or an agent
-    /// changing directory), which herdr reports no event for.
+    /// Follows Local's focused pane, and the selected machine's, into
+    /// another folder (`cd`, or an agent changing directory), which herdr
+    /// reports no event for.
     fn poll_focused_dir(cx: &mut Context<Self>) -> Task<()> {
         cx.spawn(async move |this, cx| {
             loop {
                 cx.background_executor().timer(CWD_POLL).await;
-                let Ok(request) = this.update(cx, |this, cx| {
-                    let pane_id = this.local().focused_pane.clone()?;
-                    Some(this.call_on(&MachineId::Local, cx, move |client| {
-                        client.pane_get(&pane_id)
-                    }))
+                let Ok(requests) = this.update(cx, |this, cx| {
+                    let mut ids = vec![MachineId::Local];
+                    if !this.selected.is_local() {
+                        ids.push(this.selected.clone());
+                    }
+                    ids.into_iter()
+                        .filter_map(|id| {
+                            let pane_id = this.machine(&id)?.focused_pane.clone()?;
+                            let request =
+                                this.call_on(&id, cx, move |client| client.pane_get(&pane_id));
+                            Some((id, request))
+                        })
+                        .collect::<Vec<_>>()
                 }) else {
                     break;
                 };
-                let Some(request) = request else {
-                    continue;
-                };
-                let Ok(pane) = request.await else {
-                    continue;
-                };
-                let followed = this.update(cx, |this, cx| {
-                    if this.local().focused_pane.as_ref() == Some(&pane.pane_id) {
-                        this.follow_dir(pane.working_dir().map(PathBuf::from), cx);
+                for (id, request) in requests {
+                    let Ok(pane) = request.await else {
+                        continue;
+                    };
+                    let followed = this.update(cx, |this, cx| {
+                        let focused = this.machine(&id).and_then(|m| m.focused_pane.as_ref());
+                        if focused == Some(&pane.pane_id) {
+                            this.follow_dir(&id, pane.working_dir().map(PathBuf::from), cx);
+                        }
+                    });
+                    if followed.is_err() {
+                        return;
                     }
-                });
-                if followed.is_err() {
-                    break;
                 }
             }
         })
@@ -1047,12 +1075,39 @@ impl AppState {
         }
     }
 
-    /// Local's active worktree while Local is selected. Remote machines'
-    /// folders aren't on this disk, so `None` while one is.
+    /// Local's active worktree while Local is selected; `None` while
+    /// another machine is. For any machine, see `active_root`.
     pub fn active_worktree(&self) -> Option<&PathBuf> {
-        self.local_worktree
+        self.local()
+            .worktree
             .as_ref()
             .filter(|_| self.selected.is_local())
+    }
+
+    /// The selected machine's active worktree.
+    pub fn active_root(&self) -> Option<ActiveRoot> {
+        let machine = self.selected_machine();
+        Some(ActiveRoot {
+            machine: machine.id.clone(),
+            path: machine.worktree.clone()?,
+        })
+    }
+
+    /// The files on `machine`: Local always, a saved machine while it's
+    /// connected.
+    pub fn fs_for(&self, machine: &MachineId) -> Option<Fs> {
+        if machine.is_local() {
+            return Some(Fs::Local);
+        }
+        let target = self.machine(machine)?;
+        if target.status != MachineStatus::Connected {
+            return None;
+        }
+        Some(Fs::Remote {
+            machine: machine.clone(),
+            label: target.label.clone(),
+            files: target.link.as_ref()?.remote_fs()?,
+        })
     }
 
     /// Announces a rename done in the app (see `AppEvent::FileMoved`).
@@ -1065,16 +1120,25 @@ impl AppState {
         cx.emit(AppEvent::FileTrashed(path));
     }
 
-    /// Sets Local's active worktree; announced only while Local is selected.
+    /// Sets Local's active worktree.
     pub fn set_active_worktree(&mut self, root: Option<PathBuf>, cx: &mut Context<Self>) {
-        if self.local_worktree == root {
+        self.set_worktree(&MachineId::Local, root, cx);
+    }
+
+    /// Sets `id`'s active worktree; announced only while `id` is selected.
+    fn set_worktree(&mut self, id: &MachineId, root: Option<PathBuf>, cx: &mut Context<Self>) {
+        let Some(machine) = self.machine_mut(id).filter(|m| m.worktree != root) else {
+            return;
+        };
+        machine.worktree.clone_from(&root);
+        if id != &self.selected {
             return;
         }
-        self.local_worktree.clone_from(&root);
-        if self.selected.is_local() {
+        if id.is_local() {
             cx.emit(AppEvent::ActiveWorktreeChanged(root));
-            cx.notify();
         }
+        cx.emit(AppEvent::ActiveRootChanged(self.active_root()));
+        cx.notify();
     }
 
     /// Replaces the selected machine's cache, as a sync update would.
@@ -1119,34 +1183,66 @@ impl AppState {
         if selected && focus_changed {
             cx.emit(AppEvent::FocusedPaneChanged(focused));
         }
-        if id.is_local() {
-            self.follow_focused_pane(cx);
-        }
+        self.follow_focused_pane(id, cx);
         cx.notify();
     }
 
-    /// Re-roots on Local's focused pane's `foreground_cwd` (falling back to
-    /// `cwd`), so it also follows an agent that moves into another folder.
-    /// With no focused pane, or a folder that doesn't exist here, the root
-    /// stays put.
-    fn follow_focused_pane(&mut self, cx: &mut Context<Self>) {
+    /// Re-roots `id` on its focused pane's `foreground_cwd` (falling back
+    /// to `cwd`), so it also follows an agent that moves into another
+    /// folder. With no focused pane, or a folder that doesn't exist there,
+    /// the root stays put.
+    fn follow_focused_pane(&mut self, id: &MachineId, cx: &mut Context<Self>) {
         let dir = self
-            .local()
-            .snapshot
-            .focused_pane()
+            .machine(id)
+            .and_then(|m| m.snapshot.focused_pane())
             .and_then(herdr::PaneInfo::working_dir)
             .map(PathBuf::from);
-        self.follow_dir(dir, cx);
+        self.follow_dir(id, dir, cx);
     }
 
-    fn follow_dir(&mut self, dir: Option<PathBuf>, cx: &mut Context<Self>) {
-        if dir.is_none() || dir == self.focused_dir {
+    /// Resolves `dir` to its worktree (see `Fs::resolve_root`): at once on
+    /// Local, on the background executor elsewhere. A machine whose files
+    /// can't be read yet tries again on the next snapshot, poll or connect.
+    fn follow_dir(&mut self, id: &MachineId, dir: Option<PathBuf>, cx: &mut Context<Self>) {
+        let Some(dir) = dir else { return };
+        let Some(fs) = self.fs_for(id) else { return };
+        let Some(machine) = self.machine_mut(id) else {
+            return;
+        };
+        if machine.focused_dir.as_ref() == Some(&dir) {
             return;
         }
-        self.focused_dir.clone_from(&dir);
-        if let Some(root) = dir.as_deref().and_then(worktree::resolve_root) {
-            self.set_active_worktree(Some(root), cx);
+        machine.focused_dir = Some(dir.clone());
+        if fs.is_local() {
+            if let Some(root) = worktree::resolve_root(&dir) {
+                self.set_worktree(id, Some(root), cx);
+            }
+            return;
         }
+        let id = id.clone();
+        let resolve = cx.background_executor().spawn({
+            let dir = dir.clone();
+            async move { fs.resolve_root(&dir) }
+        });
+        cx.spawn(async move |this, cx| {
+            let root = resolve.await;
+            this.update(cx, |this, cx| {
+                let current = this.machine(&id).and_then(|m| m.focused_dir.as_ref());
+                match root {
+                    // A pane that has moved on since.
+                    _ if current != Some(&dir) => {}
+                    Some(root) => this.set_worktree(&id, Some(root), cx),
+                    // Ask again next time.
+                    None => {
+                        if let Some(machine) = this.machine_mut(&id) {
+                            machine.focused_dir = None;
+                        }
+                    }
+                }
+            })
+            .ok();
+        })
+        .detach();
     }
 
     /// Runs one blocking herdr call on the selected machine, on the
@@ -1620,9 +1716,11 @@ pub fn offline_config() -> herdr::Config {
 mod tests {
     use gpui_kit::{AppContext as _, TestAppContext};
 
+    use std::cell::RefCell;
+    use std::rc::Rc;
     use std::sync::Arc;
 
-    use super::{AppState, MachineId, offline_config};
+    use super::{ActiveRoot, AppEvent, AppState, MachineId, offline_config};
     use crate::herdr::{self, ConnectionStatus, Snapshot};
     use crate::setup::Stage;
 
@@ -1712,6 +1810,56 @@ mod tests {
     }
 
     #[gpui::test]
+    fn the_active_root_names_the_selected_machine(cx: &mut TestAppContext) {
+        let state = with_remote(cx);
+        state.update(cx, |state, cx| {
+            state.set_worktree(&remote(), Some("/home/lyle/api".into()), cx);
+            state.select_machine(&remote(), cx);
+        });
+        let root = cx.read(|cx| state.read(cx).active_root());
+        assert_eq!(
+            root,
+            Some(ActiveRoot {
+                machine: remote(),
+                path: "/home/lyle/api".into()
+            })
+        );
+    }
+
+    #[gpui::test]
+    fn selecting_a_machine_announces_its_root(cx: &mut TestAppContext) {
+        let state = with_remote(cx);
+        let roots = Rc::new(RefCell::new(Vec::new()));
+        let _subscription = cx.update(|cx| {
+            let roots = roots.clone();
+            cx.subscribe(&state, move |_, event, _| {
+                if let AppEvent::ActiveRootChanged(root) = event {
+                    roots.borrow_mut().push(root.as_ref().map(|r| r.machine.clone()));
+                }
+            })
+        });
+        state.update(cx, |state, cx| {
+            state.set_worktree(&remote(), Some("/home/lyle".into()), cx);
+            state.select_machine(&remote(), cx);
+        });
+        assert_eq!(roots.borrow().as_slice(), &[Some(remote())]);
+    }
+
+    #[gpui::test]
+    fn local_files_are_always_available(cx: &mut TestAppContext) {
+        let state = with_remote(cx);
+        let local = cx.read(|cx| state.read(cx).fs_for(&MachineId::Local).map(|f| f.is_local()));
+        assert_eq!(local, Some(true));
+    }
+
+    #[gpui::test]
+    fn a_machine_without_a_link_has_no_files(cx: &mut TestAppContext) {
+        let state = with_remote(cx);
+        let files = cx.read(|cx| state.read(cx).fs_for(&remote()).is_some());
+        assert!(!files);
+    }
+
+    #[gpui::test]
     fn agents_name_their_machine(cx: &mut TestAppContext) {
         let state = with_remote(cx);
         let machines: Vec<MachineId> = cx.read(|cx| {
@@ -1737,7 +1885,9 @@ mod tests {
         git2::Repository::init(&repo).unwrap();
         let repo = repo.canonicalize().unwrap();
         let state = cx.new(|cx| AppState::new(Ok(offline_config()), cx));
-        state.update(cx, |state, cx| state.follow_dir(Some(repo.join("src")), cx));
+        state.update(cx, |state, cx| {
+            state.follow_dir(&MachineId::Local, Some(repo.join("src")), cx)
+        });
         let root = cx.read(|cx| state.read(cx).active_worktree().cloned());
         assert_eq!(root, Some(repo));
     }

@@ -250,7 +250,7 @@ impl Workspace {
             Some(changes) => changes.update(cx, |changes, cx| changes.reload(cx)),
             None => {
                 let state = self.state.clone();
-                self.changes = Some(cx.new(|cx| Changes::new(state, cx)));
+                self.changes = Some(cx.new(|cx| Changes::new(state, window, cx)));
             }
         }
         self.select(MainTab::Changes, window, cx);

@@ -1,14 +1,15 @@
 //! The Changes tab: the active worktree's diff against its parent branch
-//! (see `git`) in GPUI Kit's diff viewer. Opened from the file tree's git
-//! footer. It follows the active worktree and re-reads while open, keeping
-//! its scroll place when the patch hasn't changed.
+//! (see `git`) in GPUI Kit's diff viewer, on whichever machine the worktree
+//! is (through `crate::fs::Fs`). Opened from the file tree's git footer. It
+//! follows the active worktree and re-reads while open (a saved machine's
+//! only while the window is active) and when the window becomes active,
+//! keeping its scroll place when the patch hasn't changed.
 
 pub mod git;
 
 #[cfg(test)]
 mod tests;
 
-use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use gpui_kit::component::button::{Button, ButtonVariants as _};
@@ -16,25 +17,26 @@ use gpui_kit::component::diff::{Diff, DiffFile, DiffMode, DiffState};
 use gpui_kit::component::{ActiveTheme as _, Sizable as _, h_flex, v_flex};
 use gpui_kit::*;
 
-use crate::state::{AppEvent, AppState};
+use crate::herdr::MachineStatus;
+use crate::state::{ActiveRoot, AppEvent, AppState};
 
 const REFRESH: Duration = Duration::from_secs(3);
 
 pub struct Changes {
     state: Entity<AppState>,
     diff: Entity<DiffState>,
-    root: Option<PathBuf>,
+    root: Option<ActiveRoot>,
     /// The patch on screen; `None` before the first read or outside git.
     patch: Option<String>,
     loaded: bool,
-    _subscriptions: [Subscription; 2],
+    _subscriptions: [Subscription; 3],
     _refresh: Task<()>,
 }
 
 impl Changes {
-    pub fn new(state: Entity<AppState>, cx: &mut Context<Self>) -> Self {
+    pub fn new(state: Entity<AppState>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let subscription = cx.subscribe(&state, |this, state, event, cx| match event {
-            AppEvent::ActiveWorktreeChanged(root) => {
+            AppEvent::ActiveRootChanged(root) => {
                 this.root.clone_from(root);
                 this.patch = None;
                 this.loaded = false;
@@ -46,12 +48,23 @@ impl Changes {
             AppEvent::MachinesChanged if !state.read(cx).selected().is_local() => cx.notify(),
             _ => {}
         });
-        let refresh = cx.spawn(async move |this, cx| {
+        let refresh = cx.spawn_in(window, async move |this, cx| {
             loop {
                 cx.background_executor().timer(REFRESH).await;
-                if this.update(cx, |this, cx| this.reload(cx)).is_err() {
+                let reloaded = this.update_in(cx, |this, window, cx| {
+                    let local = this.root.as_ref().is_none_or(|r| r.machine.is_local());
+                    if local || window.is_window_active() {
+                        this.reload(cx);
+                    }
+                });
+                if reloaded.is_err() {
                     break;
                 }
+            }
+        });
+        let activation = cx.observe_window_activation(window, |this, window, cx| {
+            if window.is_window_active() {
+                this.reload(cx);
             }
         });
         let diff = cx.new(|cx| DiffState::new([], cx));
@@ -61,10 +74,10 @@ impl Changes {
         let mut this = Self {
             state: state.clone(),
             diff,
-            root: state.read(cx).active_worktree().cloned(),
+            root: state.read(cx).active_root(),
             patch: None,
             loaded: false,
-            _subscriptions: [subscription, redraw],
+            _subscriptions: [subscription, redraw, activation],
             _refresh: refresh,
         };
         this.reload(cx);
@@ -76,12 +89,15 @@ impl Changes {
         let Some(root) = self.root.clone() else {
             return;
         };
+        let Some(fs) = self.state.read(cx).fs_for(&root.machine) else {
+            return;
+        };
         cx.spawn(async move |this, cx| {
             let patch = cx
                 .background_executor()
                 .spawn({
-                    let root = root.clone();
-                    async move { git::patch(&root) }
+                    let path = root.path.clone();
+                    async move { fs.git_patch(&path) }
                 })
                 .await;
             let _ = this.update(cx, |this, cx| this.apply(&root, patch, cx));
@@ -89,9 +105,9 @@ impl Changes {
         .detach();
     }
 
-    fn apply(&mut self, root: &Path, patch: Option<String>, cx: &mut Context<Self>) {
+    fn apply(&mut self, root: &ActiveRoot, patch: Option<String>, cx: &mut Context<Self>) {
         // A read for a worktree we have since left.
-        if self.root.as_deref() != Some(root) {
+        if self.root.as_ref() != Some(root) {
             return;
         }
         self.loaded = true;
@@ -135,9 +151,9 @@ impl Focusable for Changes {
 
 impl Render for Changes {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        // Changes reads this Mac's disk, like the file panel.
+        // An offline machine's files can't be read, like the file panel's.
         let machine = self.state.read(cx).selected_machine();
-        if !machine.id().is_local() {
+        if !machine.id().is_local() && *machine.status() != MachineStatus::Connected {
             let label = machine.label().to_owned();
             return div()
                 .size_full()

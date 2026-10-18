@@ -405,8 +405,8 @@ pub fn offline_screen(
         .into_any_element()
 }
 
-/// The file panel while the active workspace is on the machine `label`:
-/// the file tree and editor read this Mac's disk only.
+/// The file panel while the active workspace is on the machine `label` and
+/// that machine isn't connected, so its files can't be read.
 pub fn remote_files_empty(label: &str, cx: &App) -> AnyElement {
     let theme = cx.theme();
     v_flex()
@@ -421,12 +421,9 @@ pub fn remote_files_empty(label: &str, cx: &App) -> AnyElement {
                         EmptyMedia::new()
                             .child(Icon::new(IconName::Folder).text_color(theme.muted_foreground)),
                     )
-                    .title(
-                        EmptyTitle::new().child(format!("Files on {label} aren't available yet")),
-                    )
+                    .title(EmptyTitle::new().child(format!("{label} is offline")))
                     .description(EmptyDescription::new().child(format!(
-                        "The file tree and editor read this Mac's disk. Use the terminal for \
-                         files on {label} for now."
+                        "Files on {label} show here again when it reconnects."
                     ))),
             ),
         )
