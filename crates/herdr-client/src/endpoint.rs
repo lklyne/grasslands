@@ -231,7 +231,7 @@ pub fn check_dev_socket(socket: &Path, home: Option<&Path>, allow: bool) -> Resu
     Ok(())
 }
 
-fn default_socket_path(config_home: &std::path::Path, session: Option<&str>) -> PathBuf {
+pub(crate) fn default_socket_path(config_home: &std::path::Path, session: Option<&str>) -> PathBuf {
     let base = config_home.join("herdr");
     match session {
         Some(name) => base.join("sessions").join(name).join("herdr.sock"),

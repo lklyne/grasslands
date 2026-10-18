@@ -14,7 +14,7 @@ use std::process::{Command, Stdio};
 
 use serde::Deserialize;
 
-use crate::endpoint::Endpoint;
+use crate::endpoint::{Endpoint, default_socket_path};
 
 /// The oldest herdr whose API the app speaks (`docs/herdr-api-0.9.5.schema.json`).
 pub const MIN_VERSION: Version = Version::new(0, 9, 5);
@@ -157,11 +157,7 @@ pub struct FixCommand {
 
 impl FixCommand {
     /// Runs `argv`, the first element being the program.
-    pub fn from_argv(argv: Vec<OsString>) -> Self {
-        Self::new(argv)
-    }
-
-    fn new(argv: Vec<OsString>) -> Self {
+    pub fn new(argv: Vec<OsString>) -> Self {
         let display = argv
             .iter()
             .enumerate()
@@ -319,10 +315,19 @@ impl Endpoint {
                     argv.extend(["--session".into(), session.into()]);
                 }
                 argv.extend(["server".into(), "stop".into()]);
-                Some(FixCommand {
-                    socket_path: Some(self.socket_path.clone()),
-                    ..FixCommand::new(argv)
-                })
+                let mut command = FixCommand::new(argv);
+                // Pasted without the socket, it would stop the default
+                // session's server instead.
+                let default = default_socket_path(&config_home(), self.session.as_deref());
+                if self.socket_path != default {
+                    command.display = format!(
+                        "HERDR_SOCKET_PATH={} {}",
+                        shell_quote(&self.socket_path.to_string_lossy()),
+                        command.display
+                    );
+                }
+                command.socket_path = Some(self.socket_path.clone());
+                Some(command)
             }
         }
     }
@@ -359,6 +364,16 @@ struct ServerStatus {
     running: bool,
     version: Option<String>,
     compatible: Option<bool>,
+}
+
+/// `$XDG_CONFIG_HOME`, else `~/.config`: where herdr looks for its socket
+/// when `HERDR_SOCKET_PATH` isn't set.
+fn config_home() -> PathBuf {
+    let var = |name: &str| std::env::var_os(name).filter(|v| !v.is_empty());
+    var("XDG_CONFIG_HOME").map_or_else(
+        || PathBuf::from(var("HOME").unwrap_or_default()).join(".config"),
+        PathBuf::from,
+    )
 }
 
 /// `program` itself if it is a path, else the first match on `PATH`.
@@ -436,8 +451,23 @@ mod tests {
     }
 
     #[test]
-    fn stop_server_should_name_the_session() {
+    fn stop_server_should_name_the_session_and_its_socket() {
         let command = endpoint().fix_command(Fix::StopServer).map(|c| c.display);
+        assert_eq!(
+            command.as_deref(),
+            Some(
+                "HERDR_SOCKET_PATH=/tmp/herdr.sock /opt/homebrew/bin/herdr --session dev server stop"
+            )
+        );
+    }
+
+    #[test]
+    fn stop_server_should_leave_out_the_default_socket() {
+        let endpoint = Endpoint {
+            socket_path: default_socket_path(&config_home(), Some("dev")),
+            ..endpoint()
+        };
+        let command = endpoint.fix_command(Fix::StopServer).map(|c| c.display);
         assert_eq!(
             command.as_deref(),
             Some("/opt/homebrew/bin/herdr --session dev server stop")

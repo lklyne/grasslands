@@ -75,7 +75,7 @@ impl MachineRun {
         known: Vec<String>,
     ) -> Option<Self> {
         let argv = argv(&task, bin, profile)?;
-        let command = FixCommand::from_argv(argv);
+        let command = FixCommand::new(argv);
         let machine = match &task {
             MachineTask::SignIn(id) | MachineTask::SetUp(id) => Some(id.clone()),
             MachineTask::Add { .. } => None,
