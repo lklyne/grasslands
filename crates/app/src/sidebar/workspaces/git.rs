@@ -8,12 +8,19 @@
 //! appears, when the active worktree changes, when a watched `HEAD` file
 //! changes (checkout), and on a slow timer (commits, fetches, pushes), never
 //! per frame.
+//!
+//! A saved machine's workspaces show their branch only, asked of the
+//! machine's git through `crate::fs::Fs` (see [`RemoteCheckouts`]), on the
+//! same timer; nothing watches their `HEAD`.
 
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use notify::{EventKind, RecommendedWatcher, RecursiveMode, Watcher as _};
 
+use crate::fs::Fs;
 use crate::herdr::WorkspaceWorktreeInfo;
+use crate::state::MachineId;
 
 /// The repo a workspace belongs to, the key its group is built on.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -70,6 +77,63 @@ pub fn read(dir: &Path) -> Option<Checkout> {
         placement,
         git_dir,
     })
+}
+
+/// The branch in `dir` on `fs`'s machine, as a checkout without placement
+/// or upstream counts; `None` outside git or when the machine can't say.
+pub fn read_on(fs: &Fs, dir: &Path) -> Option<Checkout> {
+    Some(Checkout {
+        branch: fs.head_branch(dir)?,
+        ahead_behind: None,
+        placement: None,
+        git_dir: PathBuf::new(),
+    })
+}
+
+/// A folder on a saved machine.
+pub type RemoteDir = (MachineId, PathBuf);
+
+/// Saved machines' workspace checkouts, by machine and folder.
+#[derive(Default)]
+pub struct RemoteCheckouts {
+    checkouts: HashMap<RemoteDir, Option<Checkout>>,
+    /// Folders being read for the first time.
+    reading: HashSet<RemoteDir>,
+}
+
+impl RemoteCheckouts {
+    pub fn get(&self, machine: &MachineId, dir: &Path) -> Option<&Checkout> {
+        self.checkouts
+            .get(&(machine.clone(), dir.to_path_buf()))?
+            .as_ref()
+    }
+
+    /// Forgets folders no workspace uses any more and returns the ones never
+    /// read, now marked as being read.
+    pub fn sync(&mut self, wanted: HashSet<RemoteDir>) -> Vec<RemoteDir> {
+        self.checkouts.retain(|dir, _| wanted.contains(dir));
+        let new: Vec<RemoteDir> = wanted
+            .into_iter()
+            .filter(|d| !self.checkouts.contains_key(d) && !self.reading.contains(d))
+            .collect();
+        self.reading.extend(new.iter().cloned());
+        new
+    }
+
+    pub fn dirs(&self) -> Vec<RemoteDir> {
+        self.checkouts.keys().cloned().collect()
+    }
+
+    /// Stores fresh reads; true if any changed.
+    pub fn store(&mut self, results: Vec<(RemoteDir, Option<Checkout>)>) -> bool {
+        let mut changed = false;
+        for (dir, checkout) in results {
+            self.reading.remove(&dir);
+            changed |= self.checkouts.get(&dir) != Some(&checkout);
+            self.checkouts.insert(dir, checkout);
+        }
+        changed
+    }
 }
 
 fn placement(repo: &git2::Repository) -> Option<Placement> {
@@ -272,6 +336,24 @@ mod tests {
         let dir = temp_dir("no-upstream");
         repo_with_commit(&dir);
         assert_eq!(read(&dir).unwrap().ahead_behind, None);
+    }
+
+    #[test]
+    fn remote_checkouts_should_read_new_folders_once() {
+        let mut remote = RemoteCheckouts::default();
+        let dir = (MachineId::Remote("m".into()), PathBuf::from("/r"));
+        let first = remote.sync([dir.clone()].into());
+        let second = remote.sync([dir.clone()].into());
+        assert_eq!((first, second), (vec![dir], vec![]));
+    }
+
+    #[test]
+    fn remote_checkouts_should_forget_unused_folders() {
+        let mut remote = RemoteCheckouts::default();
+        let dir = (MachineId::Remote("m".into()), PathBuf::from("/r"));
+        remote.store(vec![(dir.clone(), None)]);
+        remote.sync(HashSet::new());
+        assert!(remote.dirs().is_empty());
     }
 
     #[test]

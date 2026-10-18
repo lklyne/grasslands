@@ -45,7 +45,7 @@ use crate::chrome::{self, Callback, Chrome, HerdrCommand, MenuCommand, MenuEntry
 use crate::herdr::{Agent, AgentStatus, Snapshot, WorkspaceInfo, WorktreeParams};
 use crate::machines::{self, MachineActions, MachineState, machine_header, ssh_config};
 use crate::state::{AppEvent, AppState, Machine, MachineId, MachineTask};
-use git::{Checkout, HeadWatcher, Placement, Repo};
+use git::{Checkout, HeadWatcher, Placement, RemoteCheckouts, Repo};
 use groups::{Entry, Kind, Slot};
 
 pub use agents::AgentList;
@@ -81,6 +81,8 @@ pub struct WorkspaceList {
     checkouts: HashMap<PathBuf, Option<Checkout>>,
     /// Folders being read for the first time.
     reading: HashSet<PathBuf>,
+    /// Saved machines' workspace branches.
+    remote_checkouts: RemoteCheckouts,
     heads: Option<HeadWatcher>,
     /// The dragged row and the row the drag last ticked over, so each new
     /// row ticks once.
@@ -278,6 +280,7 @@ impl WorkspaceList {
             collapsed: HashSet::new(),
             checkouts: HashMap::new(),
             reading: HashSet::new(),
+            remote_checkouts: RemoteCheckouts::default(),
             heads,
             drag_tick: None,
             drawn_rows: Rc::default(),
@@ -322,11 +325,66 @@ impl WorkspaceList {
             self.reading.extend(new.iter().cloned());
             self.read_checkouts(new, cx);
         }
+        self.sync_remote_checkouts(cx);
     }
 
     fn refresh_checkouts(&mut self, cx: &mut Context<Self>) {
         let dirs = self.checkouts.keys().cloned().collect();
         self.read_checkouts(dirs, cx);
+        let remote = self.remote_checkouts.dirs();
+        self.read_remote_checkouts(remote, cx);
+    }
+
+    /// Reads folders of connected saved machines' workspaces seen for the
+    /// first time and forgets ones no workspace uses any more.
+    fn sync_remote_checkouts(&mut self, cx: &mut Context<Self>) {
+        let state = self.state.read(cx);
+        let wanted = state
+            .machines()
+            .filter(|m| !m.id().is_local() && state.fs_for(m.id()).is_some())
+            .flat_map(|m| {
+                let snapshot = m.snapshot();
+                snapshot
+                    .workspaces
+                    .iter()
+                    .filter_map(|w| checkout_dir(snapshot, &w.info))
+                    .map(|dir| (m.id().clone(), dir))
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+        let new = self.remote_checkouts.sync(wanted);
+        self.read_remote_checkouts(new, cx);
+    }
+
+    /// Asks each folder's machine for its branch, off the main thread.
+    fn read_remote_checkouts(&mut self, dirs: Vec<git::RemoteDir>, cx: &mut Context<Self>) {
+        let state = self.state.read(cx);
+        let reads: Vec<_> = dirs
+            .into_iter()
+            .filter_map(|dir| Some((state.fs_for(&dir.0)?, dir)))
+            .collect();
+        if reads.is_empty() {
+            return;
+        }
+        let read = cx.background_executor().spawn(async move {
+            reads
+                .into_iter()
+                .map(|(fs, dir)| {
+                    let checkout = git::read_on(&fs, &dir.1);
+                    (dir, checkout)
+                })
+                .collect::<Vec<_>>()
+        });
+        cx.spawn(async move |this, cx| {
+            let results = read.await;
+            this.update(cx, |this, cx| {
+                if this.remote_checkouts.store(results) {
+                    cx.notify();
+                }
+            })
+            .ok();
+        })
+        .detach();
     }
 
     /// Re-reads `dirs` with git2 off the main thread.
@@ -383,17 +441,19 @@ impl WorkspaceList {
         }
     }
 
-    /// git2's checkout for a Local workspace; `None` on other machines.
+    /// git2's checkout for a Local workspace, the machine's branch for a
+    /// saved machine's.
     fn checkout(
         &self,
         machine: &MachineId,
         snapshot: &Snapshot,
         info: &WorkspaceInfo,
     ) -> Option<&Checkout> {
+        let dir = checkout_dir(snapshot, info)?;
         if !machine.is_local() {
-            return None;
+            return self.remote_checkouts.get(machine, &dir);
         }
-        self.checkouts.get(&checkout_dir(snapshot, info)?)?.as_ref()
+        self.checkouts.get(&dir)?.as_ref()
     }
 
     /// herdr's repo info, else what git2 found in the workspace's folder.
