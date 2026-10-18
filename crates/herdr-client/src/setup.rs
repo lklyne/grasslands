@@ -8,9 +8,9 @@
 
 use std::ffi::OsString;
 use std::fmt;
-use std::io::{self, BufRead, BufReader, ErrorKind};
+use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
-use std::process::{Command, ExitStatus, Stdio};
+use std::process::{Command, Stdio};
 
 use serde::Deserialize;
 
@@ -191,38 +191,28 @@ impl FixCommand {
         &self.display
     }
 
-    /// Runs to completion, handing each line of output (stdout and stderr
-    /// interleaved) to `on_line`. Blocks; call it off the UI thread.
-    pub fn run(&self, mut on_line: impl FnMut(&str)) -> io::Result<ExitStatus> {
-        let (program, args) = self
-            .argv
-            .split_first()
-            .ok_or_else(|| io::Error::new(ErrorKind::InvalidInput, "empty command"))?;
-        let (reader, writer) = io::pipe()?;
-        let mut child = {
-            let mut command = Command::new(program);
-            command
-                .args(args)
-                .stdin(Stdio::null())
-                .stdout(writer.try_clone()?)
-                .stderr(writer);
-            if let Some(socket) = &self.socket_path {
-                command.env("HERDR_SOCKET_PATH", socket);
-            }
-            // The command holds the pipe's write end; it must be gone before
-            // reading, or the read never sees the end.
-            command.spawn()?
-        };
-        let mut lines = BufReader::new(reader);
-        let mut line = Vec::new();
-        while lines.read_until(b'\n', &mut line)? > 0 {
-            // Progress bars redraw with `\r`; keep only the final state.
-            let text = String::from_utf8_lossy(&line);
-            let text = text.trim_end().rsplit('\r').next().unwrap_or_default();
-            on_line(text);
-            line.clear();
+    /// A shell command line for a terminal: it prints the command as a
+    /// person would type it, then runs it.
+    pub fn terminal_command(&self) -> String {
+        let mut script = format!(
+            "printf '\\033[1m$ %s\\033[0m\\n\\n' {}; ",
+            shell_quote(&self.display)
+        );
+        if let Some(socket) = &self.socket_path {
+            script.push_str(&format!(
+                "export HERDR_SOCKET_PATH={}; ",
+                shell_quote(&socket.to_string_lossy())
+            ));
         }
-        child.wait()
+        script.push_str("exec ");
+        let argv = self
+            .argv
+            .iter()
+            .map(|arg| shell_quote(&arg.to_string_lossy()))
+            .collect::<Vec<_>>()
+            .join(" ");
+        script.push_str(&argv);
+        format!("/bin/sh -c {}", shell_quote(&script))
     }
 }
 
@@ -473,10 +463,18 @@ mod tests {
     }
 
     #[test]
-    fn fix_command_should_stream_stdout_and_stderr() {
-        let command = FixCommand::shell("echo out; echo err >&2");
-        let mut lines = Vec::new();
-        let status = command.run(|line| lines.push(line.to_owned()));
-        assert!(status.is_ok_and(|s| s.success()) && lines == ["out", "err"]);
+    fn terminal_command_should_print_then_run_the_command() {
+        let command = FixCommand::new(vec!["/opt/homebrew/bin/brew".into(), "upgrade".into()]);
+        let output = Command::new("/bin/sh")
+            .args([
+                "-c",
+                &command.terminal_command().replace("exec ", "exec echo "),
+            ])
+            .output()
+            .map(|output| String::from_utf8_lossy(&output.stdout).into_owned());
+        assert_eq!(
+            output.ok().as_deref(),
+            Some("\u{1b}[1m$ brew upgrade\u{1b}[0m\n\n/opt/homebrew/bin/brew upgrade\n")
+        );
     }
 }

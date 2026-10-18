@@ -20,15 +20,25 @@ terminal area, before the app connects.
   `herdr update` is only for its own installer's installs. Install is
   `brew install herdr` when brew is there, else herdr's
   `curl -fsSL https://herdr.dev/install.sh | sh`.
-- **The app runs the fix on a click** and streams its output (stdout and
-  stderr on one pipe) into the screen, then checks again. The command is
-  shown with a copy button for anyone who'd rather run it themselves.
-- **Restarting the server always asks first.** An update leaves the old
+- **The app runs the fix on a click, in a terminal** beside the setup
+  screen: a Ghostty surface outside herdr (there may be no herdr yet), themed
+  like the panes. Progress bars render, and a sudo password or a prompt from
+  the installer can be answered there, which a pipe couldn't. The surface
+  only reports whether its process is alive, so when it ends the app checks
+  again rather than reading an exit status; `wait-after-command` keeps the
+  output on screen. Without a terminal open, the command is shown with a copy
+  button for anyone who'd rather run it themselves.
+- **No Check Again.** The app checks again when its window becomes active,
+  which covers a fix made in another terminal or a Nix rebuild.
+- **Finish Setup closes it out.** Once a check passes after the screen was
+  shown, the app connects behind it and the screen says herdr is ready until
+  the user finishes; a launch that needs nothing never shows it.
+- **Restarting the server doesn't ask again.** An update leaves the old
   server running, which herdr supports (endpoint generation 1). A server
-  older than 0.9.5 has to go, though, and `herdr server stop` ends every pane.
-  So Restart is a danger button behind a confirmation that counts the agents
-  that will stop. After the stop, the sync thread's auto-start brings up a
-  server from the new binary.
+  older than 0.9.5 has to go, though, and `herdr server stop` ends every
+  pane. The screen says so next to the Restart button, a plain primary
+  button; a second confirmation would only repeat it. After the stop, the
+  sync thread's auto-start brings up a server from the new binary.
 - **No `depends_on formula: "herdr"` in the cask.** It can't pin a version,
   and it would install a second, Homebrew herdr next to one from herdr's own
   installer or mise. The caveats point to the app's setup.

@@ -29,10 +29,11 @@ use crate::herdr::{
     SplitDirection, SplitTree, Tab,
 };
 use crate::overlay;
+use crate::setup::Stage;
 use crate::sidebar::files::DraggedPath;
 use crate::state::{AppEvent, AppState};
 
-use self::terminals::{Launch, Terminals};
+use self::terminals::{Launch, SetupTerminal, Terminals};
 
 actions!(
     terminal_area,
@@ -238,6 +239,8 @@ pub struct TerminalArea {
     /// The dragged tab and the tab the drag last ticked over, so each new
     /// tab ticks once.
     tab_drag_tick: Option<(usize, usize)>,
+    /// The terminal beside the herdr setup screen, running the last fix.
+    setup_terminal: Option<SetupTerminal>,
     _subscriptions: Vec<Subscription>,
     _liveness: Task<()>,
 }
@@ -250,7 +253,18 @@ impl TerminalArea {
             .as_ref()
             .map(Launch::from_config);
         let subscriptions = vec![
-            cx.observe(&state, |_, _, cx| cx.notify()),
+            cx.observe_in(&state, window, |this, _, window, cx| {
+                this.sync_setup_terminal(window, cx);
+                cx.notify();
+            }),
+            // Coming back to the window after fixing herdr elsewhere (a
+            // terminal, a Nix rebuild) checks again.
+            cx.observe_window_activation(window, |this, window, cx| {
+                let needed = matches!(this.state.read(cx).setup.stage, Stage::Needed(_));
+                if window.is_window_active() && needed {
+                    this.state.update(cx, |state, cx| state.check_herdr(cx));
+                }
+            }),
             cx.subscribe_in(&state, window, |this, _, event, window, cx| {
                 this.on_app_event(event, window, cx);
             }),
@@ -272,6 +286,7 @@ impl TerminalArea {
             shown_tab: None,
             focus_on_show: None,
             tab_drag_tick: None,
+            setup_terminal: None,
             _subscriptions: subscriptions,
             _liveness: Self::watch_liveness(cx),
         };
@@ -280,6 +295,44 @@ impl TerminalArea {
             script::start(scenario, cx.entity(), window, cx);
         }
         this
+    }
+
+    /// Starts a terminal for each new setup fix and drops it once setup is
+    /// over.
+    fn sync_setup_terminal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let setup = &self.state.read(cx).setup;
+        let run = setup.run.clone().filter(|_| !setup.is_ready());
+        let Some(run) = run else {
+            if let Some(setup) = self.setup_terminal.take() {
+                setup
+                    .terminal
+                    .update(cx, |terminal, _| terminal.set_visible(false));
+            }
+            return;
+        };
+        if self
+            .setup_terminal
+            .as_ref()
+            .is_some_and(|setup| setup.run == run.id)
+        {
+            return;
+        }
+        if let Some(old) = self.setup_terminal.take() {
+            old.terminal
+                .update(cx, |terminal, _| terminal.set_visible(false));
+        }
+        match self.terminals.spawn_setup(run.command, window, cx) {
+            Ok(terminal) => {
+                self.setup_terminal = Some(SetupTerminal {
+                    run: run.id,
+                    terminal,
+                });
+            }
+            Err(error) => {
+                tracing::error!("herdr setup terminal: {error:#}");
+                self.state.update(cx, |state, cx| state.fix_exited(cx));
+            }
+        }
     }
 
     /// An attach process can end without any herdr event (another client
@@ -299,6 +352,14 @@ impl TerminalArea {
                     if attached != this.attached {
                         this.attached = attached;
                         cx.notify();
+                    }
+                    let fixing = matches!(this.state.read(cx).setup.stage, Stage::Fixing(_));
+                    let ended = this
+                        .setup_terminal
+                        .as_ref()
+                        .is_some_and(|setup| !setup.terminal.read(cx).is_alive());
+                    if fixing && ended {
+                        this.state.update(cx, |state, cx| state.fix_exited(cx));
                     }
                 });
                 if alive.is_err() {
@@ -482,6 +543,11 @@ impl TerminalArea {
             }
         } else {
             self.terminals.hide_all(cx);
+        }
+        if let Some(setup) = &self.setup_terminal {
+            setup
+                .terminal
+                .update(cx, |terminal, _| terminal.set_visible(visible));
         }
         cx.notify();
     }
@@ -1477,7 +1543,12 @@ impl Render for TerminalArea {
             drawn.reattach.clear();
         }
 
-        let setup = crate::setup::render(&self.state, cx);
+        let setup_terminal = self
+            .setup_terminal
+            .as_ref()
+            .filter(|_| self.visible)
+            .map(|setup| setup.terminal.clone().into_any_element());
+        let setup = crate::setup::render(&self.state, setup_terminal, cx);
         let body = match (setup, Self::active_tab(&snapshot)) {
             (Some(setup), _) => setup,
             (None, None) => {
