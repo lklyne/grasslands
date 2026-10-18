@@ -92,11 +92,11 @@ Per-terminal Ghostty settings (font, size, anything Ghostty accepts) go in `~/.c
 | cmd-w | Close the focused pane (in the editor, close the file tab) |
 | cmd-shift-w | Close the tab |
 | cmd-t | New tab |
-| cmd-shift-[ / ] | Previous / next tab (in the editor, previous / next file) |
+| cmd-shift-[ / ] | Previous / next tab (outside the terminal area, cycles herdr / file tabs / Changes) |
 | cmd-alt-arrows | Focus the neighbouring pane |
 | cmd-ctrl-arrows | Resize the split along that axis |
 | cmd-shift-enter | Zoom the focused pane |
-| cmd-shift-p | Command palette |
+| cmd-k | Command palette |
 | cmd-s | Save the file (editor) |
 
 Terminal bindings work while you type in a terminal. Everything else, ctrl keys included, goes to the terminal. Drag a pane's header onto another pane to swap them, onto another tab to move it there, or onto `+` to give it a new tab.
@@ -121,7 +121,6 @@ RT_CHROME_SCRIPT='menu pane w1:p1; wait 1500; key escape; log after' scripts/dev
 
 - herdr itself has two gaps: plugin panes opened as popups have no pane id or events, so the app can't show them, and toasts sent with `herdr notification show` have no event the app can listen to. See [0005](decisions/0005-herdr-0.9.5-api-gaps.md).
 - Terminal area ([0008](decisions/0008-terminal-area-and-overlay.md)):
-  - The app installs no logger yet, so spawn failures and command errors aren't printed anywhere.
   - A dragged pane header's preview is hidden while it's over a terminal (drop targets still highlight).
   - Close confirmations are native alerts rather than the app's own dialogs.
 - Files and editor ([0007](decisions/0007-active-worktree-and-file-tree.md)):
