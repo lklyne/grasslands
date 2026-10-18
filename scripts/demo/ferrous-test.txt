@@ -1,0 +1,13 @@
+{d}$ cargo nextest run{0}
+{g}   Compiling{0} ferrous v0.6.0 (/ferrous)
+{g}    Finished{0} test profile [unoptimized + debuginfo] target(s) in 6.84s
+{g}    Starting{0} 47 tests across 3 binaries
+{g}        PASS{0} [   0.004s] ferrous arena::tests::reuses_freed_slots
+{g}        PASS{0} [   0.003s] ferrous arena::tests::large_values_fall_back
+{g}        PASS{0} [   0.011s] ferrous shard::tests::routes_by_hash
+{g}        PASS{0} [   0.009s] ferrous lru::tests::evicts_oldest_first
+{g}        PASS{0} [   0.021s] ferrous lru::tests::touch_moves_to_front
+{g}        PASS{0} [   0.142s] ferrous ttl::tests::expires_after_deadline
+{g}        PASS{0} [   0.388s] ferrous::soak concurrent_get_set_8_threads
+{d}------------{0}
+{g}     Summary{0} [   1.204s] {B}47{0} tests run: {B}47{0} {g}passed{0}, 0 skipped

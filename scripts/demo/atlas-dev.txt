@@ -1,0 +1,12 @@
+
+ {g}astro{0}  {g}v5.14.4{0} ready in 612 ms
+
+ ┃ Local    {c}http://localhost:4321/{0}
+ ┃ Network  {d}use --host to expose{0}
+
+{d}14:02:18{0} {c}[watch]{0} src/content/docs/guides/eviction.md
+{d}14:02:18{0} {c}[content]{0} Syncing content
+{d}14:02:18{0} {c}[content]{0} Synced content
+{d}14:02:19{0} {g}[200]{0} /guides/eviction/ {d}38ms{0}
+{d}14:02:51{0} {c}[watch]{0} src/content/docs/guides/eviction.md
+{d}14:02:51{0} {g}[200]{0} /guides/eviction/ {d}22ms{0}
