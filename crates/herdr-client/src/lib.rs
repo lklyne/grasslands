@@ -14,6 +14,7 @@ mod client;
 mod endpoint;
 mod error;
 pub mod events;
+mod machines;
 mod setup;
 mod state;
 mod sync;
@@ -23,6 +24,10 @@ pub use client::*;
 pub use endpoint::{ALLOW_LIVE_ENV, DEV_ROOT, Endpoint, check_dev_socket};
 pub use error::{EVENTS_LOST, Error, Result};
 pub use events::Event;
+pub use machines::{
+    DEV_MACHINES_ENV, MachineLink, MachineProfile, MachineStatus, dev_allowed, list_machines,
+    socket_dir,
+};
 pub use setup::{Check, Fix, FixCommand, InstallMethod, Installed, MIN_VERSION, Version};
 pub use state::{SplitRef, SplitTree, State, Tab, Workspace};
 pub use sync::{ConnectionStatus, SessionSync, Update};
