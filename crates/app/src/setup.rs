@@ -40,6 +40,10 @@ pub struct Setup {
     /// The last fix that ran. Its terminal stays on screen until the next
     /// fix replaces it or setup finishes.
     pub run: Option<FixRun>,
+    /// The command for the fix `Needed` offers, found with the check.
+    pub fix_command: Option<herdr::FixCommand>,
+    /// Why the last fix's terminal couldn't start.
+    pub spawn_error: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -150,11 +154,9 @@ fn connection_problem(app: &AppState, cx: &App) -> Option<AnyElement> {
 /// terminal; after one, the fix's terminal beside the screen says why it
 /// didn't work.
 fn needed(state: &Entity<AppState>, check: &Check, fix_ran: bool, cx: &App) -> AnyElement {
-    let config = state.read(cx).herdr_config.clone();
-    let command = check
-        .fix()
-        .zip(config.as_ref())
-        .and_then(|(fix, config)| config.fix_command(fix));
+    let setup = &state.read(cx).setup;
+    let command = setup.fix_command.clone();
+    let spawn_error = setup.spawn_error.clone();
     let (title, description) = match check {
         Check::Ready => return div().into_any_element(),
         Check::Missing => (
@@ -190,16 +192,16 @@ fn needed(state: &Entity<AppState>, check: &Check, fix_ran: bool, cx: &App) -> A
             )
         }
     };
-    let description = if fix_ran {
-        format!("{description} That didn't fix it; the terminal says why.")
-    } else {
-        description
+    let description = match (&spawn_error, fix_ran) {
+        (Some(error), _) => format!("{description} Couldn't open a terminal for the fix: {error}."),
+        (None, true) => format!("{description} That didn't fix it; the terminal says why."),
+        (None, false) => description,
     };
     let mut actions = v_flex().gap_3().items_center();
     if let Some(fix) = check.fix().filter(|_| command.is_some()) {
         actions = actions.child(fix_button(state, fix));
     }
-    if let Some(command) = command.filter(|_| !fix_ran) {
+    if let Some(command) = command.filter(|_| !fix_ran || spawn_error.is_some()) {
         actions = actions.child(command_line(command.display().to_owned(), cx));
     }
     Empty::new()

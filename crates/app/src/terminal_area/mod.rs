@@ -339,7 +339,9 @@ impl TerminalArea {
             }
             Err(error) => {
                 tracing::error!("herdr setup terminal: {error:#}");
-                self.state.update(cx, |state, cx| state.fix_exited(cx));
+                self.state.update(cx, |state, cx| {
+                    state.fix_failed_to_start(format!("{error:#}"), cx)
+                });
             }
         }
     }
