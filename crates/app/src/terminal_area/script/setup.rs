@@ -6,11 +6,17 @@
 //! and the app connects; with `RT_SETUP_FIX=fails` it checks a failing fix
 //! leaves the screen offering the fix again.
 //!
-//! Point it at a dev session only; the fix for `server-outdated` stops it:
+//! Point it at a dev session only; the fix for `server-outdated` stops it.
+//! `scripts/dev-run` sets `HERDR_BIN`, so override it after, with `env`. A
+//! stand-in `brew` first on `PATH` keeps a fix from installing anything:
 //!
 //! ```sh
-//! HERDR_BIN=/nonexistent/herdr RT_SETUP_EXPECT=missing RT_SCRIPT=setup scripts/dev-run cargo run -p app
+//! RT_SETUP_EXPECT=missing RT_SCRIPT=setup scripts/dev-run env HERDR_BIN=/nonexistent/herdr cargo run -p app
 //! ```
+//!
+//! `unreachable` needs a session with no server (dev-run starts one for its
+//! own): add `HERDR_SESSION=setup-unreachable` and that session's socket
+//! under `~/.local/share/grasslands-herdr/herdr/sessions/`.
 
 use std::time::Duration;
 

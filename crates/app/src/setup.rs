@@ -79,7 +79,7 @@ pub fn render(
             ),
         ),
         Stage::Done => done(state, cx),
-        Stage::Needed(check) => needed(state, check, terminal.is_none(), cx),
+        Stage::Needed(check) => needed(state, check, terminal.is_some(), cx),
     };
     let card = v_flex()
         .id("herdr-setup")
@@ -136,9 +136,11 @@ fn connection_problem(app: &AppState, cx: &App) -> Option<AnyElement> {
     )
 }
 
-/// What herdr needs and the button that fixes it. `offer_command` adds the
-/// command for anyone who'd rather run it in their own terminal.
-fn needed(state: &Entity<AppState>, check: &Check, offer_command: bool, cx: &App) -> AnyElement {
+/// What herdr needs and the button that fixes it. Before a fix has run, the
+/// command is offered too, for anyone who'd rather run it in their own
+/// terminal; after one, the fix's terminal beside the screen says why it
+/// didn't work.
+fn needed(state: &Entity<AppState>, check: &Check, fix_ran: bool, cx: &App) -> AnyElement {
     let config = state.read(cx).herdr_config.clone();
     let command = check
         .fix()
@@ -179,11 +181,16 @@ fn needed(state: &Entity<AppState>, check: &Check, offer_command: bool, cx: &App
             )
         }
     };
+    let description = if fix_ran {
+        format!("{description} That didn't fix it; the terminal says why.")
+    } else {
+        description
+    };
     let mut actions = v_flex().gap_3().items_center();
     if let Some(fix) = check.fix().filter(|_| command.is_some()) {
         actions = actions.child(fix_button(state, fix));
     }
-    if let Some(command) = command.filter(|_| offer_command) {
+    if let Some(command) = command.filter(|_| !fix_ran) {
         actions = actions.child(command_line(command.display().to_owned(), cx));
     }
     Empty::new()
