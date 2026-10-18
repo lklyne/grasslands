@@ -6,12 +6,10 @@
 //! going offline and back (`docker stop`, `docker start`). Each step is
 //! screenshotted to `target/script-shots/`.
 //!
-//! With `RT_ADD_MACHINE=<ssh target>` it then runs the real add flow for that
-//! target (typing `RT_ADD_KEYS` into its terminal, if set) and renames what
-//! herdr saved to `RT_ADD_LABEL` (default `dockerbox2`). It doesn't remove
-//! it; do that with `herdr machine remove`. Debug builds only add (and then
-//! rename) with `RT_ALLOW_MACHINE_EDITS=1`, so pass that with
-//! `RT_ADD_MACHINE`.
+//! With `RT_ADD_MACHINE=<ssh target>` and `RT_ALLOW_MACHINE_EDITS=1` it
+//! then runs the real add flow for that target (typing `RT_ADD_KEYS` into its
+//! terminal, if set) and renames what herdr saved to `RT_ADD_LABEL` (default
+//! `dockerbox2`). It doesn't remove it; do that with `herdr machine remove`.
 //!
 //! ```sh
 //! GRASSLANDS_DEV_MACHINES=dockerbox RT_SCRIPT=remote scripts/dev-run cargo run -p app
@@ -287,7 +285,10 @@ impl Run {
         self.check(back, "dockerbox recovers with an attached terminal");
         self.shoot(cx, "remote-recovered");
 
-        if let Ok(target) = std::env::var("RT_ADD_MACHINE") {
+        // Adding edits the user's saved-machine list, so it takes both.
+        if let Ok(target) = std::env::var("RT_ADD_MACHINE")
+            && std::env::var_os("RT_ALLOW_MACHINE_EDITS").is_some_and(|v| v == "1")
+        {
             let label = std::env::var("RT_ADD_LABEL").unwrap_or_else(|_| "dockerbox2".into());
             self.add_flow(cx, &target, &label).await?;
         }
