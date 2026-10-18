@@ -15,6 +15,8 @@ use gpui_kit::*;
 
 use super::SshHost;
 
+type Submit = Rc<dyn Fn(String, &mut App)>;
+
 /// Opens the dialog, suggesting `hosts`. Connect calls `on_connect` with the
 /// host text, in the main window `window`, after the dialog closes.
 pub fn open_add_machine(
@@ -27,7 +29,7 @@ pub fn open_add_machine(
     let hosts = Rc::new(hosts);
     let on_connect = Rc::new(on_connect);
     // Back in the main window once the dialog is gone, as `prompt::ask_name` does.
-    let submit: Rc<dyn Fn(String, &mut App)> = Rc::new(move |host, cx| {
+    let submit: Submit = Rc::new(move |host, cx| {
         let on_connect = on_connect.clone();
         cx.defer(move |cx| {
             cx.update_window(main, |_, window, cx| on_connect(host, window, cx))
@@ -87,9 +89,11 @@ pub fn open_add_machine(
                 .child(
                     v_flex()
                         .gap_3()
-                        .child(DialogDescription::new().child(
-                            "grasslands connects over SSH and uses herdr on that machine.",
-                        ))
+                        .child(
+                            DialogDescription::new().child(
+                                "grasslands connects over SSH and uses herdr on that machine.",
+                            ),
+                        )
                         .child(
                             div()
                                 .capture_action(typed_enter)
@@ -132,7 +136,10 @@ pub fn open_add_machine(
 /// both are empty.
 fn chosen_host(query: &Entity<CommandState>, hosts: &[SshHost], cx: &App) -> Option<String> {
     let state = query.read(cx);
-    if let Some(host) = state.selected_index().and_then(|index| hosts.get(index.row)) {
+    if let Some(host) = state
+        .selected_index()
+        .and_then(|index| hosts.get(index.row))
+    {
         return Some(host.alias.clone());
     }
     let typed = state.query(cx).trim().to_owned();
@@ -154,7 +161,11 @@ fn host_list(query: &Entity<CommandState>, hosts: &[SshHost], cx: &App) -> Comma
                 h_flex()
                     .w_full()
                     .gap_2()
-                    .child(Icon::new(assets::IconName::Server).small().text_color(muted))
+                    .child(
+                        Icon::new(assets::IconName::Server)
+                            .small()
+                            .text_color(muted),
+                    )
                     .child(div().min_w_0().truncate().child(alias.clone()))
                     .child(
                         div()

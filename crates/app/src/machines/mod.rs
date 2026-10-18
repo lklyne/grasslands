@@ -65,6 +65,8 @@ impl MachineState {
 }
 
 type PointCallback = Rc<dyn Fn(Point<Pixels>, &mut Window, &mut App)>;
+/// A UI callback with the user's answer: a new name, or enabled or not.
+pub type AnswerCallback<T> = Rc<dyn Fn(T, &mut Window, &mut App)>;
 
 /// A sidebar group's header: chevron, status dot, label, status note and
 /// a ··· button. Build with [`machine_header`].
@@ -130,10 +132,12 @@ impl RenderOnce for MachineHeader {
             .size(px(7.))
             .rounded_full()
             .bg(self.state.color(cx));
-        let note = self
-            .state
-            .note()
-            .map(|note| div().flex_shrink_0().text_color(theme.muted_foreground).child(note));
+        let note = self.state.note().map(|note| {
+            div()
+                .flex_shrink_0()
+                .text_color(theme.muted_foreground)
+                .child(note)
+        });
         let more = self.on_menu.clone().map(|on_menu| {
             Button::new(SharedString::from(format!("machine-more-{id}")))
                 .ghost()
@@ -188,9 +192,9 @@ pub struct MachineActions {
     pub on_reconnect: Callback,
     /// Sign In… (needs sign-in) or Set Up… (needs setup).
     pub on_fix: Callback,
-    pub on_rename: Rc<dyn Fn(String, &mut Window, &mut App)>,
+    pub on_rename: AnswerCallback<String>,
     /// With the new value: `false` disables.
-    pub on_set_enabled: Rc<dyn Fn(bool, &mut Window, &mut App)>,
+    pub on_set_enabled: AnswerCallback<bool>,
     pub on_remove: Callback,
 }
 
@@ -238,7 +242,9 @@ pub fn machine_menu(label: &str, state: MachineState, actions: MachineActions) -
     let on_set_enabled = actions.on_set_enabled;
     entries.push(MenuEntry::item(
         if enable { "Enable" } else { "Disable" },
-        callback(Rc::new(move |window, cx| on_set_enabled(enable, window, cx))),
+        callback(Rc::new(move |window, cx| {
+            on_set_enabled(enable, window, cx)
+        })),
     ));
     entries.push(MenuEntry::Separator);
 
@@ -313,7 +319,8 @@ pub fn offline_screen(
             Some("Sign In…"),
         ),
         MachineState::NeedsSignIn => (
-            EmptyMedia::new().child(Icon::new(assets::IconName::KeyRound).text_color(theme.warning)),
+            EmptyMedia::new()
+                .child(Icon::new(assets::IconName::KeyRound).text_color(theme.warning)),
             format!("{label} needs you to sign in"),
             Some(with_detail(
                 "SSH wants a password, passphrase or host key approval. Sign in from a \
@@ -396,7 +403,9 @@ pub fn remote_files_empty(label: &str, cx: &App) -> AnyElement {
                         EmptyMedia::new()
                             .child(Icon::new(IconName::Folder).text_color(theme.muted_foreground)),
                     )
-                    .title(EmptyTitle::new().child(format!("Files on {label} aren't available yet")))
+                    .title(
+                        EmptyTitle::new().child(format!("Files on {label} aren't available yet")),
+                    )
                     .description(EmptyDescription::new().child(format!(
                         "The file tree and editor read this Mac's disk. Use the terminal for \
                          files on {label} for now."
@@ -404,4 +413,46 @@ pub fn remote_files_empty(label: &str, cx: &App) -> AnyElement {
             ),
         )
         .into_any_element()
+}
+
+#[cfg(test)]
+mod tests {
+    use std::rc::Rc;
+
+    use super::{MachineActions, MachineState, machine_menu};
+    use crate::chrome::MenuEntry;
+
+    fn labels(state: MachineState) -> Vec<String> {
+        let noop = Rc::new(|_: &mut gpui_kit::Window, _: &mut gpui_kit::App| {});
+        let actions = MachineActions {
+            on_reconnect: noop.clone(),
+            on_fix: noop.clone(),
+            on_rename: Rc::new(|_, _, _| {}),
+            on_set_enabled: Rc::new(|_, _, _| {}),
+            on_remove: noop,
+        };
+        machine_menu("box", state, actions)
+            .into_iter()
+            .filter_map(|entry| match entry {
+                MenuEntry::Item { label, .. } => Some(label.to_string()),
+                MenuEntry::Separator => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_machine_needing_setup_offers_set_up() {
+        assert_eq!(
+            labels(MachineState::NeedsSetup),
+            ["Reconnect", "Set Up…", "Rename…", "Disable", "Remove…"]
+        );
+    }
+
+    #[test]
+    fn a_disabled_machine_offers_enable() {
+        assert_eq!(
+            labels(MachineState::Disabled),
+            ["Reconnect", "Rename…", "Enable", "Remove…"]
+        );
+    }
 }

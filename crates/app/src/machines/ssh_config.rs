@@ -213,7 +213,8 @@ fn include_files(pattern: &str, base: &Path) -> Vec<PathBuf> {
 
 /// ssh's pattern match: `*` is any run of characters, `?` any one.
 fn wildcard_match(pattern: &str, text: &str) -> bool {
-    let (pattern, text): (Vec<char>, Vec<char>) = (pattern.chars().collect(), text.chars().collect());
+    let (pattern, text): (Vec<char>, Vec<char>) =
+        (pattern.chars().collect(), text.chars().collect());
     let (mut p, mut t) = (0, 0);
     let mut star: Option<(usize, usize)> = None;
     while t < text.len() {
