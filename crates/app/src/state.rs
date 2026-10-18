@@ -183,6 +183,8 @@ pub struct AppState {
     /// The old Local server version last sent to the setup check, so it's
     /// checked once rather than on every snapshot.
     old_server_checked: Option<String>,
+    /// Machines this process's add runs saved (see `edit_allowed`).
+    added_here: Vec<MachineId>,
     _run_check: Option<Task<()>>,
     _cwd_poll: Option<Task<()>>,
     _check: Option<Task<()>>,
@@ -251,6 +253,7 @@ impl AppState {
             machine_run: None,
             runs: 0,
             old_server_checked: None,
+            added_here: Vec::new(),
             _run_check: None,
             _cwd_poll: None,
             _check: None,
@@ -552,6 +555,12 @@ impl AppState {
         else {
             return Task::ready(Err(anyhow::anyhow!("{id} isn't a saved machine")));
         };
+        if !self.edit_allowed(id) {
+            tracing::warn!("machine {command} {id}: refused in a debug build");
+            return Task::ready(Err(anyhow::anyhow!(
+                "debug builds only change machines listed in GRASSLANDS_DEV_MACHINES"
+            )));
+        }
         let mut argv = vec!["machine".to_owned(), command.to_owned(), profile_id.clone()];
         argv.extend(args);
         let run = cx.background_executor().spawn(async move {
@@ -579,6 +588,18 @@ impl AppState {
         })
     }
 
+    /// Debug builds share herdr's saved machines with the user's real
+    /// sessions, so they only change a machine listed in
+    /// `GRASSLANDS_DEV_MACHINES`, or one this process added with
+    /// `RT_ALLOW_MACHINE_EDITS=1`.
+    fn edit_allowed(&self, id: &MachineId) -> bool {
+        !cfg!(debug_assertions)
+            || self
+                .machine(id)
+                .is_some_and(|m| machines::dev_allowed(&m.label))
+            || (edits_allowed_by_env() && self.added_here.contains(id))
+    }
+
     pub fn rename_machine(
         &mut self,
         id: &MachineId,
@@ -586,7 +607,8 @@ impl AppState {
         cx: &mut Context<Self>,
     ) -> Task<anyhow::Result<()>> {
         sounds::play(Cue::Tap, sounds::subtle());
-        self.machine_command(id, "rename", vec!["--label".into(), label.into()], cx)
+        // `=` keeps a label starting with `-` from reading as a flag.
+        self.machine_command(id, "rename", vec![format!("--label={label}")], cx)
     }
 
     pub fn disable_machine(
@@ -650,6 +672,13 @@ impl AppState {
             && (host.is_empty() || host.starts_with('-') || host.contains(char::is_whitespace))
         {
             tracing::warn!("add machine: {host:?} isn't an SSH host");
+            return;
+        }
+        if matches!(task, MachineTask::Add { .. })
+            && cfg!(debug_assertions)
+            && !edits_allowed_by_env()
+        {
+            tracing::warn!("add machine: debug builds need RT_ALLOW_MACHINE_EDITS=1");
             return;
         }
         let profile = match &task {
@@ -729,7 +758,8 @@ impl AppState {
         else {
             return true;
         };
-        if added.is_some() {
+        if let Some(id) = &added {
+            self.added_here.push(id.clone());
             run.machine = added;
         }
         let connected = run
@@ -1548,6 +1578,12 @@ impl AppState {
     }
 }
 
+/// `RT_ALLOW_MACHINE_EDITS=1`: a debug build may add machines (and change
+/// the ones it added).
+fn edits_allowed_by_env() -> bool {
+    std::env::var_os("RT_ALLOW_MACHINE_EDITS").is_some_and(|v| v == "1")
+}
+
 /// Stops `links` at once, each on its own thread: each one waits on ssh.
 fn stop_links(links: Vec<MachineLink>) {
     std::thread::scope(|scope| {
@@ -1747,6 +1783,30 @@ mod tests {
         let task = cx.update(|cx| state.read(cx).close_pane_on(&gone_machine(), "w1:p1", cx));
         let result = cx.foreground_executor().block_test(task);
         assert!(matches!(result, Err(herdr::Error::Refused(m)) if m.contains("no longer saved")));
+    }
+
+    #[gpui::test]
+    fn a_debug_build_wont_rename_a_machine_outside_the_dev_list(cx: &mut TestAppContext) {
+        let state = cx.new(|cx| AppState::new(Ok(offline_config()), cx));
+        state.update(cx, |state, _| {
+            state.add_test_machine("c0ffee", "users-real-box", Arc::default());
+        });
+        let task = state.update(cx, |state, cx| {
+            state.rename_machine(&MachineId::Remote("c0ffee".into()), "x", cx)
+        });
+        let result = cx.foreground_executor().block_test(task);
+        assert!(result.is_err_and(|e| e.to_string().contains("GRASSLANDS_DEV_MACHINES")));
+    }
+
+    #[gpui::test]
+    fn a_debug_build_wont_add_a_machine_without_the_env_switch(cx: &mut TestAppContext) {
+        let state = cx.new(|cx| AppState::new(Ok(offline_config()), cx));
+        state.update(cx, |state, cx| {
+            let host = "dockerbox2".into();
+            state.start_machine_run(super::MachineTask::Add { host }, cx);
+        });
+        let started = cx.read(|cx| state.read(cx).machine_run().is_some());
+        assert!(!started);
     }
 
     fn needing_install(cx: &mut TestAppContext) -> gpui_kit::Entity<AppState> {
