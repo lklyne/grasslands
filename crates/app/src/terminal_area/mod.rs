@@ -93,6 +93,36 @@ struct DraggedPane {
     label: SharedString,
 }
 
+/// A tab being dragged along the tab bar to a new place (`tab.move`).
+#[derive(Clone)]
+struct DraggedTab {
+    tab_id: String,
+    /// Its place in the bar, to show which side of a target it will land on.
+    index: usize,
+    label: SharedString,
+}
+
+impl Render for DraggedTab {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .px_2()
+            .py_0p5()
+            .rounded_sm()
+            .bg(cx.theme().popover)
+            .border_1()
+            .border_color(cx.theme().border)
+            .text_sm()
+            .child(self.label.clone())
+    }
+}
+
+/// herdr's `tab.move` index for dropping the tab at `from` on the tab at
+/// `to`, so it lands where `to` was. herdr counts the gaps of the bar before
+/// the move, so a tab moving right skips past its target.
+fn tab_insert_index(from: usize, to: usize) -> usize {
+    if to > from { to + 1 } else { to }
+}
+
 /// GPUI's own drag preview, left empty: the main window draws under the
 /// terminals, so the visible preview is a [`DragChip`] in the overlay.
 struct NoPreview;
@@ -205,6 +235,9 @@ pub struct TerminalArea {
     /// once herdr shows it. The bar is outside the area, so a click there
     /// takes focus out of it.
     focus_on_show: Option<String>,
+    /// The dragged tab and the tab the drag last ticked over, so each new
+    /// tab ticks once.
+    tab_drag_tick: Option<(usize, usize)>,
     _subscriptions: Vec<Subscription>,
     _liveness: Task<()>,
 }
@@ -238,6 +271,7 @@ impl TerminalArea {
             visible: true,
             shown_tab: None,
             focus_on_show: None,
+            tab_drag_tick: None,
             _subscriptions: subscriptions,
             _liveness: Self::watch_liveness(cx),
         };
@@ -800,6 +834,8 @@ impl TerminalArea {
             .map(|w| w.tabs.iter().map(|tab| tab.info.clone()).collect())
             .unwrap_or_default();
         let active_id = active.map(|tab| tab.info.tab_id.clone());
+        let order: Rc<[String]> = tabs.iter().map(|tab| tab.tab_id.clone()).collect();
+        let area = cx.entity().downgrade();
         // The strip wears the panel headers' background; the selected tab
         // takes a neutral fill.
         let (strip_bg, active_bg, muted, border, drop) = (
@@ -809,6 +845,7 @@ impl TerminalArea {
             theme.border,
             theme.drop_target,
         );
+        let drag_border = theme.drag_border;
 
         h_flex()
             // The dock's 30px title bar plus its panels' 1px top border, so
@@ -819,7 +856,7 @@ impl TerminalArea {
             .border_b_1()
             .border_color(border)
             .text_sm()
-            .children(tabs.into_iter().map(|tab| {
+            .children(tabs.into_iter().enumerate().map(|(index, tab)| {
                 let is_active = herdr_selected && active_id.as_deref() == Some(tab.tab_id.as_str());
                 let (focus_id, close_id, drop_id, menu_id) = (
                     tab.tab_id.clone(),
@@ -827,6 +864,20 @@ impl TerminalArea {
                     tab.tab_id.clone(),
                     tab.tab_id.clone(),
                 );
+                // herdr's TUI numbers tabs by place; `number` stays put
+                // when a tab moves.
+                let label = if tab.label.is_empty() {
+                    (index + 1).to_string()
+                } else {
+                    tab.label.clone()
+                };
+                let dragged = DraggedTab {
+                    tab_id: tab.tab_id.clone(),
+                    index,
+                    label: label.clone().into(),
+                };
+                let accept_id = tab.tab_id.clone();
+                let (area, order) = (area.clone(), order.clone());
                 h_flex()
                     .id(SharedString::from(format!("tab-{}", tab.tab_id)))
                     .relative()
@@ -847,12 +898,12 @@ impl TerminalArea {
                             el.text_color(muted)
                         }
                     })
-                    .child(status_dot(tab.agent_status, cx))
-                    .child(if tab.label.is_empty() {
-                        tab.number.to_string()
-                    } else {
-                        tab.label.clone()
-                    })
+                    // An idle tab shows no dot; its muted label says enough.
+                    .when(
+                        !matches!(tab.agent_status, AgentStatus::Idle | AgentStatus::Unknown),
+                        |el| el.child(status_dot(tab.agent_status, cx)),
+                    )
+                    .child(label)
                     .child(
                         div()
                             .id(SharedString::from(format!("tab-close-{}", tab.tab_id)))
@@ -882,6 +933,45 @@ impl TerminalArea {
                             );
                         }),
                     )
+                    .on_drag(dragged, move |dragged, _, _, cx| {
+                        area.update(cx, |this, _| this.tab_drag_tick = None).ok();
+                        crate::sounds::play(cues::Cue::Select, cues::PlayOptions::default());
+                        crate::workspace::keep_terminals_during_drag(cx);
+                        cx.new(|_| dragged.clone())
+                    })
+                    .can_drop(move |dragged, _, _| {
+                        dragged
+                            .downcast_ref::<DraggedTab>()
+                            .is_none_or(|d| d.tab_id != accept_id)
+                    })
+                    // The line marks the side the tab will land on.
+                    .drag_over::<DraggedTab>(move |style, dragged, _, _| {
+                        let style = style.border_color(drag_border);
+                        if dragged.index < index {
+                            style.border_r_2()
+                        } else {
+                            style.border_l_2()
+                        }
+                    })
+                    .on_drag_move(cx.listener(
+                        move |this, event: &DragMoveEvent<DraggedTab>, _, cx| {
+                            if event.bounds.contains(&event.event.position) {
+                                this.tab_drag_tick_over(event.drag(cx).index, index);
+                            }
+                        },
+                    ))
+                    .on_drop(cx.listener(move |this, dragged: &DraggedTab, _, cx| {
+                        this.tab_drag_tick = None;
+                        // Where the tab is now: tabs may have come or gone,
+                        // or the bar shows another workspace, since the drag began.
+                        let Some(from) = order.iter().position(|id| *id == dragged.tab_id) else {
+                            return;
+                        };
+                        this.state
+                            .read(cx)
+                            .move_tab(&dragged.tab_id, tab_insert_index(from, index), cx)
+                            .detach_and_log_err(cx);
+                    }))
                     .drag_over::<DraggedPane>(move |style, _, _, _| style.bg(drop))
                     .on_drop(cx.listener(move |this, dragged: &DraggedPane, _, cx| {
                         let destination = PaneMoveDestination::Tab {
@@ -928,6 +1018,26 @@ impl TerminalArea {
                     })),
             )
             .into_any_element()
+    }
+
+    /// Ticks as a drag from tab `from` enters tab `over`, a semitone higher
+    /// for each tab further right than where it started (lower going left).
+    /// The first move only notes where the drag is.
+    fn tab_drag_tick_over(&mut self, from: usize, over: usize) {
+        let last = match self.tab_drag_tick {
+            Some((origin, last)) if origin == from => last,
+            _ => {
+                self.tab_drag_tick = Some((from, over));
+                return;
+            }
+        };
+        if last == over {
+            return;
+        }
+        self.tab_drag_tick = Some((from, over));
+        let tabs = over as f64 - from as f64;
+        let options = cues::PlayOptions::default().pitch(2f64.powf(tabs / 12.0));
+        crate::sounds::play(cues::Cue::Select, options);
     }
 
     fn render_node(

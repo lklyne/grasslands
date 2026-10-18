@@ -1,0 +1,28 @@
+{c}›{0} Add a /api/stripe/webhook route that verifies the signature and
+  marks the booking paid on checkout.session.completed.
+
+{d}•{0} {B}Explored{0}
+  {d}└{0} Read src/lib/stripe.ts, src/app/api/bookings/route.ts
+  {d}└{0} Search {c}checkout.session{0} in src
+
+{d}•{0} Signature verification needs the official SDK, and the route has to
+  read the raw body, so I'll opt it out of body parsing.
+
+{d}•{0} {B}Edited{0} src/app/api/stripe/webhook/route.ts {g}(+52){0}
+  {d}└{0} {G} 1 +import Stripe from "stripe";{0}
+    {G} 2 +import { markBookingPaid } from "@/lib/bookings";{0}
+    {G} 3 +{0}
+    {G} 4 +export async function POST(req: Request) {{0}
+    {G} 5 +  const sig = req.headers.get("stripe-signature");{0}
+    {d}  … +47 lines{0}
+
+{y}╭──────────────────────────────────────────────────────────────╮{0}
+{y}│{0} {B}Allow command?{0}                                               {y}│{0}
+{y}│{0}                                                              {y}│{0}
+{y}│{0}   {c}$ pnpm add stripe@19.1.0{0}                                   {y}│{0}
+{y}│{0}                                                              {y}│{0}
+{y}│{0} {c}›{0} {B}1. Yes, run it{0}                                             {y}│{0}
+{y}│{0}   2. Yes, and don't ask again for pnpm add                   {y}│{0}
+{y}│{0}   3. No, and give feedback                                   {y}│{0}
+{y}╰──────────────────────────────────────────────────────────────╯{0}
+  {d}Press enter to confirm or esc to cancel{0}

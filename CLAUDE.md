@@ -1,13 +1,18 @@
 # grasslands
 
-A native Rust desktop GUI for herdr: GPUI Kit for the UI, gpui-libghostty for terminals, herdr 0.9.5 as the headless engine. The product spec is `docs/spec.md`. The herdr socket API schema is `docs/herdr-api-0.9.5.schema.json`; the docs are at herdr.dev/docs/socket-api and herdr.dev/docs/cli-reference.
+A native Rust desktop GUI for herdr: GPUI Kit for the UI, gpui-libghostty for terminals, herdr 0.9.5 as the headless engine. The product spec is `docs/spec.md`. The herdr socket API schema is `docs/herdr-api-0.9.5.schema.json`; the docs are at herdr.dev/docs/socket-api and herdr.dev/docs/cli-reference. We aim to wrap some helper ui around herdr, but keep herdr the fully-functional source of truth. 
 
 Load the `rust-best-practices` skill before writing Rust.
+
+## Important codebase conventions
+- For all UI related tasks, look at GPUI https://gpui.rs/ and GPUI-KIT https://gpui-kit.com/ use base primitives unless explicitly asked to build custom
+- Use built in theme colors, type ramp, and component conventions unless explicitly requested
+- Follow conventions to add sounds to new features when relevant
 
 ## herdr
 
 - The live herdr session is the default. Running `herdr` and the app against it is fine; when asked to launch or run the app, use `scripts/relaunch-main` (rebuilds and restarts the main instance).
-- The user runs real agents there. Don't do anything destructive: no closing their workspaces, tabs or panes, no stopping, restarting or upgrading the herdr server.
+- The user runs real agents there. Don't do anything destructive: no closing their workspaces, tabs or panes, no stopping, restarting or upgrading the herdr server unless you're asked to
 - For testing, use the demo session: `scripts/herdr-dev <args>` for herdr commands and `scripts/dev-run <command>` for the app (e.g. `scripts/dev-run cargo run -p app`). Create and close whatever you like there.
 - Code must honor `HERDR_BIN`, `HERDR_SESSION` and `HERDR_SOCKET_PATH`.
 

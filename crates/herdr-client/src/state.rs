@@ -26,7 +26,8 @@ pub struct State {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Workspace {
     pub info: WorkspaceInfo,
-    /// In herdr's order (by `number`).
+    /// In herdr's order: the snapshot's, not `number`, which `tab.move`
+    /// leaves as it was.
     pub tabs: Vec<Tab>,
 }
 
@@ -172,13 +173,12 @@ impl State {
             focused_tab_id,
             focused_pane_id,
             mut workspaces,
-            mut tabs,
+            tabs,
             panes,
             agents,
             ..
         } = snapshot;
         workspaces.sort_by_key(|w| w.number);
-        tabs.sort_by_key(|t| t.number);
 
         let mut tabs_by_workspace: BTreeMap<WorkspaceId, Vec<Tab>> = BTreeMap::new();
         for info in tabs {

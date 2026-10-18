@@ -1,0 +1,21 @@
+{d}>{0} tidepool@0.14.2 dev
+{d}>{0} next dev --turbopack
+
+   {B}▲ Next.js 16.2.1{0} (Turbopack)
+   - Local:        http://localhost:3000
+   - Network:      http://192.168.1.24:3000
+   - Environments: .env.local
+
+ {g}✓{0} Starting...
+ {g}✓{0} Ready in 1124ms
+ {d}○{0} Compiling / ...
+ {g}✓{0} Compiled / in 2.1s
+ GET / {g}200{0} in 2381ms
+ GET /listings/sea-ranch-a-frame {g}200{0} in 412ms
+ {d}○{0} Compiling /checkout ...
+ {g}✓{0} Compiled /checkout in 864ms
+ GET /checkout?listing=sea-ranch-a-frame&nights=3 {g}200{0} in 991ms
+ POST /api/quote {g}200{0} in 87ms
+ {g}✓{0} Compiled in 214ms
+ GET /checkout?listing=sea-ranch-a-frame&nights=3 {g}200{0} in 143ms
+ POST /api/quote {g}200{0} in 61ms

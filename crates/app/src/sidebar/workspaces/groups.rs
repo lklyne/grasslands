@@ -135,7 +135,11 @@ pub fn reordered(entries: &[Entry], dragged: &Slot, target: &Slot) -> Option<Vec
             _ => blocks.push((slot.group, vec![slot.workspace_id])),
         }
     }
-    let block_of = |id: &str| blocks.iter().position(|(_, ids)| ids.iter().any(|i| i == id));
+    let block_of = |id: &str| {
+        blocks
+            .iter()
+            .position(|(_, ids)| ids.iter().any(|i| i == id))
+    };
     let (from, to) = (
         block_of(&dragged.workspace_id)?,
         block_of(&target.workspace_id)?,

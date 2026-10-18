@@ -25,6 +25,7 @@ use gpui_kit::*;
 use serde_json::json;
 
 mod chrome;
+mod drags;
 mod settings;
 mod titlebar;
 
@@ -37,7 +38,7 @@ pub fn requested() -> Option<String> {
 }
 
 pub fn start(scenario: String, area: Entity<TerminalArea>, window: &mut Window, cx: &mut App) {
-    if !["terminals", "chrome", "titlebar", "settings"].contains(&scenario.as_str()) {
+    if !["terminals", "chrome", "titlebar", "settings", "drags"].contains(&scenario.as_str()) {
         eprintln!("script: unknown scenario {scenario:?}");
         return;
     }
@@ -52,6 +53,7 @@ pub fn start(scenario: String, area: Entity<TerminalArea>, window: &mut Window, 
                 "chrome" => run.chrome(cx).await,
                 "titlebar" => run.titlebar(cx).await,
                 "settings" => run.settings(cx).await,
+                "drags" => run.drags(cx).await,
                 _ => run.terminals(cx).await,
             };
             if let Err(error) = result {

@@ -15,8 +15,10 @@
 //! that repo. Drag a row to reorder (`workspace.move_block`): a repo group
 //! moves as one block, a linked worktree only within its group.
 
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
+use std::rc::Rc;
 use std::time::Duration;
 
 use gpui_kit::component::button::Button;
@@ -72,6 +74,9 @@ pub struct WorkspaceList {
     /// The dragged row and the row the drag last ticked over, so each new
     /// row ticks once.
     drag_tick: Option<(usize, usize)>,
+    /// Where each workspace's row was drawn last frame, for the script's
+    /// in-app pointer input.
+    drawn_rows: Rc<RefCell<HashMap<String, Bounds<Pixels>>>>,
     focus: FocusHandle,
     _observe: Subscription,
     _subscribe: Subscription,
@@ -250,6 +255,7 @@ impl WorkspaceList {
             reading: HashSet::new(),
             heads,
             drag_tick: None,
+            drawn_rows: Rc::default(),
             focus: cx.focus_handle(),
             _observe: observe,
             _subscribe: subscribe,
@@ -704,10 +710,7 @@ impl WorkspaceList {
             .rounded_sm()
             .cursor_pointer()
             .when(focused, |this| this.bg(theme.sidebar_accent))
-            .hover(|this| {
-                this.bg(theme.sidebar_accent.opacity(0.6))
-                    .pr(actions_width)
-            })
+            .hover(|this| this.bg(theme.sidebar_accent.opacity(0.6)).pr(actions_width))
             .on_click(cx.listener(move |this, _, _, cx| this.activate_workspace(&row_id, cx)))
             .on_mouse_down(MouseButton::Right, move |event, window, cx| {
                 open_workspace_menu(&menu_id, event.position, window, cx);
@@ -747,6 +750,18 @@ impl WorkspaceList {
             .child(label)
             .children(branch)
             .child(actions)
+            .child({
+                let drawn = self.drawn_rows.clone();
+                let id = info.workspace_id.clone();
+                canvas(
+                    move |bounds, _, _| {
+                        drawn.borrow_mut().insert(id, bounds);
+                    },
+                    |_, _, _, _| {},
+                )
+                .absolute()
+                .size_full()
+            })
             .into_any_element()
     }
 }
@@ -856,6 +871,7 @@ impl Panel for WorkspaceList {
 impl Render for WorkspaceList {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let snapshot = self.state.read(cx).snapshot.clone();
+        self.drawn_rows.borrow_mut().clear();
         let entries = self.entries(&snapshot);
         let rows: Vec<AnyElement> = entries
             .iter()

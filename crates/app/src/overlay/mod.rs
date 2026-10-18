@@ -333,6 +333,12 @@ impl Overlay {
             .any(|layer| layer.id == id)
     }
 
+    /// Whether the overlay's last frame was drawn during a drag, so it shows
+    /// the drag's preview until it draws again.
+    pub fn drew_drag(&self, cx: &App) -> bool {
+        self.content.read(cx).drew_drag
+    }
+
     /// Whether something modal is open in the overlay: a `Capture::Modal`
     /// layer, or a Kit dialog or sheet. Reads only plain state, so it gives
     /// the same answer whatever window is being updated.
@@ -613,6 +619,9 @@ struct OverlayContent {
     background: Option<Hitbox>,
     /// Shared with `Overlay::kit_modal`.
     kit_modal: Rc<Cell<bool>>,
+    /// Whether the last frame was drawn during a drag. GPUI paints the drag
+    /// preview into every window that draws then, this one included.
+    drew_drag: bool,
 }
 
 impl Render for OverlayContent {
@@ -621,6 +630,7 @@ impl Render for OverlayContent {
         // window's Kit root does; without this, menus and dialogs here draw
         // `text_sm` from a 16px rem and come out larger than the app's.
         window.set_rem_size(cx.theme().font_size);
+        self.drew_drag = cx.has_active_drag();
         let this = cx.entity().downgrade();
         let overlay = self.overlay.clone();
         let kit_modal = self.kit_modal.clone();

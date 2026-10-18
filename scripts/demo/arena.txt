@@ -1,0 +1,25 @@
+{d}>{0} Benchmark the arena allocator against main and tell me if it's
+  worth merging.
+
+{g}●{0} {B}Bash{0}(cargo bench --bench get_set -- --save-baseline arena)
+  {d}⎿  Finished bench profile [optimized] target(s) in 41.2s{0}
+     {d}… +38 lines (ctrl+o to expand){0}
+
+{w}●{0} Arena wins everywhere it should, and the cold path is unchanged:
+
+  {B}benchmark{0}            {B}main{0}        {B}arena{0}       {B}change{0}
+  get/hot              48.1 ns     31.7 ns     {g}-34.1%{0}
+  get/cold             212 ns      209 ns      {d}-1.4%{0}
+  set/small            96.3 ns     58.9 ns     {g}-38.8%{0}
+  set/large (4 KiB)    1.82 µs     1.74 µs     {d}-4.4%{0}
+  evict/lru            73.0 ns     44.2 ns     {g}-39.5%{0}
+
+  Peak RSS under the 10M-key soak test fell from 1.41 GiB to 1.12 GiB.
+  One caveat: entries over 64 KiB still fall back to the global
+  allocator, so set/huge is flat.
+
+  {B}Worth merging.{0} I'd rebase first, main picked up a shard change.
+
+{d}────────────────────────────────────────────────────────────────────────{0}
+{d}>{0}
+{d}────────────────────────────────────────────────────────────────────────{0}

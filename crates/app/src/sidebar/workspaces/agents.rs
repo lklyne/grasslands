@@ -214,21 +214,24 @@ impl Panel for AgentList {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) -> PopupMenu {
-        [("Grouped", AgentSort::Grouped), ("Priority", AgentSort::Priority)]
-            .into_iter()
-            .fold(menu.label("Sort"), |menu, (label, sort)| {
-                let this = cx.entity().downgrade();
-                menu.item(
-                    PopupMenuItem::new(label)
-                        .checked(self.sort == sort)
-                        .on_click(move |_, _, cx| {
-                            let _ = this.update(cx, |this, cx| {
-                                this.sort = sort;
-                                cx.notify();
-                            });
-                        }),
-                )
-            })
+        [
+            ("Grouped", AgentSort::Grouped),
+            ("Priority", AgentSort::Priority),
+        ]
+        .into_iter()
+        .fold(menu.label("Sort"), |menu, (label, sort)| {
+            let this = cx.entity().downgrade();
+            menu.item(
+                PopupMenuItem::new(label)
+                    .checked(self.sort == sort)
+                    .on_click(move |_, _, cx| {
+                        let _ = this.update(cx, |this, cx| {
+                            this.sort = sort;
+                            cx.notify();
+                        });
+                    }),
+            )
+        })
     }
 
     fn zoom_control(&self, _: &App) -> Option<PanelControl> {
