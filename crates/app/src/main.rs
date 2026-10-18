@@ -109,7 +109,13 @@ fn open_main_window(cx: &mut App) -> anyhow::Result<()> {
     // Files named on the command line open in the editor.
     window.update(cx, |_, window, cx| {
         for path in std::env::args_os().skip(1) {
-            window.dispatch_action(Box::new(actions::OpenFile { path: path.into() }), cx);
+            window.dispatch_action(
+                Box::new(actions::OpenFile {
+                    path: path.into(),
+                    machine: crate::state::MachineId::Local,
+                }),
+                cx,
+            );
         }
     })?;
     cx.activate(true);

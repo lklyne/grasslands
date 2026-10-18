@@ -29,6 +29,8 @@ actions!(
 #[action(namespace = app, no_json)]
 pub struct OpenFile {
     pub path: PathBuf,
+    /// Whose disk `path` is on.
+    pub machine: crate::state::MachineId,
 }
 
 /// Open a file with the cursor on `line` (0-based). Sent by the file search.
@@ -37,6 +39,8 @@ pub struct OpenFile {
 pub struct OpenFileAt {
     pub path: PathBuf,
     pub line: u32,
+    /// Whose disk `path` is on.
+    pub machine: crate::state::MachineId,
 }
 
 /// Focus a herdr pane: the app sends `pane.focus` and herdr's `pane.focused`

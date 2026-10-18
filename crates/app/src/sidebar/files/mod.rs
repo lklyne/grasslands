@@ -409,7 +409,13 @@ impl FileTree {
             // `Workspace`) and dispatch from there.
             cx.defer_in(window, move |this, window, cx| {
                 this.tree.update(cx, |tree, cx| tree.focus(window, cx));
-                window.dispatch_action(Box::new(OpenFile { path }), cx);
+                window.dispatch_action(
+                    Box::new(OpenFile {
+                        path,
+                        machine: crate::state::MachineId::Local,
+                    }),
+                    cx,
+                );
             });
         }
     }
@@ -754,7 +760,13 @@ fn render_row(
         return row;
     }
     row.on_click(move |_, window, cx| {
-        window.dispatch_action(Box::new(OpenFile { path: path.clone() }), cx);
+        window.dispatch_action(
+            Box::new(OpenFile {
+                path: path.clone(),
+                machine: crate::state::MachineId::Local,
+            }),
+            cx,
+        );
     })
 }
 
@@ -815,7 +827,13 @@ fn render_results(results: &search::Results, cx: &App) -> AnyElement {
                 StyledText::new(hit.relative.clone()).with_highlights([(hit.range.clone(), mark)]),
             ))
             .on_click(move |_, window, cx| {
-                window.dispatch_action(Box::new(OpenFile { path: path.clone() }), cx);
+                window.dispatch_action(
+                    Box::new(OpenFile {
+                        path: path.clone(),
+                        machine: crate::state::MachineId::Local,
+                    }),
+                    cx,
+                );
             }),
         );
     }
@@ -837,7 +855,13 @@ fn render_results(results: &search::Results, cx: &App) -> AnyElement {
                     .child(file.relative.clone()),
             )
             .on_click(move |_, window, cx| {
-                window.dispatch_action(Box::new(OpenFile { path: path.clone() }), cx);
+                window.dispatch_action(
+                    Box::new(OpenFile {
+                        path: path.clone(),
+                        machine: crate::state::MachineId::Local,
+                    }),
+                    cx,
+                );
             }),
         );
         for (line_ix, hit) in file.lines.iter().enumerate() {
@@ -864,6 +888,7 @@ fn render_results(results: &search::Results, cx: &App) -> AnyElement {
                             Box::new(OpenFileAt {
                                 path: path.clone(),
                                 line,
+                                machine: crate::state::MachineId::Local,
                             }),
                             cx,
                         );

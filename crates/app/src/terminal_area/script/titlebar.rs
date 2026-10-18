@@ -88,7 +88,13 @@ impl Run {
             std::fs::write(file, format!("// {}\nfn main() {{}}\n", file.display()))?;
         }
         for file in &files {
-            self.dispatch(cx, Box::new(OpenFile { path: file.clone() }));
+            self.dispatch(
+                cx,
+                Box::new(OpenFile {
+                    path: file.clone(),
+                    machine: crate::state::MachineId::Local,
+                }),
+            );
             Self::settle(cx).await;
         }
         let on_file = self.workspace(cx, |ws, _, cx| (ws.selected(), ws.selected_index(cx)))?;
