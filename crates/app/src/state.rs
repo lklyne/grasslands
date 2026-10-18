@@ -1070,7 +1070,11 @@ impl AppState {
         // Every herdr command error is logged here, whatever the caller does
         // with it, so a detached or `.ok()`ed command never fails silently.
         let caller = std::panic::Location::caller();
-        let Some(client) = self.machine(machine).and_then(|m| m.client.clone()) else {
+        let Some(target) = self.machine(machine) else {
+            tracing::warn!("herdr call on {machine} from {caller} skipped: no such machine");
+            return Task::ready(Err(gone(machine)));
+        };
+        let Some(client) = target.client.clone() else {
             tracing::warn!("herdr call on {machine} from {caller} skipped: disconnected");
             return Task::ready(Err(herdr::Error::Refused(
                 "herdr is disconnected; see the connection status".into(),
@@ -1098,7 +1102,16 @@ impl AppState {
         }
     }
 
-    /// Selects `machine`, then focuses `pane_id` on it.
+    // Panes
+
+    #[track_caller]
+    pub fn focus_pane(&self, pane_id: &str, cx: &App) -> Task<herdr::Result<()>> {
+        let pane_id = pane_id.to_owned();
+        self.call(cx, move |c| c.pane_focus(&pane_id))
+    }
+
+    /// Selects `machine`, then focuses `pane_id` on it. Fails, selecting
+    /// nothing, when `machine` is gone.
     #[track_caller]
     pub fn focus_pane_on(
         &mut self,
@@ -1106,16 +1119,12 @@ impl AppState {
         pane_id: &str,
         cx: &mut Context<Self>,
     ) -> Task<herdr::Result<()>> {
+        if self.machine(machine).is_none() {
+            return Task::ready(Err(gone(machine)));
+        }
         self.select_machine(machine, cx);
-        self.focus_pane(pane_id, cx)
-    }
-
-    // Panes
-
-    #[track_caller]
-    pub fn focus_pane(&self, pane_id: &str, cx: &App) -> Task<herdr::Result<()>> {
         let pane_id = pane_id.to_owned();
-        self.call(cx, move |c| c.pane_focus(&pane_id))
+        self.call_on(machine, cx, move |c| c.pane_focus(&pane_id))
     }
 
     /// Splits `pane_id` (herdr's focused pane when `None`). New panes forward
@@ -1127,18 +1136,39 @@ impl AppState {
         direction: herdr::SplitDirection,
         cx: &App,
     ) -> Task<herdr::Result<herdr::PaneInfo>> {
+        self.split_pane_on(&self.selected, pane_id, direction, cx)
+    }
+
+    #[track_caller]
+    pub fn split_pane_on(
+        &self,
+        machine: &MachineId,
+        pane_id: Option<&str>,
+        direction: herdr::SplitDirection,
+        cx: &App,
+    ) -> Task<herdr::Result<herdr::PaneInfo>> {
         sounds::play(Cue::Open, sounds::subtle());
         let mut split = herdr::PaneSplit::new(pane_id.map(str::to_owned), direction);
         split.focus = true;
         split.right_click = Some(herdr::RightClickTarget::Pane);
-        self.call(cx, move |c| c.pane_split(&split))
+        self.call_on(machine, cx, move |c| c.pane_split(&split))
     }
 
     #[track_caller]
     pub fn close_pane(&self, pane_id: &str, cx: &App) -> Task<herdr::Result<()>> {
+        self.close_pane_on(&self.selected, pane_id, cx)
+    }
+
+    #[track_caller]
+    pub fn close_pane_on(
+        &self,
+        machine: &MachineId,
+        pane_id: &str,
+        cx: &App,
+    ) -> Task<herdr::Result<()>> {
         sounds::play(Cue::Close, sounds::subtle());
         let pane_id = pane_id.to_owned();
-        self.call(cx, move |c| c.pane_close(&pane_id))
+        self.call_on(machine, cx, move |c| c.pane_close(&pane_id))
     }
 
     #[track_caller]
@@ -1199,6 +1229,22 @@ impl AppState {
         self.call(cx, move |c| c.tab_focus(&tab_id))
     }
 
+    /// Selects `machine`, then focuses `tab_id` on it. Fails, selecting
+    /// nothing, when `machine` is gone.
+    #[track_caller]
+    pub fn focus_tab_on(
+        &mut self,
+        machine: &MachineId,
+        tab_id: &str,
+        cx: &mut Context<Self>,
+    ) -> Task<herdr::Result<()>> {
+        if self.machine(machine).is_none() {
+            return Task::ready(Err(gone(machine)));
+        }
+        self.select_machine(machine, cx);
+        self.focus_tab(tab_id, cx)
+    }
+
     #[track_caller]
     pub fn new_tab(
         &self,
@@ -1226,9 +1272,20 @@ impl AppState {
 
     #[track_caller]
     pub fn rename_tab(&self, tab_id: &str, label: &str, cx: &App) -> Task<herdr::Result<()>> {
+        self.rename_tab_on(&self.selected, tab_id, label, cx)
+    }
+
+    #[track_caller]
+    pub fn rename_tab_on(
+        &self,
+        machine: &MachineId,
+        tab_id: &str,
+        label: &str,
+        cx: &App,
+    ) -> Task<herdr::Result<()>> {
         sounds::play(Cue::Tap, sounds::subtle());
         let (tab_id, label) = (tab_id.to_owned(), label.to_owned());
-        self.call(cx, move |c| c.tab_rename(&tab_id, &label))
+        self.call_on(machine, cx, move |c| c.tab_rename(&tab_id, &label))
     }
 
     #[track_caller]
@@ -1240,9 +1297,19 @@ impl AppState {
 
     #[track_caller]
     pub fn close_tab(&self, tab_id: &str, cx: &App) -> Task<herdr::Result<()>> {
+        self.close_tab_on(&self.selected, tab_id, cx)
+    }
+
+    #[track_caller]
+    pub fn close_tab_on(
+        &self,
+        machine: &MachineId,
+        tab_id: &str,
+        cx: &App,
+    ) -> Task<herdr::Result<()>> {
         sounds::play(Cue::Close, sounds::subtle());
         let tab_id = tab_id.to_owned();
-        self.call(cx, move |c| c.tab_close(&tab_id))
+        self.call_on(machine, cx, move |c| c.tab_close(&tab_id))
     }
 
     // Workspaces and worktrees
@@ -1258,7 +1325,8 @@ impl AppState {
     }
 
     /// Focuses a workspace on any machine, selecting that machine first
-    /// (workspace ids are per machine).
+    /// (workspace ids are per machine). Fails, selecting nothing, when
+    /// `machine` is gone.
     #[track_caller]
     pub fn focus_workspace_on(
         &mut self,
@@ -1266,6 +1334,9 @@ impl AppState {
         workspace_id: &str,
         cx: &mut Context<Self>,
     ) -> Task<herdr::Result<()>> {
+        if self.machine(machine).is_none() {
+            return Task::ready(Err(gone(machine)));
+        }
         if &self.selected != machine {
             self.select_machine(machine, cx);
             // `focus_workspace` only sounds for a workspace not yet focused.
@@ -1395,18 +1466,24 @@ impl AppState {
     }
 
     #[track_caller]
-    pub fn invoke_plugin_action(
+    pub fn invoke_plugin_action_on(
         &self,
+        machine: &MachineId,
         action: &herdr::PluginActionInfo,
         context: herdr::PluginInvocationContext,
         cx: &App,
     ) -> Task<herdr::Result<()>> {
         let (plugin_id, action_id) = (action.plugin_id.clone(), action.action_id.clone());
-        self.call(cx, move |c| {
+        self.call_on(machine, cx, move |c| {
             c.plugin_action_invoke(Some(&plugin_id), &action_id, Some(&context))
                 .map(drop)
         })
     }
+}
+
+/// The error for a command aimed at a machine no longer in the list.
+fn gone(machine: &MachineId) -> herdr::Error {
+    herdr::Error::Refused(format!("machine {machine} is no longer saved"))
 }
 
 /// A config that can never reach a herdr: no server start, a socket nobody
@@ -1560,6 +1637,39 @@ mod tests {
         let task = cx.update(|cx| state.read(cx).focus_pane("w1:p1", cx));
         let result = cx.foreground_executor().block_test(task);
         assert!(matches!(result, Err(herdr::Error::Refused(_))));
+    }
+
+    fn gone_machine() -> MachineId {
+        MachineId::Remote("gone".into())
+    }
+
+    #[gpui::test]
+    fn focusing_a_pane_on_a_gone_machine_fails(cx: &mut TestAppContext) {
+        let state = with_remote(cx);
+        let task = state.update(cx, |state, cx| {
+            state.focus_pane_on(&gone_machine(), "w1:p1", cx)
+        });
+        let result = cx.foreground_executor().block_test(task);
+        assert!(matches!(result, Err(herdr::Error::Refused(m)) if m.contains("no longer saved")));
+    }
+
+    #[gpui::test]
+    fn focusing_a_workspace_on_a_gone_machine_keeps_the_selection(cx: &mut TestAppContext) {
+        let state = with_remote(cx);
+        state.update(cx, |state, cx| {
+            state.select_machine(&remote(), cx);
+            state.focus_workspace_on(&gone_machine(), "w1", cx).detach();
+        });
+        let selected = cx.read(|cx| state.read(cx).selected().clone());
+        assert_eq!(selected, remote());
+    }
+
+    #[gpui::test]
+    fn a_call_on_a_gone_machine_fails_instead_of_using_the_selected_one(cx: &mut TestAppContext) {
+        let state = with_remote(cx);
+        let task = cx.update(|cx| state.read(cx).close_pane_on(&gone_machine(), "w1:p1", cx));
+        let result = cx.foreground_executor().block_test(task);
+        assert!(matches!(result, Err(herdr::Error::Refused(m)) if m.contains("no longer saved")));
     }
 
     #[gpui::test]

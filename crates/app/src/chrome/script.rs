@@ -159,8 +159,14 @@ fn run_step(
         "menu" => {
             let id = rest.to_owned();
             let target = match first {
-                "pane" => MenuTarget::Pane { pane_id: id },
-                "tab" => MenuTarget::Tab { tab_id: id },
+                "pane" => MenuTarget::Pane {
+                    machine: MachineId::Local,
+                    pane_id: id,
+                },
+                "tab" => MenuTarget::Tab {
+                    machine: MachineId::Local,
+                    tab_id: id,
+                },
                 "workspace" => MenuTarget::Workspace {
                     machine: MachineId::Local,
                     workspace_id: id,
@@ -172,8 +178,14 @@ fn run_step(
         "run" => {
             let id = rest.to_owned();
             let command = match first {
-                "close-pane" => HerdrCommand::ClosePane { pane_id: id },
-                "close-tab" => HerdrCommand::CloseTab { tab_id: id },
+                "close-pane" => HerdrCommand::ClosePane {
+                    machine: MachineId::Local,
+                    pane_id: id,
+                },
+                "close-tab" => HerdrCommand::CloseTab {
+                    machine: MachineId::Local,
+                    tab_id: id,
+                },
                 "close-workspace" => HerdrCommand::CloseWorkspace {
                     machine: MachineId::Local,
                     workspace_id: id,

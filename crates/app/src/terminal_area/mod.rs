@@ -1189,6 +1189,7 @@ impl TerminalArea {
                         cx.listener(move |this, event: &MouseDownEvent, window, cx| {
                             this.context_menu(
                                 MenuTarget::Tab {
+                                    machine: this.state.read(cx).selected().clone(),
                                     tab_id: menu_id.clone(),
                                 },
                                 event.position,
@@ -1563,6 +1564,7 @@ impl TerminalArea {
                 cx.listener(move |this, event: &MouseDownEvent, window, cx| {
                     this.context_menu(
                         MenuTarget::Pane {
+                            machine: this.state.read(cx).selected().clone(),
                             pane_id: menu_pane.clone(),
                         },
                         event.position,

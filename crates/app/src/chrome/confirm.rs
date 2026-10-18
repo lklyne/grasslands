@@ -124,7 +124,7 @@ fn group_confirmation(
 /// The confirmation `command` needs, or `None` when it can run straight away.
 pub(super) fn needed_for(command: &Command, snapshot: &Snapshot) -> Option<Confirmation> {
     match command {
-        Command::ClosePane { pane_id } => {
+        Command::ClosePane { pane_id, .. } => {
             let agent = find_agent(snapshot, pane_id)?;
             let name = agent_name(agent);
             Some(Confirmation {
@@ -136,7 +136,7 @@ pub(super) fn needed_for(command: &Command, snapshot: &Snapshot) -> Option<Confi
                 confirm_label: "Close Pane".into(),
             })
         }
-        Command::CloseTab { tab_id } => {
+        Command::CloseTab { tab_id, .. } => {
             let names = agents_where(snapshot, |tab, _| tab == tab_id);
             (!names.is_empty()).then(|| Confirmation {
                 title: "Close tab?".into(),
@@ -240,6 +240,7 @@ mod tests {
     #[test]
     fn closing_an_agent_pane_needs_confirmation() {
         let command = Command::ClosePane {
+            machine: crate::state::MachineId::Local,
             pane_id: "w1:p1".into(),
         };
         assert!(needed_for(&command, &snapshot()).is_some());
@@ -248,6 +249,7 @@ mod tests {
     #[test]
     fn closing_a_plain_pane_runs_straight_away() {
         let command = Command::ClosePane {
+            machine: crate::state::MachineId::Local,
             pane_id: "w1:p2".into(),
         };
         assert_eq!(needed_for(&command, &snapshot()), None);
@@ -256,6 +258,7 @@ mod tests {
     #[test]
     fn closing_a_tab_without_agents_runs_straight_away() {
         let command = Command::CloseTab {
+            machine: crate::state::MachineId::Local,
             tab_id: "w1:t2".into(),
         };
         assert_eq!(needed_for(&command, &snapshot()), None);

@@ -161,6 +161,7 @@ impl AgentList {
         }
         let (pane_id, menu_pane_id) = (agent.pane_id.clone(), agent.pane_id.clone());
         let machine_id = machine.id().clone();
+        let menu_machine = machine_id.clone();
         // Pane ids repeat across machines.
         let key = match &machine_id {
             MachineId::Local => agent.pane_id.clone(),
@@ -188,6 +189,7 @@ impl AgentList {
                     window.dispatch_action(
                         Box::new(OpenContextMenu {
                             target: MenuTarget::Pane {
+                                machine: menu_machine.clone(),
                                 pane_id: menu_pane_id.clone(),
                             },
                             position: event.position,
