@@ -369,12 +369,14 @@ pub fn user_config_path() -> Option<PathBuf> {
 
 fn theme_config(cx: &App) -> String {
     let theme = cx.theme();
+    // Ghostty colors are opaque and the theme's selection is translucent, so
+    // flatten it over the background; selected text keeps its own colors.
     format!(
-        "background = {}\nforeground = {}\ncursor-color = {}\nselection-background = {}\nwindow-padding-x = 4\nwindow-padding-y = 2\n",
+        "background = {}\nforeground = {}\ncursor-color = {}\nselection-background = {}\nselection-foreground = cell-foreground\nwindow-padding-x = 4\nwindow-padding-y = 2\n",
         hex(theme.background),
         hex(theme.foreground),
         hex(theme.primary),
-        hex(theme.selection),
+        hex(theme.background.blend(theme.selection)),
     )
 }
 
