@@ -8,7 +8,7 @@
 
 use std::env;
 use std::path::Path;
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -193,4 +193,76 @@ fn link_should_report_sign_in_setup_and_offline() {
     };
     let link = MachineLink::start(refused, dir);
     wait_status(&link, "offline", |s| matches!(s, MachineStatus::Offline(_)));
+}
+
+const CHILD_ENV: &str = "GRASSLANDS_LINK_CHILD";
+
+/// Run by `master_should_end_when_its_owner_exits_without_drop` in a child
+/// process: connects, prints the control socket, then exits without
+/// dropping the link, the way GPUI's quit does.
+#[test]
+#[ignore = "a helper the owner-exit test runs in a child process"]
+fn owner_child() {
+    let Ok(target) = env::var(CHILD_ENV) else {
+        return;
+    };
+    // SAFETY: set before any thread of ours reads it.
+    unsafe { env::set_var(DEV_MACHINES_ENV, LABEL) };
+    let link = MachineLink::start(
+        MachineProfile {
+            id: "0e1ec41d".into(),
+            ..profile(target, true)
+        },
+        socket_dir().expect("socket dir"),
+    );
+    wait_status(&link, "connected", |s| *s == MachineStatus::Connected);
+    let control = link.endpoint().socket_path.with_extension("ctl");
+    println!("CTL={}", control.display());
+    std::process::exit(0);
+}
+
+/// ssh processes whose command line names `control`.
+fn masters_on(control: &Path) -> Vec<String> {
+    let out = Command::new("ps")
+        .args(["-axo", "pid,ppid,command"])
+        .output()
+        .unwrap();
+    let needle = control.display().to_string();
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter(|line| line.contains(&needle) && line.contains("ssh"))
+        .map(str::to_owned)
+        .collect()
+}
+
+#[test]
+#[ignore = "needs GRASSLANDS_SSH_TEST_TARGET and the herdr-remote-test container"]
+fn master_should_end_when_its_owner_exits_without_drop() {
+    let Ok(target) = env::var("GRASSLANDS_SSH_TEST_TARGET") else {
+        eprintln!("skipping: GRASSLANDS_SSH_TEST_TARGET is not set");
+        return;
+    };
+    let out = Command::new(env::current_exe().unwrap())
+        .args(["--exact", "owner_child", "--ignored", "--nocapture"])
+        .env(CHILD_ENV, &target)
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let control = stdout
+        .lines()
+        .find_map(|line| line.strip_prefix("CTL="))
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| panic!("child didn't connect: {stdout}"));
+    eprintln!("child exited {}; control {}", out.status, control.display());
+
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let mut left = masters_on(&control);
+    while !left.is_empty() && Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(200));
+        left = masters_on(&control);
+    }
+    let _ = std::fs::remove_file(control.with_extension("sock"));
+    assert!(left.is_empty(), "master outlived its owner: {left:?}");
+    assert!(!control.exists(), "control socket left behind");
 }
