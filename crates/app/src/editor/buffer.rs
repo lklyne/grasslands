@@ -3,12 +3,12 @@
 
 use std::os::unix::fs::MetadataExt as _;
 use std::path::{Path, PathBuf};
-use std::time::SystemTime;
 
 use gpui_kit::component::input::EditorState;
 use gpui_kit::*;
 
 use super::language;
+use super::poll::Stamp;
 use crate::state::MachineId;
 
 /// A question shown above the editor until the user answers it.
@@ -51,8 +51,9 @@ pub struct Buffer {
     /// Device and inode of the file, to recognise it after a move on disk.
     /// Local only.
     file_id: Option<FileId>,
-    /// The modification time last seen on a remote machine, for polling.
-    pub modified: Option<SystemTime>,
+    /// The modification time and size last seen on a remote machine, for
+    /// polling.
+    pub stamp: Option<Stamp>,
     _changes: Subscription,
 }
 
@@ -65,7 +66,7 @@ fn file_id(path: &Path) -> Option<FileId> {
 impl Buffer {
     pub fn new(
         (machine, path): (MachineId, PathBuf),
-        (text, modified): (String, Option<SystemTime>),
+        (text, stamp): (String, Option<Stamp>),
         state: Entity<EditorState>,
         changes: Subscription,
         window: &mut Window,
@@ -81,7 +82,7 @@ impl Buffer {
             dirty: false,
             saving: None,
             prompt: None,
-            modified,
+            stamp,
             _changes: changes,
         }
     }
@@ -122,13 +123,13 @@ impl Buffer {
 
     /// The write started by `begin_save` finished. On success the written
     /// text becomes the saved text; edits made meanwhile stay dirty.
-    pub fn finish_save(&mut self, written: std::io::Result<Option<SystemTime>>, cx: &App) {
+    pub fn finish_save(&mut self, written: std::io::Result<Option<Stamp>>, cx: &App) {
         let text = self.saving.take();
-        let (Ok(modified), Some(text)) = (written, text) else {
+        let (Ok(stamp), Some(text)) = (written, text) else {
             return;
         };
         self.refresh_file_id();
-        self.modified = modified;
+        self.stamp = stamp;
         self.saved = Some(text);
         self.refresh_dirty(cx);
         if matches!(self.prompt, Some(Prompt::Conflict { .. })) {

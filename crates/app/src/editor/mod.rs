@@ -20,7 +20,6 @@ mod tests;
 use std::collections::{HashMap, HashSet};
 use std::io;
 use std::path::{Path, PathBuf};
-use std::time::SystemTime;
 
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{Editor as CodeEditor, EditorState, InputEvent, Position};
@@ -30,7 +29,7 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use self::buffer::{Buffer, DiskChange, Prompt};
-use self::poll::Check;
+use self::poll::{Check, Stamp};
 use self::watcher::FileWatcher;
 use crate::fs::Fs;
 use crate::herdr::MachineStatus;
@@ -53,9 +52,8 @@ type FileKey = (MachineId, PathBuf);
 /// One remote file's poll result: the check, and the contents if it read them.
 type Polled = (FileKey, Check, Option<Result<String, io::ErrorKind>>);
 
-/// A file's modification time, `None` if its machine doesn't report one.
-fn modified(fs: &Fs, path: &Path) -> io::Result<Option<SystemTime>> {
-    fs.metadata(path).map(|meta| meta.modified)
+fn stamp(fs: &Fs, path: &Path) -> io::Result<Stamp> {
+    fs.metadata(path).map(|meta| (meta.modified, meta.len))
 }
 
 /// Which tab set is shown: the selected machine's active worktree
@@ -230,6 +228,12 @@ impl Editor {
             .collect()
     }
 
+    /// The selected file's text, for script hooks.
+    pub fn active_text(&self, cx: &App) -> Option<String> {
+        let buffer = self.group().and_then(Group::active)?;
+        Some(buffer.state.read(cx).value().to_string())
+    }
+
     /// The selected tab of the visible group, if it has any.
     pub fn active_index(&self) -> Option<usize> {
         self.group()
@@ -397,8 +401,8 @@ impl Editor {
             let read = cx
                 .background_spawn(async move {
                     // Time first: a change between the two shows up next poll.
-                    let modified = modified(&fs, &path).ok().flatten();
-                    fs.read_to_string(&path).map(|text| (text, modified))
+                    let stamp = stamp(&fs, &path).ok();
+                    fs.read_to_string(&path).map(|text| (text, stamp))
                 })
                 .await;
             let _ = this.update_in(cx, |this, window, cx| {
@@ -421,7 +425,7 @@ impl Editor {
         &mut self,
         group: GroupKey,
         (machine, path): FileKey,
-        file: (String, Option<SystemTime>),
+        file: (String, Option<Stamp>),
         line: Option<u32>,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -515,7 +519,7 @@ impl Editor {
         if self.polling {
             return;
         }
-        let mut jobs: Vec<(FileKey, Option<SystemTime>, Fs)> = Vec::new();
+        let mut jobs: Vec<(FileKey, Option<Stamp>, Fs)> = Vec::new();
         for buffer in self.groups.values().flat_map(|group| &group.buffers) {
             let machine = &buffer.machine;
             if machine.is_local()
@@ -527,7 +531,7 @@ impl Editor {
                 continue;
             }
             if let Some(fs) = self.fs(machine, cx) {
-                jobs.push(((machine.clone(), buffer.path.clone()), buffer.modified, fs));
+                jobs.push(((machine.clone(), buffer.path.clone()), buffer.stamp, fs));
             }
         }
         if jobs.is_empty() {
@@ -539,7 +543,7 @@ impl Editor {
                 .background_spawn(async move {
                     jobs.into_iter()
                         .map(|(key, seen, fs)| {
-                            let check = poll::check(seen, &modified(&fs, &key.1));
+                            let check = poll::check(seen, &stamp(&fs, &key.1));
                             let text = matches!(check, Check::Read(_))
                                 .then(|| fs.read_to_string(&key.1).map_err(|error| error.kind()));
                             (key, check, text)
@@ -563,8 +567,8 @@ impl Editor {
             {
                 let disk = match (&check, &text) {
                     (Check::Deleted, _) => Err(io::ErrorKind::NotFound.into()),
-                    (Check::Read(modified), Some(text)) => {
-                        buffer.modified = *modified;
+                    (Check::Read(stamp), Some(text)) => {
+                        buffer.stamp = Some(*stamp);
                         text.clone().map_err(io::Error::from)
                     }
                     _ => continue,
@@ -687,7 +691,7 @@ impl Editor {
             let written = cx
                 .background_spawn(async move {
                     fs.write(&path, &text)?;
-                    Ok(modified(&fs, &path).ok().flatten())
+                    Ok(stamp(&fs, &path).ok())
                 })
                 .await;
             let _ = this.update_in(cx, |this, window, cx| {
@@ -700,7 +704,7 @@ impl Editor {
     fn finish_save(
         &mut self,
         target: &Entity<EditorState>,
-        written: io::Result<Option<SystemTime>>,
+        written: io::Result<Option<Stamp>>,
         close_after: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
