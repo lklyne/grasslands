@@ -23,21 +23,27 @@ to a local socket file. `Endpoint` and `SessionSync` work unchanged against it:
 each request is a new channel on the open connection (about 0.2s round trip
 measured locally), and the event subscription is one long-lived channel.
 
-- Connect with `ssh -M -N -o BatchMode=yes -o ControlPath=<dir>/<id8>.ctl
-  -o ServerAliveInterval=15 -o ConnectTimeout=10 [-p port] [user@]host`.
-  BatchMode means grasslands never answers prompts; a sign-in problem becomes
-  a status, fixed in a terminal (`herdr machine reconnect <label>`).
+- Connect with `ssh -M -T -o BatchMode=yes -o ControlPath=<ctl>
+  -o ServerAliveInterval=15 -o ConnectTimeout=10 [-p port] [user@]host
+  'cat >/dev/null'`, its stdin a pipe the app holds. When the app exits, even
+  without running destructors (GPUI's quit doesn't), the pipe closes, the
+  remote `cat` ends and the master with it. BatchMode means grasslands never
+  answers prompts; a sign-in problem becomes a status, fixed in a terminal
+  (`herdr machine reconnect <id>`).
 - Find the remote herdr with one command through the master: `command -v
   herdr`, then herdr's usual install paths (`~/.local/bin`, Homebrew, mise
   shims, Nix profile). Then `<remote herdr> [--session S] status --json` for
   `server.socket`, `server.running`, `server.compatible` and the version.
-- Forward with `ssh -S <ctl> -O forward -L <dir>/<id8>.sock:<server.socket>`.
+- Forward with `ssh -S <ctl> -O forward -L <sock>:<server.socket>`.
+- Files are per process and per link: `<dir>/<pid>-<n>-<id8>.{ctl,sock}`, so
+  two running instances (or an old link still tearing down) never delete each
+  other's sockets. At start, files of pids no longer running are cleaned up.
 - Socket paths must fit `sun_path` (104 bytes on macOS), so they live in a
   short directory: `$HOME/.local/share/grasslands-herdr/m` in debug builds
   (inside the dev root, so `check_dev_socket` passes), and
   `$HOME/Library/Caches/grasslands/m` in release builds. The directory is
   0700: anyone who can open a socket controls that machine's herdr.
-- The local socket path is fixed per machine. When the connection drops, a
+- The local socket path is fixed for a link's life. When the connection drops, a
   supervisor reopens it with backoff at the same path, and `SessionSync`
   reconnects on its own.
 - grasslands never installs, starts, restarts or upgrades a remote server.
@@ -47,8 +53,10 @@ measured locally), and the event subscription is one long-lived channel.
 - Terminals in a remote pane run `ssh -t -S <ctl> <target> '<remote herdr>
   [--session S] terminal attach <id> --takeover'`, reusing the master.
 - Debug builds connect only to machines whose label is in
-  `GRASSLANDS_DEV_MACHINES` (comma-separated); others show as disabled. A
-  developer's real machines run real agents.
+  `GRASSLANDS_DEV_MACHINES` (comma-separated); others show as disabled. They
+  also only rename, disable or remove those machines, and only add one with
+  `RT_ALLOW_MACHINE_EDITS=1`: the saved-machine list is shared with the
+  user's live herdr, and a developer's real machines run real agents.
 
 ## App model
 
