@@ -1477,8 +1477,10 @@ impl Render for TerminalArea {
             drawn.reattach.clear();
         }
 
-        let body = match Self::active_tab(&snapshot) {
-            None => {
+        let setup = crate::setup::render(&self.state, cx);
+        let body = match (setup, Self::active_tab(&snapshot)) {
+            (Some(setup), _) => setup,
+            (None, None) => {
                 let state = self.state.read(cx);
                 let message = if let Some(config) = state.herdr_config.as_ref()
                     && snapshot.generation == 0
@@ -1494,7 +1496,7 @@ impl Render for TerminalArea {
                 };
                 self.render_empty(message, cx)
             }
-            Some(tab) => match tab.root.as_ref() {
+            (None, Some(tab)) => match tab.root.as_ref() {
                 None => self.render_empty("Reading layout…".to_owned(), cx),
                 Some(root) => {
                     let tab_id = tab.info.tab_id.clone();

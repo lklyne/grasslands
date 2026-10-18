@@ -17,7 +17,11 @@ use std::time::Duration;
 use gpui_kit::*;
 
 use crate::attention::{Attention, StatusChange};
-use crate::herdr::{self, Client, ConnectionStatus, PaneId, SessionSync, Snapshot, Update};
+use crate::herdr::{
+    self, Check, Client, ConnectionStatus, Fix, MIN_VERSION, PaneId, SessionSync, Snapshot, Update,
+    Version,
+};
+use crate::setup::{FixRun, Setup, Stage};
 use crate::{sounds, worktree};
 use cues::{Cue, PlayOptions};
 
@@ -51,6 +55,8 @@ pub struct AppState {
     /// `None` when the endpoint was refused.
     pub herdr_config: Option<herdr::Config>,
     pub connection: ConnectionStatus,
+    /// What herdr needs before the app can use it, and the fix running.
+    pub setup: Setup,
     /// The latest herdr cache: workspaces → tabs → split trees, panes, agents.
     pub snapshot: Arc<Snapshot>,
     pub focused_pane: Option<PaneId>,
@@ -63,14 +69,17 @@ pub struct AppState {
     client: Option<Client>,
     _sync: Option<(SessionSync, Task<()>)>,
     _cwd_poll: Option<Task<()>>,
+    _check: Option<Task<()>>,
+    _fix: Option<Task<()>>,
 }
 
 impl EventEmitter<AppEvent> for AppState {}
 
 impl AppState {
-    /// Connects to herdr (starting its server if needed). A refused endpoint
-    /// (see `herdr::Config::from_env`) leaves the app disconnected: no sync,
-    /// no client, every call fails. Under `cargo test` it stays offline: GPUI's
+    /// Checks herdr, then connects (starting its server if needed); until the
+    /// check passes, `setup` says what herdr needs. A refused endpoint (see
+    /// `herdr::Config::from_env`) leaves the app disconnected: no sync, no
+    /// client, every call fails. Under `cargo test` it stays offline: GPUI's
     /// test scheduler rejects wakeups from the sync thread, and tests must
     /// never reach a real herdr by accident.
     pub fn new(herdr_config: herdr::Result<herdr::Config>, cx: &mut Context<Self>) -> Self {
@@ -87,38 +96,23 @@ impl AppState {
             !herdr_config.auto_start,
             "tests must not build AppState from the environment; use an auto_start: false config"
         );
-        let mut connection = ConnectionStatus::Connecting;
-        let sync = if cfg!(test) {
-            None
-        } else {
-            match SessionSync::start(herdr_config.clone()) {
-                Ok(sync) => {
-                    let task = Self::forward_updates(&sync, cx);
-                    Some((sync, task))
-                }
-                Err(error) => {
-                    connection = ConnectionStatus::Reconnecting {
-                        reason: error.to_string(),
-                    };
-                    None
-                }
-            }
-        };
-        let cwd_poll = sync.is_some().then(|| Self::poll_focused_dir(cx));
-        Self {
+        let mut this = Self {
             client: Some(Client::new(herdr_config.clone())),
             herdr_config: Some(herdr_config),
-            connection,
-            _sync: sync,
-            _cwd_poll: cwd_poll,
+            connection: ConnectionStatus::Connecting,
             ..Self::disconnected(String::new())
+        };
+        if !cfg!(test) {
+            this.check_herdr(cx);
         }
+        this
     }
 
     fn disconnected(reason: String) -> Self {
         Self {
             herdr_config: None,
             connection: ConnectionStatus::Disconnected { reason },
+            setup: Setup::default(),
             snapshot: Arc::default(),
             focused_pane: None,
             attention: Attention::default(),
@@ -127,7 +121,129 @@ impl AppState {
             client: None,
             _sync: None,
             _cwd_poll: None,
+            _check: None,
+            _fix: None,
         }
+    }
+
+    /// Starts the sync thread, once.
+    fn start_sync(&mut self, cx: &mut Context<Self>) {
+        let Some(config) = self.herdr_config.clone().filter(|_| self._sync.is_none()) else {
+            return;
+        };
+        match SessionSync::start(config) {
+            Ok(sync) => {
+                let task = Self::forward_updates(&sync, cx);
+                self._sync = Some((sync, task));
+                self._cwd_poll = Some(Self::poll_focused_dir(cx));
+            }
+            Err(error) => {
+                self.connection = ConnectionStatus::Reconnecting {
+                    reason: error.to_string(),
+                };
+            }
+        }
+    }
+
+    /// Checks the herdr binary and server (`herdr status`); connects when
+    /// they're fine, else shows the setup screen.
+    pub fn check_herdr(&mut self, cx: &mut Context<Self>) {
+        let Some(config) = self.herdr_config.clone() else {
+            return;
+        };
+        self.setup.stage = Stage::Checking;
+        cx.notify();
+        let check = cx
+            .background_executor()
+            .spawn(async move { config.check() });
+        self._check = Some(cx.spawn(async move |this, cx| {
+            let check = check.await;
+            this.update(cx, |this, cx| {
+                tracing::info!("herdr check: {check:?}");
+                if check == Check::Ready {
+                    this.setup.stage = Stage::Ready;
+                    this.start_sync(cx);
+                } else {
+                    sounds::play(Cue::Warning, PlayOptions::default());
+                    this.setup.stage = Stage::Needed(check);
+                }
+                cx.notify();
+            })
+            .ok();
+        }));
+    }
+
+    /// Runs `fix`, streaming its output to `setup.run`, then checks again.
+    pub fn run_fix(&mut self, fix: Fix, cx: &mut Context<Self>) {
+        let Some(command) = self
+            .herdr_config
+            .as_ref()
+            .and_then(|config| config.fix_command(fix))
+        else {
+            return;
+        };
+        tracing::info!("herdr setup: running {}", command.display());
+        sounds::play(Cue::Loading, PlayOptions::default());
+        self.setup.stage = Stage::Fixing(fix);
+        self.setup.run = Some(FixRun::new(command.display().to_owned()));
+        cx.notify();
+        let (lines, output) = async_channel::unbounded::<String>();
+        let (done, finished) = async_channel::bounded(1);
+        // A brew install can take minutes; it gets its own thread rather
+        // than holding one of the executor's.
+        let spawned = std::thread::Builder::new()
+            .name("herdr-setup".into())
+            .spawn(move || {
+                let status = command.run(|line| {
+                    let _ = lines.send_blocking(line.to_owned());
+                });
+                let _ = done.send_blocking(status);
+            });
+        if let Err(error) = spawned {
+            self.fix_finished(Err(error), cx);
+            return;
+        }
+        self._fix = Some(cx.spawn(async move |this, cx| {
+            while let Ok(line) = output.recv().await {
+                let pushed = this.update(cx, |this, cx| {
+                    if let Some(run) = &mut this.setup.run {
+                        run.push(line);
+                        cx.notify();
+                    }
+                });
+                if pushed.is_err() {
+                    return;
+                }
+            }
+            let status = finished
+                .recv()
+                .await
+                .unwrap_or_else(|_| Err(std::io::Error::other("the command's thread stopped")));
+            this.update(cx, |this, cx| this.fix_finished(status, cx))
+                .ok();
+        }));
+    }
+
+    fn fix_finished(
+        &mut self,
+        status: std::io::Result<std::process::ExitStatus>,
+        cx: &mut Context<Self>,
+    ) {
+        let failure = match status {
+            Ok(status) if status.success() => None,
+            Ok(status) => Some(format!("Failed ({status}).")),
+            Err(error) => Some(format!("Couldn't run it: {error}.")),
+        };
+        if let Some(failure) = &failure {
+            tracing::warn!("herdr setup: {failure}");
+            sounds::play(Cue::Error, PlayOptions::default());
+        } else {
+            sounds::play(Cue::Success, sounds::strong());
+        }
+        if let Some(run) = &mut self.setup.run {
+            run.failure = failure;
+        }
+        self.check_herdr(cx);
     }
 
     fn forward_updates(sync: &SessionSync, cx: &mut Context<Self>) -> Task<()> {
@@ -215,6 +331,12 @@ impl AppState {
     }
 
     pub fn replace_snapshot(&mut self, snapshot: Arc<Snapshot>, cx: &mut Context<Self>) {
+        // A server from an older herdr (one started before an update, say):
+        // the setup check names it and offers the restart.
+        let old_server = Version::parse(&snapshot.version).is_some_and(|v| v < MIN_VERSION);
+        if old_server && self.setup.is_ready() {
+            self.check_herdr(cx);
+        }
         let focused = snapshot.focused_pane_id.clone();
         let changes = self.attention.update(&snapshot);
         self.snapshot = snapshot;
@@ -515,6 +637,7 @@ pub fn offline_config() -> herdr::Config {
         session: None,
         socket_path: std::env::temp_dir().join("grasslands-test-no-herdr.sock"),
         auto_start: false,
+        server_log: None,
     }
 }
 
