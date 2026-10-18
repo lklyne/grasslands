@@ -121,16 +121,13 @@ code {
   border-radius: 4px;
 }
 
-.lede {
-  font-size: 20px;
-  line-height: 28px;
-  color: var(--strong);
-  text-wrap: balance;
-  margin-bottom: 12px;
-}
-
 .muted {
   color: var(--muted);
+}
+
+h1 .muted {
+  font-weight: 450;
+  margin-left: 4px;
 }
 
 .install {
@@ -157,6 +154,11 @@ code {
   user-select: none;
 }
 
+.requires {
+  font-size: 12px;
+  line-height: 20px;
+}
+
 .install button {
   flex: none;
   font: 550 13px/20px var(--sans);
@@ -173,16 +175,28 @@ code {
   border-color: var(--faint);
 }
 
-.links {
-  list-style: none;
-  padding: 0;
+.masthead {
   display: flex;
-  flex-wrap: wrap;
-  gap: 8px 24px;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin: 0 0 24px;
 }
 
-.links li + li {
-  margin-top: 0;
+.masthead h1 {
+  margin: 0;
+}
+
+.masthead .github {
+  flex: none;
+  display: flex;
+  padding: 2px;
+  color: var(--muted);
+  text-decoration: none;
+}
+
+.masthead .github:hover {
+  color: var(--strong);
 }
 
 footer {
@@ -192,4 +206,11 @@ footer {
   font-size: 13px;
   line-height: 20px;
   color: var(--muted);
+}
+
+.meadow {
+  display: block;
+  width: 100%;
+  height: auto;
+  margin-top: 3rem;
 }

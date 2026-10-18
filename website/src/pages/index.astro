@@ -1,19 +1,20 @@
 ---
 import Base from '../layouts/Base.astro'
-import { GITHUB_URL, HERDR_URL, HERDR_VERSION, INSTALL_COMMAND, LICENSE_URL } from '../lib/site'
+import { GITHUB_URL, HERDR_URL, HERDR_VERSION, INSTALL_COMMAND } from '../lib/site'
 ---
 
 <Base>
   <main>
-    <h1>grasslands</h1>
-    <p class="lede">
-      A native macOS app for <a href={HERDR_URL}>herdr</a>. It gives your agents a real window:
-      workspaces, tabs and splits, a Ghostty terminal in every pane, a file tree and editor that
-      follow the focused agent's worktree, and live agent status.
-    </p>
-    <p class="muted">
-      herdr keeps running the agents, terminals and sessions as a headless server. grasslands
-      replaces its terminal UI and talks to it over the socket API.
+    <header class="masthead">
+      <h1>grasslands <span class="muted">A tiny file browser and UI for <a href={HERDR_URL}>herdr</a></span></h1>
+      <a class="github" href={GITHUB_URL} aria-label="grasslands on GitHub">
+        <svg viewBox="0 0 16 16" width="20" height="20" aria-hidden="true" fill="currentColor">
+          <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z" />
+        </svg>
+      </a>
+    </header>
+    <p>
+      A native app that adds a simple file browser, diffs, and panel management to <a href={HERDR_URL}>herdr</a>. No extra setup. It just syncs and works.
     </p>
 
     <h2>Install</h2>
@@ -21,42 +22,27 @@ import { GITHUB_URL, HERDR_URL, HERDR_VERSION, INSTALL_COMMAND, LICENSE_URL } fr
       <pre id="install-command">{INSTALL_COMMAND}</pre>
       <button type="button" data-copy="install-command" hidden>Copy</button>
     </div>
-    <p class="muted">Needs macOS and herdr {HERDR_VERSION}.</p>
+    <p class="muted requires">Requires macOS and <a href={HERDR_URL}>herdr</a> {HERDR_VERSION}.</p>
 
     <h2>What it does</h2>
     <ul>
-      <li>
-        Mirrors herdr's workspaces, tabs and split layouts both ways. Splitting, closing, moving
-        panes and dragging dividers all go through herdr.
-      </li>
-      <li>Runs a real Ghostty terminal for each herdr pane.</li>
-      <li>
-        Follows the focused pane to its git worktree, even after an agent runs <code>cd</code>. The file
-        tree re-roots there, respects <code>.gitignore</code> and updates as agents write files.
-      </li>
-      <li>
-        Opens files in a tabbed editor. Files an agent changes on disk reload, and it asks first if
-        you have unsaved edits.
-      </li>
-      <li>
-        Lists every workspace in the sidebar with its agents, blocked ones first. Create, rename and
-        close workspaces and worktrees from there.
-      </li>
-      <li>A command palette for app commands and herdr plugin actions.</li>
+      <li>Reuses and syncs your existing <a href={HERDR_URL}>herdr</a> setup.</li>
+      <li>Adds a file browser, diffs and an editor.</li>
+      <li>Built with <a href="https://www.rust-lang.org">Rust</a> and <a href="https://www.gpui.rs">GPUI</a>, so it's fast.</li>
+      <li>Drag-and-drop layout.</li>
+      <li>Command palette.</li>
+      <li>No other fluff.</li>
     </ul>
 
-    <h2>Status</h2>
-    <p>
-      Alpha. This is v0. It sends real commands to herdr, so closing a pane kills its process. It
-      asks first when an agent is working. Expect rough edges. The <a href={`${GITHUB_URL}/blob/main/docs/development.md#known-gaps`}>known gaps</a> are listed in the dev docs.
-    </p>
-
-    <h2>Links</h2>
-    <ul class="links">
-      <li><a href={GITHUB_URL}>GitHub</a></li>
-      <li><a href={HERDR_URL}>herdr.dev</a></li>
-      <li><a href={LICENSE_URL}>MIT license</a></li>
-    </ul>
+    <img
+      class="meadow"
+      src="/meadow.webp"
+      width="1152"
+      height="735"
+      alt="A painted meadow of tall green grass under a band of clouds"
+      loading="lazy"
+      decoding="async"
+    />
   </main>
 
   <script>
