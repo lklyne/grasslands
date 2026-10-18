@@ -12,7 +12,7 @@ use gpui_kit::{
 
 use super::{Chrome, HerdrCommand, MenuEntry, MenuTarget};
 use crate::herdr::{self, Agent, AgentStatus, Snapshot};
-use crate::state::AppState;
+use crate::state::{AppState, MachineId};
 
 struct Fixture {
     window: AnyWindowHandle,
@@ -101,6 +101,7 @@ fn closing_an_agent_pane_asks_first(cx: &mut TestAppContext) {
     cx.update_window(f.window, |_, window, cx| {
         f.chrome.update(cx, |chrome, cx| {
             let close = HerdrCommand::ClosePane {
+                machine: MachineId::Local,
                 pane_id: "w1:p1".into(),
             };
             chrome.run(close, window, cx);
@@ -114,6 +115,7 @@ fn closing_an_agent_pane_asks_first(cx: &mut TestAppContext) {
 fn context_menu_opens_with_pane_actions(cx: &mut TestAppContext) {
     let f = fixture(cx);
     let target = MenuTarget::Pane {
+        machine: MachineId::Local,
         pane_id: "w1:p1".into(),
     };
     let labels = cx
@@ -156,6 +158,7 @@ fn closing_the_menu_gives_focus_back(cx: &mut TestAppContext) {
             owner.focus(window, cx);
             f.chrome.update(cx, |chrome, cx| {
                 let target = MenuTarget::Tab {
+                    machine: MachineId::Local,
                     tab_id: "w1:t1".into(),
                 };
                 chrome.context_menu(target, Point::default(), Vec::new(), window, cx);
@@ -209,6 +212,7 @@ fn unconfirmed_command_is_sent_and_failure_toasts(cx: &mut TestAppContext) {
     cx.update_window(f.window, |_, window, cx| {
         f.chrome.update(cx, |chrome, cx| {
             let focus = HerdrCommand::FocusPane {
+                machine: MachineId::Local,
                 pane_id: "w1:p1".into(),
             };
             chrome.run(focus, window, cx);
@@ -226,4 +230,36 @@ fn unconfirmed_command_is_sent_and_failure_toasts(cx: &mut TestAppContext) {
         std::thread::sleep(std::time::Duration::from_millis(20));
     }
     assert_eq!(toasts, 1);
+}
+
+#[test]
+fn agent_toasts_for_the_same_pane_on_two_machines_differ() {
+    let local = super::toast_key(&MachineId::Local, "w1:p1");
+    let remote = super::toast_key(&MachineId::Remote("b87d".into()), "w1:p1");
+    assert_ne!(local, remote);
+}
+
+#[gpui_kit::test]
+fn pane_menu_commands_keep_the_machine_they_were_opened_on(cx: &mut TestAppContext) {
+    let f = fixture(cx);
+    let remote = MachineId::Remote("b87d".into());
+    let target = MenuTarget::Pane {
+        machine: remote.clone(),
+        pane_id: "w1:p1".into(),
+    };
+    let machines = cx.update(|cx| {
+        f.chrome
+            .read(cx)
+            .default_entries(&target, cx)
+            .into_iter()
+            .filter_map(|entry| match entry {
+                MenuEntry::Item {
+                    command: super::MenuCommand::Herdr(command),
+                    ..
+                } => Some(command.machine().clone()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+    });
+    assert!(!machines.is_empty() && machines.iter().all(|m| m == &remote));
 }

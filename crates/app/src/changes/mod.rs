@@ -33,14 +33,18 @@ pub struct Changes {
 
 impl Changes {
     pub fn new(state: Entity<AppState>, cx: &mut Context<Self>) -> Self {
-        let subscription = cx.subscribe(&state, |this, _, event, cx| {
-            if let AppEvent::ActiveWorktreeChanged(root) = event {
+        let subscription = cx.subscribe(&state, |this, state, event, cx| match event {
+            AppEvent::ActiveWorktreeChanged(root) => {
                 this.root.clone_from(root);
                 this.patch = None;
                 this.loaded = false;
                 this.reload(cx);
                 cx.notify();
             }
+            // The remote placeholder names the selected machine.
+            AppEvent::MachineSelected(_) => cx.notify(),
+            AppEvent::MachinesChanged if !state.read(cx).selected().is_local() => cx.notify(),
+            _ => {}
         });
         let refresh = cx.spawn(async move |this, cx| {
             loop {

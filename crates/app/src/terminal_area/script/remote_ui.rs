@@ -9,7 +9,9 @@
 //! With `RT_ADD_MACHINE=<ssh target>` it then runs the real add flow for that
 //! target (typing `RT_ADD_KEYS` into its terminal, if set) and renames what
 //! herdr saved to `RT_ADD_LABEL` (default `dockerbox2`). It doesn't remove
-//! it; do that with `herdr machine remove`.
+//! it; do that with `herdr machine remove`. Debug builds only add (and then
+//! rename) with `RT_ALLOW_MACHINE_EDITS=1`, so pass that with
+//! `RT_ADD_MACHINE`.
 //!
 //! ```sh
 //! GRASSLANDS_DEV_MACHINES=dockerbox RT_SCRIPT=remote scripts/dev-run cargo run -p app

@@ -41,14 +41,16 @@ pub fn init(_cx: &mut App) {
 }
 
 /// What a context menu is about. The terminal area opens one per pane and
-/// tab, the sidebar per workspace and agent. Panes and tabs are the selected
-/// machine's; the sidebar lists every machine's workspaces.
+/// tab, the sidebar per workspace and agent. Each names the machine it was
+/// opened on, captured then, so its commands act there.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MenuTarget {
     Pane {
+        machine: MachineId,
         pane_id: String,
     },
     Tab {
+        machine: MachineId,
         tab_id: String,
     },
     Workspace {
@@ -58,11 +60,12 @@ pub enum MenuTarget {
 }
 
 impl MenuTarget {
-    /// The machine the target is on; `None` for the selected one.
-    fn machine(&self) -> Option<&MachineId> {
+    /// The machine the target is on.
+    fn machine(&self) -> &MachineId {
         match self {
-            Self::Workspace { machine, .. } => Some(machine),
-            Self::Pane { .. } | Self::Tab { .. } => None,
+            Self::Pane { machine, .. }
+            | Self::Tab { machine, .. }
+            | Self::Workspace { machine, .. } => machine,
         }
     }
 }
@@ -140,7 +143,8 @@ impl Render for MenuLayer {
     }
 }
 
-/// Keys agent toasts so a newer status for the same pane replaces the older.
+/// Keys agent toasts so a newer status for the same pane on the same machine
+/// replaces the older.
 struct AgentToast;
 
 /// Each main window's chrome, so views that only have the window (the
@@ -295,7 +299,7 @@ impl Chrome {
         let target_machine = machine.clone();
         let state = self.state.clone();
         let note = Notification::new()
-            .id1::<AgentToast>(SharedString::from(change.pane_id.clone()))
+            .id1::<AgentToast>(toast_key(machine, &change.pane_id))
             .with_type(kind)
             .title(format!("{}{workspace}", change.name))
             .message(message)
@@ -457,12 +461,13 @@ impl Chrome {
         cx.notify();
     }
 
-    /// The cache of `machine`, or of the selected machine.
-    fn snapshot_of<'a>(&self, machine: Option<&MachineId>, cx: &'a App) -> &'a Snapshot {
-        let state = self.state.read(cx);
-        machine
-            .and_then(|id| state.machine(id))
-            .map_or_else(|| state.snapshot(), |m| m.snapshot())
+    /// The cache of `machine`; empty when it's gone.
+    fn snapshot_of<'a>(&self, machine: &MachineId, cx: &'a App) -> &'a Snapshot {
+        static EMPTY: std::sync::LazyLock<Snapshot> = std::sync::LazyLock::new(Snapshot::default);
+        self.state
+            .read(cx)
+            .machine(machine)
+            .map_or(&*EMPTY, |m| m.snapshot())
     }
 
     /// The herdr actions that make sense for `target`.
@@ -470,13 +475,21 @@ impl Chrome {
         use HerdrCommand as C;
         let snapshot = self.snapshot_of(target.machine(), cx);
         match target {
-            MenuTarget::Pane { pane_id } => {
+            MenuTarget::Pane { machine, pane_id } => {
                 let id = || pane_id.clone();
+                let on = || machine.clone();
                 vec![
-                    MenuEntry::herdr("Focus Pane", C::FocusPane { pane_id: id() }),
+                    MenuEntry::herdr(
+                        "Focus Pane",
+                        C::FocusPane {
+                            machine: on(),
+                            pane_id: id(),
+                        },
+                    ),
                     MenuEntry::herdr(
                         "Split Right",
                         C::SplitPane {
+                            machine: on(),
                             pane_id: id(),
                             direction: SplitDirection::Right,
                         },
@@ -484,30 +497,45 @@ impl Chrome {
                     MenuEntry::herdr(
                         "Split Down",
                         C::SplitPane {
+                            machine: on(),
                             pane_id: id(),
                             direction: SplitDirection::Down,
                         },
                     ),
-                    MenuEntry::herdr("Toggle Zoom", C::ZoomPane { pane_id: id() }),
+                    MenuEntry::herdr(
+                        "Toggle Zoom",
+                        C::ZoomPane {
+                            machine: on(),
+                            pane_id: id(),
+                        },
+                    ),
                     MenuEntry::item("Rename Pane…", MenuCommand::Rename(target.clone())),
                     MenuEntry::Separator,
-                    MenuEntry::herdr("Close Pane", C::ClosePane { pane_id: id() }),
+                    MenuEntry::herdr(
+                        "Close Pane",
+                        C::ClosePane {
+                            machine: on(),
+                            pane_id: id(),
+                        },
+                    ),
                 ]
             }
-            MenuTarget::Tab { tab_id } => {
+            MenuTarget::Tab { machine, tab_id } => {
+                let on = || machine.clone();
                 let tab = snapshot.tab(tab_id);
                 let workspace_id = tab.map(|t| t.info.workspace_id.clone()).unwrap_or_default();
                 let mut entries = vec![
                     MenuEntry::herdr(
                         "Focus Tab",
                         C::FocusTab {
+                            machine: on(),
                             tab_id: tab_id.clone(),
                         },
                     ),
                     MenuEntry::herdr(
                         "New Tab",
                         C::NewTab {
-                            machine: self.state.read(cx).selected().clone(),
+                            machine: on(),
                             workspace_id,
                         },
                     ),
@@ -522,6 +550,7 @@ impl Chrome {
                         entries.push(MenuEntry::herdr(
                             label,
                             C::SplitPane {
+                                machine: on(),
                                 pane_id: pane_id.clone(),
                                 direction,
                             },
@@ -534,6 +563,7 @@ impl Chrome {
                     MenuEntry::herdr(
                         "Close Tab",
                         C::CloseTab {
+                            machine: on(),
                             tab_id: tab_id.clone(),
                         },
                     ),
@@ -592,7 +622,8 @@ impl Chrome {
     /// workspace gets none.
     fn plugin_entries(&self, target: &MenuTarget, cx: &App) -> Vec<MenuEntry> {
         let state = self.state.read(cx);
-        if target.machine().is_some_and(|m| m != state.selected()) {
+        let machine = target.machine();
+        if machine != state.selected() {
             return Vec::new();
         }
         let snapshot = state.snapshot();
@@ -604,6 +635,7 @@ impl Chrome {
                 MenuEntry::item(
                     action.title.clone(),
                     MenuCommand::Herdr(HerdrCommand::InvokePluginAction {
+                        machine: machine.clone(),
                         action: Box::new(action.clone()),
                         context: Box::new(context.clone()),
                     }),
@@ -683,11 +715,11 @@ impl Chrome {
     fn prompt_rename(&mut self, target: MenuTarget, _window: &mut Window, cx: &mut Context<Self>) {
         let snapshot = self.snapshot_of(target.machine(), cx);
         let (title, current) = match &target {
-            MenuTarget::Pane { pane_id } => (
+            MenuTarget::Pane { pane_id, .. } => (
                 "Rename Pane",
                 snapshot.pane(pane_id).and_then(|p| p.label.clone()),
             ),
-            MenuTarget::Tab { tab_id } => (
+            MenuTarget::Tab { tab_id, .. } => (
                 "Rename Tab",
                 snapshot.tab(tab_id).map(|t| t.info.label.clone()),
             ),
@@ -845,13 +877,21 @@ fn update_later(
     });
 }
 
+/// An agent toast's id: one per pane per machine (pane ids repeat across
+/// machines).
+fn toast_key(machine: &MachineId, pane_id: &str) -> SharedString {
+    format!("{machine}/{pane_id}").into()
+}
+
 fn rename_command(target: &MenuTarget, label: String) -> HerdrCommand {
     match target {
-        MenuTarget::Pane { pane_id } => HerdrCommand::RenamePane {
+        MenuTarget::Pane { machine, pane_id } => HerdrCommand::RenamePane {
+            machine: machine.clone(),
             pane_id: pane_id.clone(),
             label,
         },
-        MenuTarget::Tab { tab_id } => HerdrCommand::RenameTab {
+        MenuTarget::Tab { machine, tab_id } => HerdrCommand::RenameTab {
+            machine: machine.clone(),
             tab_id: tab_id.clone(),
             label,
         },
@@ -894,11 +934,11 @@ fn invocation_context(
 ) -> (PluginActionContext, PluginInvocationContext) {
     const SOURCE: &str = "context_menu";
     match target {
-        MenuTarget::Pane { pane_id } => (
+        MenuTarget::Pane { pane_id, .. } => (
             PluginActionContext::Pane,
             pane_context(snapshot, pane_id, SOURCE),
         ),
-        MenuTarget::Tab { tab_id } => {
+        MenuTarget::Tab { tab_id, .. } => {
             let tab = snapshot.tab(tab_id);
             (
                 PluginActionContext::Tab,

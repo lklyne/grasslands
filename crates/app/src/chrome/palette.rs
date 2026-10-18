@@ -88,6 +88,7 @@ fn groups(state: &AppState, plugin_actions: &[PluginActionInfo]) -> Vec<Group> {
             herdr(
                 "Pane: Split Right",
                 C::SplitPane {
+                    machine: machine(),
                     pane_id: pane_id(),
                     direction: SplitDirection::Right,
                 },
@@ -95,16 +96,32 @@ fn groups(state: &AppState, plugin_actions: &[PluginActionInfo]) -> Vec<Group> {
             herdr(
                 "Pane: Split Down",
                 C::SplitPane {
+                    machine: machine(),
                     pane_id: pane_id(),
                     direction: SplitDirection::Down,
                 },
             ),
-            herdr("Pane: Toggle Zoom", C::ZoomPane { pane_id: pane_id() }),
+            herdr(
+                "Pane: Toggle Zoom",
+                C::ZoomPane {
+                    machine: machine(),
+                    pane_id: pane_id(),
+                },
+            ),
             (
                 "Pane: Rename…".into(),
-                MenuCommand::Rename(MenuTarget::Pane { pane_id: pane_id() }),
+                MenuCommand::Rename(MenuTarget::Pane {
+                    machine: machine(),
+                    pane_id: pane_id(),
+                }),
             ),
-            herdr("Pane: Close", C::ClosePane { pane_id: pane_id() }),
+            herdr(
+                "Pane: Close",
+                C::ClosePane {
+                    machine: machine(),
+                    pane_id: pane_id(),
+                },
+            ),
             herdr(
                 "Tab: New",
                 C::NewTab {
@@ -115,12 +132,14 @@ fn groups(state: &AppState, plugin_actions: &[PluginActionInfo]) -> Vec<Group> {
             (
                 "Tab: Rename…".into(),
                 MenuCommand::Rename(MenuTarget::Tab {
+                    machine: machine(),
                     tab_id: pane.tab_id.clone(),
                 }),
             ),
             herdr(
                 "Tab: Close",
                 C::CloseTab {
+                    machine: machine(),
                     tab_id: pane.tab_id.clone(),
                 },
             ),
@@ -190,6 +209,7 @@ fn groups(state: &AppState, plugin_actions: &[PluginActionInfo]) -> Vec<Group> {
             (
                 format!("{}: {}", action.plugin_id, action.title).into(),
                 MenuCommand::Herdr(HerdrCommand::InvokePluginAction {
+                    machine: machine(),
                     action: Box::new(action.clone()),
                     context: Box::new(context.clone()),
                 }),

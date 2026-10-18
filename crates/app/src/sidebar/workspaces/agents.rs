@@ -64,8 +64,7 @@ pub(super) fn ordered(snapshot: &Snapshot, sort: AgentSort) -> Vec<&Agent> {
 /// "grouped" keeps the machines' order; "priority" merges them.
 fn ordered_everywhere(state: &AppState, sort: AgentSort) -> Vec<(&Machine, &Agent)> {
     let mut agents: Vec<(&Machine, &Agent)> = state
-        .machines()
-        .filter(|m| m.id().is_local() || *m.status() == crate::herdr::MachineStatus::Connected)
+        .live_machines()
         .flat_map(|m| ordered(m.snapshot(), sort).into_iter().map(move |a| (m, a)))
         .collect();
     if sort == AgentSort::Priority {
@@ -161,6 +160,7 @@ impl AgentList {
         }
         let (pane_id, menu_pane_id) = (agent.pane_id.clone(), agent.pane_id.clone());
         let machine_id = machine.id().clone();
+        let menu_machine = machine_id.clone();
         // Pane ids repeat across machines.
         let key = match &machine_id {
             MachineId::Local => agent.pane_id.clone(),
@@ -188,6 +188,7 @@ impl AgentList {
                     window.dispatch_action(
                         Box::new(OpenContextMenu {
                             target: MenuTarget::Pane {
+                                machine: menu_machine.clone(),
                                 pane_id: menu_pane_id.clone(),
                             },
                             position: event.position,

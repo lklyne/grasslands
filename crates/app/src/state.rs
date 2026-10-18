@@ -71,6 +71,9 @@ pub enum AppEvent {
     /// A machine's link (re)connected. Terminals whose attach died with the
     /// old connection attach again.
     MachineConnected(MachineId),
+    /// A machine's link was replaced (its target, session or enabled flag
+    /// changed): its terminals' attaches died with the old link.
+    MachineRestarted(MachineId),
     /// Another machine was selected; `SnapshotReplaced` follows.
     MachineSelected(MachineId),
     /// The file tree renamed or moved a file or folder; open editor tabs at or
@@ -177,10 +180,16 @@ pub struct AppState {
     /// A sign-in, setup or add running in a terminal on Local, and its outcome.
     machine_run: Option<MachineRun>,
     runs: u64,
+    /// The old Local server version last sent to the setup check, so it's
+    /// checked once rather than on every snapshot.
+    old_server_checked: Option<String>,
+    /// Machines this process's add runs saved (see `edit_allowed`).
+    added_here: Vec<MachineId>,
     _run_check: Option<Task<()>>,
     _cwd_poll: Option<Task<()>>,
     _check: Option<Task<()>>,
     _machines_poll: Option<Task<()>>,
+    _quit: Option<Subscription>,
 }
 
 impl EventEmitter<AppEvent> for AppState {}
@@ -218,6 +227,12 @@ impl AppState {
             this.check_herdr(cx);
             this._machines_poll = Some(Self::poll_machines(cx));
         }
+        // GPUI's quit ends the process without dropping entities, so the
+        // links (and their ssh masters) are stopped here.
+        this._quit = Some(cx.on_app_quit(|this, _| {
+            stop_links(this.take_links(|_| true));
+            async {}
+        }));
         this
     }
 
@@ -237,10 +252,13 @@ impl AppState {
             focused_dir: None,
             machine_run: None,
             runs: 0,
+            old_server_checked: None,
+            added_here: Vec::new(),
             _run_check: None,
             _cwd_poll: None,
             _check: None,
             _machines_poll: None,
+            _quit: None,
         }
     }
 
@@ -295,20 +313,25 @@ impl AppState {
         &self.selected_machine().attention
     }
 
-    /// Blocked agents plus unseen finished ones on every machine: the dock
-    /// badge count.
-    pub fn attention_count(&self) -> usize {
+    /// Local and each connected machine: the ones whose agents are listed
+    /// (an offline machine's last cache is stale).
+    pub fn live_machines(&self) -> impl Iterator<Item = &Machine> {
         self.machines
             .iter()
+            .filter(|m| m.id.is_local() || m.status == MachineStatus::Connected)
+    }
+
+    /// Blocked agents plus unseen finished ones on the live machines: the
+    /// dock badge count, matching the agent list.
+    pub fn attention_count(&self) -> usize {
+        self.live_machines()
             .map(|m| m.attention.count(&m.snapshot))
             .sum()
     }
 
-    /// Every agent on Local and on each connected machine, with its machine.
+    /// Every agent on the live machines, with its machine.
     pub fn agents(&self) -> impl Iterator<Item = (&MachineId, &Agent)> {
-        self.machines
-            .iter()
-            .filter(|m| m.id.is_local() || m.status == MachineStatus::Connected)
+        self.live_machines()
             .flat_map(|m| m.snapshot.agents.iter().map(move |agent| (&m.id, agent)))
     }
 
@@ -386,9 +409,21 @@ impl AppState {
             MachineId::Remote(id) => diff.start.iter().any(|p| &p.id == id),
         };
         let selected_restarted = restarted(&self.selected);
-        self.machines.retain(|m| {
-            !restarted(&m.id) && !matches!(&m.id, MachineId::Remote(id) if diff.stop.contains(id))
-        });
+        let replaced: Vec<MachineId> = self
+            .machines
+            .iter()
+            .map(|m| m.id.clone())
+            .filter(|id| restarted(id))
+            .collect();
+        let gone = |id: &MachineId| {
+            restarted(id) || matches!(id, MachineId::Remote(id) if diff.stop.contains(id))
+        };
+        // Stopping a link waits on ssh, so it happens off the main thread.
+        let links = self.take_links(gone);
+        cx.background_executor()
+            .spawn(async move { stop_links(links) })
+            .detach();
+        self.machines.retain(|m| !gone(&m.id));
         for (id, label) in diff.relabel {
             if let Some(machine) = self.machine_mut(&MachineId::Remote(id)) {
                 machine.label = label;
@@ -404,6 +439,9 @@ impl AppState {
             MachineId::Local => 0,
             MachineId::Remote(id) => 1 + saved.iter().position(|p| &p.id == id).unwrap_or(0),
         });
+        for id in replaced {
+            cx.emit(AppEvent::MachineRestarted(id));
+        }
         let selected = machine_list::reselect(&self.selected, self.machines.iter().map(|m| &m.id));
         if selected != self.selected {
             let was_local = self.selected.is_local();
@@ -415,6 +453,16 @@ impl AppState {
         }
         cx.emit(AppEvent::MachinesChanged);
         cx.notify();
+    }
+
+    /// Takes the links of the machines `which` picks, leaving those
+    /// machines linkless.
+    fn take_links(&mut self, which: impl Fn(&MachineId) -> bool) -> Vec<MachineLink> {
+        self.machines
+            .iter_mut()
+            .filter(|m| which(&m.id))
+            .filter_map(|m| m.link.take())
+            .collect()
     }
 
     fn start_machine(&self, profile: MachineProfile, cx: &mut Context<Self>) -> Option<Machine> {
@@ -512,6 +560,12 @@ impl AppState {
         else {
             return Task::ready(Err(anyhow::anyhow!("{id} isn't a saved machine")));
         };
+        if !self.edit_allowed(id) {
+            tracing::warn!("machine {command} {id}: refused in a debug build");
+            return Task::ready(Err(anyhow::anyhow!(
+                "debug builds only change machines listed in GRASSLANDS_DEV_MACHINES"
+            )));
+        }
         let mut argv = vec!["machine".to_owned(), command.to_owned(), profile_id.clone()];
         argv.extend(args);
         let run = cx.background_executor().spawn(async move {
@@ -539,6 +593,18 @@ impl AppState {
         })
     }
 
+    /// Debug builds share herdr's saved machines with the user's real
+    /// sessions, so they only change a machine listed in
+    /// `GRASSLANDS_DEV_MACHINES`, or one this process added with
+    /// `RT_ALLOW_MACHINE_EDITS=1`.
+    fn edit_allowed(&self, id: &MachineId) -> bool {
+        !cfg!(debug_assertions)
+            || self
+                .machine(id)
+                .is_some_and(|m| machines::dev_allowed(&m.label))
+            || (edits_allowed_by_env() && self.added_here.contains(id))
+    }
+
     pub fn rename_machine(
         &mut self,
         id: &MachineId,
@@ -546,7 +612,8 @@ impl AppState {
         cx: &mut Context<Self>,
     ) -> Task<anyhow::Result<()>> {
         sounds::play(Cue::Tap, sounds::subtle());
-        self.machine_command(id, "rename", vec!["--label".into(), label.into()], cx)
+        // `=` keeps a label starting with `-` from reading as a flag.
+        self.machine_command(id, "rename", vec![format!("--label={label}")], cx)
     }
 
     pub fn disable_machine(
@@ -610,6 +677,13 @@ impl AppState {
             && (host.is_empty() || host.starts_with('-') || host.contains(char::is_whitespace))
         {
             tracing::warn!("add machine: {host:?} isn't an SSH host");
+            return;
+        }
+        if matches!(task, MachineTask::Add { .. })
+            && cfg!(debug_assertions)
+            && !edits_allowed_by_env()
+        {
+            tracing::warn!("add machine: debug builds need RT_ALLOW_MACHINE_EDITS=1");
             return;
         }
         let profile = match &task {
@@ -689,7 +763,8 @@ impl AppState {
         else {
             return true;
         };
-        if added.is_some() {
+        if let Some(id) = &added {
+            self.added_here.push(id.clone());
             run.machine = added;
         }
         let connected = run
@@ -795,6 +870,10 @@ impl AppState {
         let Some(config) = self.herdr_config.clone() else {
             return;
         };
+        // While a fix runs, only its end says anything new.
+        if matches!(self.setup.stage, Stage::Fixing(_)) && !after_fix {
+            return;
+        }
         let was = self.setup.stage.clone();
         // A screen already showing stays put while it checks again.
         if !matches!(was, Stage::Needed(_)) {
@@ -802,11 +881,15 @@ impl AppState {
             cx.notify();
         }
         let shown = matches!(was, Stage::Needed(_)) || self.setup.run.is_some();
-        let check = cx
-            .background_executor()
-            .spawn(async move { config.check() });
+        // The fix's command searches PATH (for brew), so it's found here
+        // rather than on every render of the setup screen.
+        let check = cx.background_executor().spawn(async move {
+            let check = config.check();
+            let command = check.fix().and_then(|fix| config.fix_command(fix));
+            (check, command)
+        });
         self._check = Some(cx.spawn(async move |this, cx| {
-            let check = check.await;
+            let (check, command) = check.await;
             this.update(cx, |this, cx| {
                 tracing::info!("herdr check: {check:?}");
                 if check == Check::Ready {
@@ -824,6 +907,7 @@ impl AppState {
                     }
                     this.setup.stage = stage;
                 }
+                this.setup.fix_command = command;
                 this.refresh_local_status();
                 cx.emit(AppEvent::MachinesChanged);
                 cx.notify();
@@ -835,13 +919,15 @@ impl AppState {
     /// Starts `fix` in the setup terminal; the terminal area runs it and
     /// calls [`Self::fix_exited`] when it ends.
     pub fn run_fix(&mut self, fix: Fix, cx: &mut Context<Self>) {
-        let Some(command) = self
-            .herdr_config
-            .as_ref()
-            .and_then(|config| config.fix_command(fix))
-        else {
+        if !matches!(self.setup.stage, Stage::Needed(_)) {
+            return;
+        }
+        let Some(command) = self.setup.fix_command.clone() else {
             return;
         };
+        // A check still running would overwrite `Fixing` when it ends.
+        self._check = None;
+        self.setup.spawn_error = None;
         tracing::info!("herdr setup: running {}", command.display());
         sounds::play(Cue::Loading, PlayOptions::default());
         let id = self.setup.run.as_ref().map_or(0, |run| run.id + 1);
@@ -855,6 +941,13 @@ impl AppState {
         cx.notify();
     }
 
+    /// The setup terminal couldn't start; the screen says why, then checks
+    /// again.
+    pub fn fix_failed_to_start(&mut self, error: String, cx: &mut Context<Self>) {
+        self.setup.spawn_error = Some(error);
+        self.fix_exited(cx);
+    }
+
     /// The setup terminal's command ended (or couldn't start); checks again.
     pub fn fix_exited(&mut self, cx: &mut Context<Self>) {
         if matches!(self.setup.stage, Stage::Fixing(_)) {
@@ -866,6 +959,7 @@ impl AppState {
     /// Closes the setup screen once herdr is ready.
     pub fn finish_setup(&mut self, cx: &mut Context<Self>) {
         if self.setup.stage == Stage::Done {
+            sounds::play(Cue::Tap, PlayOptions::default());
             self.setup = Setup::default();
             cx.notify();
         }
@@ -942,6 +1036,9 @@ impl AppState {
                 }
                 target.connection = status;
                 if machine.is_local() {
+                    if !matches!(target.connection, ConnectionStatus::Connected) {
+                        self.old_server_checked = None;
+                    }
                     self.refresh_local_status();
                 }
                 cx.emit(AppEvent::MachinesChanged);
@@ -991,7 +1088,12 @@ impl AppState {
         // the setup check names it and offers the restart.
         if id.is_local() {
             let old_server = Version::parse(&snapshot.version).is_some_and(|v| v < MIN_VERSION);
-            if old_server && self.setup.is_ready() {
+            let unchecked = self.old_server_checked.as_ref() != Some(&snapshot.version);
+            if old_server && unchecked && self.setup.is_ready() {
+                // Once per version and connection: a check that comes back
+                // `Ready` (a server it can't identify) mustn't run again on
+                // every event.
+                self.old_server_checked = Some(snapshot.version.clone());
                 self.check_herdr(cx);
             }
         }
@@ -1070,7 +1172,11 @@ impl AppState {
         // Every herdr command error is logged here, whatever the caller does
         // with it, so a detached or `.ok()`ed command never fails silently.
         let caller = std::panic::Location::caller();
-        let Some(client) = self.machine(machine).and_then(|m| m.client.clone()) else {
+        let Some(target) = self.machine(machine) else {
+            tracing::warn!("herdr call on {machine} from {caller} skipped: no such machine");
+            return Task::ready(Err(gone(machine)));
+        };
+        let Some(client) = target.client.clone() else {
             tracing::warn!("herdr call on {machine} from {caller} skipped: disconnected");
             return Task::ready(Err(herdr::Error::Refused(
                 "herdr is disconnected; see the connection status".into(),
@@ -1098,7 +1204,16 @@ impl AppState {
         }
     }
 
-    /// Selects `machine`, then focuses `pane_id` on it.
+    // Panes
+
+    #[track_caller]
+    pub fn focus_pane(&self, pane_id: &str, cx: &App) -> Task<herdr::Result<()>> {
+        let pane_id = pane_id.to_owned();
+        self.call(cx, move |c| c.pane_focus(&pane_id))
+    }
+
+    /// Selects `machine`, then focuses `pane_id` on it. Fails, selecting
+    /// nothing, when `machine` is gone.
     #[track_caller]
     pub fn focus_pane_on(
         &mut self,
@@ -1106,16 +1221,12 @@ impl AppState {
         pane_id: &str,
         cx: &mut Context<Self>,
     ) -> Task<herdr::Result<()>> {
+        if self.machine(machine).is_none() {
+            return Task::ready(Err(gone(machine)));
+        }
         self.select_machine(machine, cx);
-        self.focus_pane(pane_id, cx)
-    }
-
-    // Panes
-
-    #[track_caller]
-    pub fn focus_pane(&self, pane_id: &str, cx: &App) -> Task<herdr::Result<()>> {
         let pane_id = pane_id.to_owned();
-        self.call(cx, move |c| c.pane_focus(&pane_id))
+        self.call_on(machine, cx, move |c| c.pane_focus(&pane_id))
     }
 
     /// Splits `pane_id` (herdr's focused pane when `None`). New panes forward
@@ -1127,18 +1238,39 @@ impl AppState {
         direction: herdr::SplitDirection,
         cx: &App,
     ) -> Task<herdr::Result<herdr::PaneInfo>> {
+        self.split_pane_on(&self.selected, pane_id, direction, cx)
+    }
+
+    #[track_caller]
+    pub fn split_pane_on(
+        &self,
+        machine: &MachineId,
+        pane_id: Option<&str>,
+        direction: herdr::SplitDirection,
+        cx: &App,
+    ) -> Task<herdr::Result<herdr::PaneInfo>> {
         sounds::play(Cue::Open, sounds::subtle());
         let mut split = herdr::PaneSplit::new(pane_id.map(str::to_owned), direction);
         split.focus = true;
         split.right_click = Some(herdr::RightClickTarget::Pane);
-        self.call(cx, move |c| c.pane_split(&split))
+        self.call_on(machine, cx, move |c| c.pane_split(&split))
     }
 
     #[track_caller]
     pub fn close_pane(&self, pane_id: &str, cx: &App) -> Task<herdr::Result<()>> {
+        self.close_pane_on(&self.selected, pane_id, cx)
+    }
+
+    #[track_caller]
+    pub fn close_pane_on(
+        &self,
+        machine: &MachineId,
+        pane_id: &str,
+        cx: &App,
+    ) -> Task<herdr::Result<()>> {
         sounds::play(Cue::Close, sounds::subtle());
         let pane_id = pane_id.to_owned();
-        self.call(cx, move |c| c.pane_close(&pane_id))
+        self.call_on(machine, cx, move |c| c.pane_close(&pane_id))
     }
 
     #[track_caller]
@@ -1199,6 +1331,22 @@ impl AppState {
         self.call(cx, move |c| c.tab_focus(&tab_id))
     }
 
+    /// Selects `machine`, then focuses `tab_id` on it. Fails, selecting
+    /// nothing, when `machine` is gone.
+    #[track_caller]
+    pub fn focus_tab_on(
+        &mut self,
+        machine: &MachineId,
+        tab_id: &str,
+        cx: &mut Context<Self>,
+    ) -> Task<herdr::Result<()>> {
+        if self.machine(machine).is_none() {
+            return Task::ready(Err(gone(machine)));
+        }
+        self.select_machine(machine, cx);
+        self.focus_tab(tab_id, cx)
+    }
+
     #[track_caller]
     pub fn new_tab(
         &self,
@@ -1226,9 +1374,20 @@ impl AppState {
 
     #[track_caller]
     pub fn rename_tab(&self, tab_id: &str, label: &str, cx: &App) -> Task<herdr::Result<()>> {
+        self.rename_tab_on(&self.selected, tab_id, label, cx)
+    }
+
+    #[track_caller]
+    pub fn rename_tab_on(
+        &self,
+        machine: &MachineId,
+        tab_id: &str,
+        label: &str,
+        cx: &App,
+    ) -> Task<herdr::Result<()>> {
         sounds::play(Cue::Tap, sounds::subtle());
         let (tab_id, label) = (tab_id.to_owned(), label.to_owned());
-        self.call(cx, move |c| c.tab_rename(&tab_id, &label))
+        self.call_on(machine, cx, move |c| c.tab_rename(&tab_id, &label))
     }
 
     #[track_caller]
@@ -1240,9 +1399,19 @@ impl AppState {
 
     #[track_caller]
     pub fn close_tab(&self, tab_id: &str, cx: &App) -> Task<herdr::Result<()>> {
+        self.close_tab_on(&self.selected, tab_id, cx)
+    }
+
+    #[track_caller]
+    pub fn close_tab_on(
+        &self,
+        machine: &MachineId,
+        tab_id: &str,
+        cx: &App,
+    ) -> Task<herdr::Result<()>> {
         sounds::play(Cue::Close, sounds::subtle());
         let tab_id = tab_id.to_owned();
-        self.call(cx, move |c| c.tab_close(&tab_id))
+        self.call_on(machine, cx, move |c| c.tab_close(&tab_id))
     }
 
     // Workspaces and worktrees
@@ -1258,7 +1427,8 @@ impl AppState {
     }
 
     /// Focuses a workspace on any machine, selecting that machine first
-    /// (workspace ids are per machine).
+    /// (workspace ids are per machine). Fails, selecting nothing, when
+    /// `machine` is gone.
     #[track_caller]
     pub fn focus_workspace_on(
         &mut self,
@@ -1266,6 +1436,9 @@ impl AppState {
         workspace_id: &str,
         cx: &mut Context<Self>,
     ) -> Task<herdr::Result<()>> {
+        if self.machine(machine).is_none() {
+            return Task::ready(Err(gone(machine)));
+        }
         if &self.selected != machine {
             self.select_machine(machine, cx);
             // `focus_workspace` only sounds for a workspace not yet focused.
@@ -1395,18 +1568,39 @@ impl AppState {
     }
 
     #[track_caller]
-    pub fn invoke_plugin_action(
+    pub fn invoke_plugin_action_on(
         &self,
+        machine: &MachineId,
         action: &herdr::PluginActionInfo,
         context: herdr::PluginInvocationContext,
         cx: &App,
     ) -> Task<herdr::Result<()>> {
         let (plugin_id, action_id) = (action.plugin_id.clone(), action.action_id.clone());
-        self.call(cx, move |c| {
+        self.call_on(machine, cx, move |c| {
             c.plugin_action_invoke(Some(&plugin_id), &action_id, Some(&context))
                 .map(drop)
         })
     }
+}
+
+/// `RT_ALLOW_MACHINE_EDITS=1`: a debug build may add machines (and change
+/// the ones it added).
+fn edits_allowed_by_env() -> bool {
+    std::env::var_os("RT_ALLOW_MACHINE_EDITS").is_some_and(|v| v == "1")
+}
+
+/// Stops `links` at once, each on its own thread: each one waits on ssh.
+fn stop_links(links: Vec<MachineLink>) {
+    std::thread::scope(|scope| {
+        for link in links {
+            scope.spawn(move || drop(link));
+        }
+    });
+}
+
+/// The error for a command aimed at a machine no longer in the list.
+fn gone(machine: &MachineId) -> herdr::Error {
+    herdr::Error::Refused(format!("machine {machine} is no longer saved"))
 }
 
 /// A config that can never reach a herdr: no server start, a socket nobody
@@ -1430,6 +1624,7 @@ mod tests {
 
     use super::{AppState, MachineId, offline_config};
     use crate::herdr::{self, ConnectionStatus, Snapshot};
+    use crate::setup::Stage;
 
     fn agent(pane: &str) -> herdr::Agent {
         herdr::Agent {
@@ -1560,6 +1755,145 @@ mod tests {
         let task = cx.update(|cx| state.read(cx).focus_pane("w1:p1", cx));
         let result = cx.foreground_executor().block_test(task);
         assert!(matches!(result, Err(herdr::Error::Refused(_))));
+    }
+
+    fn gone_machine() -> MachineId {
+        MachineId::Remote("gone".into())
+    }
+
+    #[gpui::test]
+    fn focusing_a_pane_on_a_gone_machine_fails(cx: &mut TestAppContext) {
+        let state = with_remote(cx);
+        let task = state.update(cx, |state, cx| {
+            state.focus_pane_on(&gone_machine(), "w1:p1", cx)
+        });
+        let result = cx.foreground_executor().block_test(task);
+        assert!(matches!(result, Err(herdr::Error::Refused(m)) if m.contains("no longer saved")));
+    }
+
+    #[gpui::test]
+    fn focusing_a_workspace_on_a_gone_machine_keeps_the_selection(cx: &mut TestAppContext) {
+        let state = with_remote(cx);
+        state.update(cx, |state, cx| {
+            state.select_machine(&remote(), cx);
+            state.focus_workspace_on(&gone_machine(), "w1", cx).detach();
+        });
+        let selected = cx.read(|cx| state.read(cx).selected().clone());
+        assert_eq!(selected, remote());
+    }
+
+    #[gpui::test]
+    fn a_call_on_a_gone_machine_fails_instead_of_using_the_selected_one(cx: &mut TestAppContext) {
+        let state = with_remote(cx);
+        let task = cx.update(|cx| state.read(cx).close_pane_on(&gone_machine(), "w1:p1", cx));
+        let result = cx.foreground_executor().block_test(task);
+        assert!(matches!(result, Err(herdr::Error::Refused(m)) if m.contains("no longer saved")));
+    }
+
+    #[gpui::test]
+    fn an_offline_machine_adds_nothing_to_the_badge(cx: &mut TestAppContext) {
+        let state = cx.new(|cx| AppState::new(Ok(offline_config()), cx));
+        let count = state.update(cx, |state, _| {
+            let mut blocked = agent("w1:p1");
+            blocked.agent_status = herdr::AgentStatus::Blocked;
+            let snapshot = Arc::new(Snapshot {
+                agents: vec![blocked],
+                ..Snapshot::default()
+            });
+            state.add_test_machine("b87d", "dockerbox", snapshot);
+            if let Some(machine) = state.machine_mut(&remote()) {
+                machine.status = herdr::MachineStatus::Offline("gone".into());
+            }
+            state.attention_count()
+        });
+        assert_eq!(count, 0);
+    }
+
+    #[gpui::test]
+    fn a_debug_build_wont_rename_a_machine_outside_the_dev_list(cx: &mut TestAppContext) {
+        let state = cx.new(|cx| AppState::new(Ok(offline_config()), cx));
+        state.update(cx, |state, _| {
+            state.add_test_machine("c0ffee", "users-real-box", Arc::default());
+        });
+        let task = state.update(cx, |state, cx| {
+            state.rename_machine(&MachineId::Remote("c0ffee".into()), "x", cx)
+        });
+        let result = cx.foreground_executor().block_test(task);
+        assert!(result.is_err_and(|e| e.to_string().contains("GRASSLANDS_DEV_MACHINES")));
+    }
+
+    #[gpui::test]
+    fn a_debug_build_wont_add_a_machine_without_the_env_switch(cx: &mut TestAppContext) {
+        let state = cx.new(|cx| AppState::new(Ok(offline_config()), cx));
+        state.update(cx, |state, cx| {
+            let host = "dockerbox2".into();
+            state.start_machine_run(super::MachineTask::Add { host }, cx);
+        });
+        let started = cx.read(|cx| state.read(cx).machine_run().is_some());
+        assert!(!started);
+    }
+
+    fn needing_install(cx: &mut TestAppContext) -> gpui_kit::Entity<AppState> {
+        let state = cx.new(|cx| AppState::new(Ok(offline_config()), cx));
+        state.update(cx, |state, _| {
+            state.setup.stage = Stage::Needed(herdr::Check::Missing);
+            state.setup.fix_command = Some(herdr::FixCommand::new(vec!["true".into()]));
+        });
+        state
+    }
+
+    #[gpui::test]
+    fn a_check_started_before_a_fix_doesnt_overwrite_it(cx: &mut TestAppContext) {
+        let state = needing_install(cx);
+        state.update(cx, |state, cx| {
+            state.check_herdr(cx);
+            state.run_fix(herdr::Fix::Install, cx);
+        });
+        cx.run_until_parked();
+        let stage = cx.read(|cx| state.read(cx).setup.stage.clone());
+        assert_eq!(stage, Stage::Fixing(herdr::Fix::Install));
+    }
+
+    #[gpui::test]
+    fn checking_while_a_fix_runs_does_nothing(cx: &mut TestAppContext) {
+        let state = needing_install(cx);
+        state.update(cx, |state, cx| {
+            state.run_fix(herdr::Fix::Install, cx);
+            state.check_herdr(cx);
+        });
+        cx.run_until_parked();
+        let stage = cx.read(|cx| state.read(cx).setup.stage.clone());
+        assert_eq!(stage, Stage::Fixing(herdr::Fix::Install));
+    }
+
+    #[gpui::test]
+    fn a_second_fix_click_doesnt_start_another_run(cx: &mut TestAppContext) {
+        let state = needing_install(cx);
+        state.update(cx, |state, cx| {
+            state.run_fix(herdr::Fix::Install, cx);
+            state.run_fix(herdr::Fix::Install, cx);
+        });
+        let run = cx.read(|cx| state.read(cx).setup.run.as_ref().map(|r| r.id));
+        assert_eq!(run, Some(0));
+    }
+
+    #[gpui::test]
+    fn an_old_local_server_is_checked_once_per_version(cx: &mut TestAppContext) {
+        let state = cx.new(|cx| AppState::new(Ok(offline_config()), cx));
+        let old = || {
+            Arc::new(Snapshot {
+                version: "0.9.0".into(),
+                ..Snapshot::default()
+            })
+        };
+        state.update(cx, |state, cx| state.replace_snapshot(old(), cx));
+        cx.run_until_parked();
+        state.update(cx, |state, cx| {
+            state.setup.stage = Stage::Ready;
+            state.replace_snapshot(old(), cx);
+        });
+        let stage = cx.read(|cx| state.read(cx).setup.stage.clone());
+        assert_eq!(stage, Stage::Ready);
     }
 
     #[gpui::test]

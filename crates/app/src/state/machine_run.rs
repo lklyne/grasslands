@@ -12,7 +12,7 @@ use crate::herdr::{FixCommand, MachineProfile, MachineStatus};
 /// What a run is for.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MachineTask {
-    /// `herdr machine reconnect <label>`: answers ssh's prompts once.
+    /// `herdr machine reconnect <profile id>`: answers ssh's prompts once.
     SignIn(MachineId),
     /// `herdr --remote <target> [--session S]`: herdr's remote setup.
     SetUp(MachineId),
@@ -75,7 +75,7 @@ impl MachineRun {
         known: Vec<String>,
     ) -> Option<Self> {
         let argv = argv(&task, bin, profile)?;
-        let command = FixCommand::from_argv(argv);
+        let command = FixCommand::new(argv);
         let machine = match &task {
             MachineTask::SignIn(id) | MachineTask::SetUp(id) => Some(id.clone()),
             MachineTask::Add { .. } => None,
@@ -101,7 +101,8 @@ fn argv(task: &MachineTask, bin: &Path, profile: Option<&MachineProfile>) -> Opt
             argv.extend([
                 "machine".into(),
                 "reconnect".into(),
-                profile?.label.clone().into(),
+                // The id, not the label: labels can repeat or start with `-`.
+                profile?.id.clone().into(),
             ]);
         }
         MachineTask::SetUp(_) => {
@@ -149,11 +150,11 @@ mod tests {
     }
 
     #[test]
-    fn sign_in_reconnects_by_label() {
+    fn sign_in_reconnects_by_profile_id() {
         let p = profile("a", "default");
         assert_eq!(
             display(MachineTask::SignIn(MachineId::Remote("a".into())), Some(&p)).as_deref(),
-            Some("herdr machine reconnect box-a")
+            Some("herdr machine reconnect a")
         );
     }
 

@@ -339,7 +339,9 @@ impl TerminalArea {
             }
             Err(error) => {
                 tracing::error!("herdr setup terminal: {error:#}");
-                self.state.update(cx, |state, cx| state.fix_exited(cx));
+                self.state.update(cx, |state, cx| {
+                    state.fix_failed_to_start(format!("{error:#}"), cx)
+                });
             }
         }
     }
@@ -589,6 +591,7 @@ impl TerminalArea {
             AppEvent::SnapshotReplaced => self.sync_with_snapshot(window, cx),
             AppEvent::MachinesChanged => self.sync_other_machines(window, cx),
             AppEvent::MachineConnected(machine) => self.reattach_machine(machine, window, cx),
+            AppEvent::MachineRestarted(machine) => self.terminals.forget_machine(machine, cx),
             // Keyboard focus follows herdr's focus, but only if it is already
             // in the terminal area: an agent focusing a pane must not pull
             // typing out of the editor.
@@ -1189,6 +1192,7 @@ impl TerminalArea {
                         cx.listener(move |this, event: &MouseDownEvent, window, cx| {
                             this.context_menu(
                                 MenuTarget::Tab {
+                                    machine: this.state.read(cx).selected().clone(),
                                     tab_id: menu_id.clone(),
                                 },
                                 event.position,
@@ -1563,6 +1567,7 @@ impl TerminalArea {
                 cx.listener(move |this, event: &MouseDownEvent, window, cx| {
                     this.context_menu(
                         MenuTarget::Pane {
+                            machine: this.state.read(cx).selected().clone(),
                             pane_id: menu_pane.clone(),
                         },
                         event.position,
