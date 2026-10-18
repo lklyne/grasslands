@@ -3,11 +3,13 @@
 
 use std::os::unix::fs::MetadataExt as _;
 use std::path::{Path, PathBuf};
+use std::time::SystemTime;
 
 use gpui_kit::component::input::EditorState;
 use gpui_kit::*;
 
 use super::language;
+use crate::state::MachineId;
 
 /// A question shown above the editor until the user answers it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -33,15 +35,24 @@ pub enum DiskChange {
 }
 
 pub struct Buffer {
+    /// Whose disk the file is on. With `path`, the buffer's identity: the
+    /// same path on two machines is two buffers.
+    pub machine: MachineId,
     pub path: PathBuf,
     pub state: Entity<EditorState>,
     /// The contents last read from or written to disk; `None` once the file
     /// is deleted on disk.
     saved: Option<String>,
     dirty: bool,
+    /// The text of a save still being written; the write it causes isn't a
+    /// change from elsewhere.
+    saving: Option<String>,
     pub prompt: Option<Prompt>,
     /// Device and inode of the file, to recognise it after a move on disk.
+    /// Local only.
     file_id: Option<FileId>,
+    /// The modification time last seen on a remote machine, for polling.
+    pub modified: Option<SystemTime>,
     _changes: Subscription,
 }
 
@@ -53,8 +64,8 @@ fn file_id(path: &Path) -> Option<FileId> {
 
 impl Buffer {
     pub fn new(
-        path: PathBuf,
-        text: String,
+        (machine, path): (MachineId, PathBuf),
+        (text, modified): (String, Option<SystemTime>),
         state: Entity<EditorState>,
         changes: Subscription,
         window: &mut Window,
@@ -62,14 +73,21 @@ impl Buffer {
     ) -> Self {
         state.update(cx, |state, cx| state.set_value(text.clone(), window, cx));
         Self {
-            file_id: file_id(&path),
+            file_id: machine.is_local().then(|| file_id(&path)).flatten(),
+            machine,
             path,
             state,
             saved: Some(text),
             dirty: false,
+            saving: None,
             prompt: None,
+            modified,
             _changes: changes,
         }
+    }
+
+    pub fn is(&self, machine: &MachineId, path: &Path) -> bool {
+        &self.machine == machine && self.path == path
     }
 
     pub fn new_state(path: &Path, window: &mut Window, cx: &mut App) -> Entity<EditorState> {
@@ -87,16 +105,35 @@ impl Buffer {
         self.dirty = self.saved.as_deref() != Some(self.state.read(cx).value().as_ref());
     }
 
-    pub fn save(&mut self, cx: &App) -> std::io::Result<()> {
+    pub fn is_saving(&self) -> bool {
+        self.saving.is_some()
+    }
+
+    /// Starts a save: returns the text to write, or `None` if one is already
+    /// being written.
+    pub fn begin_save(&mut self, cx: &App) -> Option<String> {
+        if self.saving.is_some() {
+            return None;
+        }
         let text = self.state.read(cx).value().to_string();
-        std::fs::write(&self.path, &text)?;
+        self.saving = Some(text.clone());
+        Some(text)
+    }
+
+    /// The write started by `begin_save` finished. On success the written
+    /// text becomes the saved text; edits made meanwhile stay dirty.
+    pub fn finish_save(&mut self, written: std::io::Result<Option<SystemTime>>, cx: &App) {
+        let text = self.saving.take();
+        let (Ok(modified), Some(text)) = (written, text) else {
+            return;
+        };
         self.refresh_file_id();
+        self.modified = modified;
         self.saved = Some(text);
-        self.dirty = false;
+        self.refresh_dirty(cx);
         if matches!(self.prompt, Some(Prompt::Conflict { .. })) {
             self.prompt = None;
         }
-        Ok(())
     }
 
     pub fn classify(&self, disk: std::io::Result<String>) -> std::io::Result<DiskChange> {
@@ -107,7 +144,8 @@ impl Buffer {
             }
             Err(error) => return Err(error),
         };
-        Ok(if self.saved.as_deref() == Some(text.as_str()) {
+        let ours = [self.saved.as_deref(), self.saving.as_deref()];
+        Ok(if ours.contains(&Some(text.as_str())) {
             DiskChange::Unchanged
         } else if self.dirty {
             DiskChange::Conflict(text)
@@ -119,6 +157,9 @@ impl Buffer {
     /// Re-reads the file's identity; kept when the file is gone, so a later
     /// `find_moved` can still recognise it.
     pub fn refresh_file_id(&mut self) {
+        if !self.machine.is_local() {
+            return;
+        }
         if let Some(id) = file_id(&self.path) {
             self.file_id = Some(id);
         }

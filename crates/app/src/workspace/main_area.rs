@@ -88,7 +88,7 @@ impl Workspace {
         let warning = cx.theme().warning;
         self.editor
             .read(cx)
-            .tabs()
+            .tabs(cx)
             .into_iter()
             .enumerate()
             .map(|(file, tab)| {

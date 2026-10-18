@@ -152,6 +152,12 @@ impl Machine {
         &self.attention
     }
 
+    /// The machine's files over its link; `None` for Local and while the
+    /// link isn't connected.
+    pub fn remote_fs(&self) -> Option<Arc<herdr_client::RemoteFs>> {
+        self.link.as_ref()?.remote_fs()
+    }
+
     /// herdr's saved profile; `None` for Local.
     pub fn profile(&self) -> Option<&MachineProfile> {
         self.link.as_ref().map(MachineLink::profile)

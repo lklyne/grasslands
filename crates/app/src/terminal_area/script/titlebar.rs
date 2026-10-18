@@ -208,7 +208,7 @@ impl Run {
         let dirty = self.workspace(cx, |ws, _, cx| {
             ws.editor()
                 .read(cx)
-                .tabs()
+                .tabs(cx)
                 .iter()
                 .map(|t| t.dirty)
                 .collect::<Vec<_>>()
@@ -322,7 +322,7 @@ fn tab_titles(workspace: &Workspace, cx: &App) -> Vec<String> {
     workspace
         .editor()
         .read(cx)
-        .tabs()
+        .tabs(cx)
         .into_iter()
         .map(|tab| tab.title)
         .collect()
