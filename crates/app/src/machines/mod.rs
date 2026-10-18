@@ -34,6 +34,19 @@ pub enum MachineState {
 }
 
 impl MachineState {
+    /// herdr-client's status, plus its reason for the screens' detail line.
+    pub fn of(status: &crate::herdr::MachineStatus) -> (Self, Option<&str>) {
+        use crate::herdr::MachineStatus as Status;
+        match status {
+            Status::Connecting => (Self::Connecting, None),
+            Status::Connected => (Self::Connected, None),
+            Status::NeedsSignIn(reason) => (Self::NeedsSignIn, Some(reason)),
+            Status::NeedsSetup(reason) => (Self::NeedsSetup, Some(reason)),
+            Status::Offline(reason) => (Self::Offline, Some(reason)),
+            Status::Disabled(reason) => (Self::Disabled, Some(reason)),
+        }
+    }
+
     /// The status dot: green connected, yellow connecting, orange when it
     /// needs you, gray offline or disabled.
     pub fn color(self, cx: &App) -> Hsla {
@@ -297,7 +310,10 @@ pub fn offline_screen(
     cx: &App,
 ) -> AnyElement {
     let theme = cx.theme();
-    let detail = detail.map(str::trim).filter(|d| !d.is_empty());
+    // ssh's reasons often end in a period of their own.
+    let detail = detail
+        .map(|d| d.trim().trim_end_matches('.'))
+        .filter(|d| !d.is_empty());
     let with_detail = |text: String| match detail {
         Some(detail) => format!("{detail}. {text}"),
         None => text,

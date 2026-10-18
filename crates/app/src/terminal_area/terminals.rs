@@ -325,16 +325,25 @@ impl Terminals {
             .is_some_and(|view| view.terminal.read(cx).is_alive())
     }
 
-    /// Replaces a detached (or failed) view on the selected machine with a
-    /// fresh attach.
+    /// `machine`'s terminals whose attach process has ended.
+    pub fn detached_on(&self, machine: &MachineId, cx: &App) -> Vec<String> {
+        self.views
+            .iter()
+            .filter(|(key, view)| &key.machine == machine && !view.terminal.read(cx).is_alive())
+            .map(|(key, _)| key.terminal_id.clone())
+            .collect()
+    }
+
+    /// Replaces a detached (or failed) view on `machine` with a fresh attach.
     pub fn reattach<T: 'static>(
         &mut self,
+        machine: &MachineId,
         pane: &PaneInfo,
         command: Result<String, String>,
         window: &mut Window,
         cx: &mut Context<T>,
     ) {
-        let key = TerminalKey::new(&self.selected, &pane.terminal_id);
+        let key = TerminalKey::new(machine, &pane.terminal_id);
         if let Some(view) = self.views.remove(&key) {
             view.terminal
                 .update(cx, |terminal, _| terminal.set_visible(false));

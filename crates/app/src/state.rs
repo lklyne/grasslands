@@ -64,6 +64,9 @@ pub enum AppEvent {
     /// changed. Views listing every machine (the sidebar) redraw from
     /// `AppState::machines`.
     MachinesChanged,
+    /// A machine's link (re)connected. Terminals whose attach died with the
+    /// old connection attach again.
+    MachineConnected(MachineId),
     /// Another machine was selected; `SnapshotReplaced` follows.
     MachineSelected(MachineId),
     /// The file tree renamed or moved a file or folder; open editor tabs at or
@@ -84,6 +87,9 @@ pub struct Machine {
     focused_pane: Option<PaneId>,
     /// Status changes and unseen results, for toasts and badges.
     attention: Attention,
+    /// Was connected, and hasn't been since: the next connection is a
+    /// reconnect.
+    lost: bool,
     /// `None` when Local's endpoint was refused, or before a remote machine
     /// first connects.
     client: Option<Client>,
@@ -103,6 +109,7 @@ impl Machine {
             snapshot: Arc::default(),
             focused_pane: None,
             attention: Attention::default(),
+            lost: false,
             client: None,
             link: None,
             sync: None,
@@ -439,14 +446,23 @@ impl AppState {
             return;
         }
         tracing::info!("machine {}: {status:?}", machine.label);
-        if let Some(cue) = machine_list::status_cue(&machine.status, &status) {
+        if let Some(cue) = machine_list::status_cue(&machine.status, &status, machine.lost) {
             sounds::play(cue, PlayOptions::default());
+        }
+        let connected = status == MachineStatus::Connected;
+        if connected {
+            machine.lost = false;
+        } else if machine.status == MachineStatus::Connected {
+            machine.lost = true;
         }
         machine.status = status;
         // The forwarded socket is fixed for the link's life, so one sync
         // started on the first connection follows every reconnect.
         if machine.status == MachineStatus::Connected && machine.sync.is_none() {
             Self::start_remote_sync(machine, cx);
+        }
+        if connected {
+            cx.emit(AppEvent::MachineConnected(id.clone()));
         }
         cx.emit(AppEvent::MachinesChanged);
         cx.notify();

@@ -462,6 +462,45 @@ impl TerminalArea {
             .collect()
     }
 
+    /// Attaches again every view on `machine` whose attach ended, which is
+    /// what a dropped connection does to all of them. Panes that went away
+    /// meanwhile are dropped by the next snapshot instead.
+    fn reattach_machine(
+        &mut self,
+        machine: &MachineId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(snapshot) = self
+            .state
+            .read(cx)
+            .machine(machine)
+            .map(|m| m.snapshot().clone())
+        else {
+            return;
+        };
+        let detached = self.terminals.detached_on(machine, cx);
+        if detached.is_empty() {
+            return;
+        }
+        tracing::info!("terminals on {machine}: re-attaching {detached:?}");
+        for terminal_id in detached {
+            let Some(pane) = snapshot
+                .panes
+                .values()
+                .find(|pane| pane.terminal_id == terminal_id)
+                .cloned()
+            else {
+                continue;
+            };
+            let Some(command) = self.attach_command(machine, &terminal_id, cx) else {
+                continue;
+            };
+            self.terminals.reattach(machine, &pane, command, window, cx);
+        }
+        cx.notify();
+    }
+
     /// Drops views on other machines whose panes closed, and every view on a
     /// machine that's gone from the list. Their live views stay attached, so
     /// switching back doesn't re-attach them.
@@ -489,6 +528,7 @@ impl TerminalArea {
         match event {
             AppEvent::SnapshotReplaced => self.sync_with_snapshot(window, cx),
             AppEvent::MachinesChanged => self.sync_other_machines(window, cx),
+            AppEvent::MachineConnected(machine) => self.reattach_machine(machine, window, cx),
             // Keyboard focus follows herdr's focus, but only if it is already
             // in the terminal area: an agent focusing a pane must not pull
             // typing out of the editor.
@@ -1382,7 +1422,13 @@ impl TerminalArea {
                                 let command = this
                                     .attach_command(&machine, &reattach_pane.terminal_id, cx)
                                     .unwrap_or_else(|| Err(format!("{machine} isn't connected")));
-                                this.terminals.reattach(&reattach_pane, command, window, cx);
+                                this.terminals.reattach(
+                                    &machine,
+                                    &reattach_pane,
+                                    command,
+                                    window,
+                                    cx,
+                                );
                                 cx.notify();
                             })),
                     )
@@ -1583,6 +1629,30 @@ impl TerminalArea {
         }
     }
 
+    /// The selected remote machine's offline (or sign-in, setup, disabled)
+    /// screen, while it isn't connected. Its last snapshot is kept for when
+    /// it comes back.
+    fn render_machine_problem(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let machine = self.state.read(cx).selected_machine();
+        if machine.id().is_local() || *machine.status() == MachineStatus::Connected {
+            return None;
+        }
+        let (status, detail) = crate::machines::MachineState::of(machine.status());
+        let id = machine.id().clone();
+        let state = self.state.clone();
+        let on_reconnect: crate::chrome::Callback = Rc::new(move |_, cx| {
+            state.update(cx, |state, cx| state.reconnect_machine(&id, cx));
+        });
+        Some(crate::machines::offline_screen(
+            machine.label(),
+            status,
+            detail,
+            on_reconnect,
+            None,
+            cx,
+        ))
+    }
+
     fn render_empty(&self, message: String, cx: &mut Context<Self>) -> AnyElement {
         v_flex()
             .size_full()
@@ -1661,6 +1731,7 @@ impl Render for TerminalArea {
         } else {
             None
         };
+        let setup = setup.or_else(|| self.render_machine_problem(cx));
         let body = match (setup, Self::active_tab(&snapshot)) {
             (Some(setup), _) => setup,
             (None, None) => {

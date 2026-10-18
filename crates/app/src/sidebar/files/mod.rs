@@ -944,6 +944,16 @@ fn error(message: impl Into<SharedString>, window: &mut Window, cx: &mut App) {
 
 impl Render for FileTree {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let machine = self.state.read(cx).selected_machine();
+        if !machine.id().is_local() {
+            let label = machine.label().to_owned();
+            return div()
+                .size_full()
+                .border_t_1()
+                .border_color(cx.theme().border)
+                .child(crate::machines::remote_files_empty(&label, cx))
+                .into_any_element();
+        }
         if self.root().is_none() {
             return v_flex()
                 .size_full()

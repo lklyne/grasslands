@@ -95,11 +95,12 @@ pub fn local_status(connection: &ConnectionStatus, setup_needed: Option<String>)
     }
 }
 
-/// A connected machine going offline warns; coming back succeeds.
-pub fn status_cue(previous: &MachineStatus, next: &MachineStatus) -> Option<Cue> {
+/// A connected machine going offline warns; connecting again after losing
+/// the connection (`lost`, whatever statuses came between) succeeds.
+pub fn status_cue(previous: &MachineStatus, next: &MachineStatus, lost: bool) -> Option<Cue> {
     match (previous, next) {
         (MachineStatus::Connected, MachineStatus::Offline(_)) => Some(Cue::Warning),
-        (MachineStatus::Offline(_), MachineStatus::Connected) => Some(Cue::Success),
+        (_, MachineStatus::Connected) if lost => Some(Cue::Success),
         _ => None,
     }
 }
@@ -199,13 +200,21 @@ mod tests {
         let cue = status_cue(
             &MachineStatus::Connected,
             &MachineStatus::Offline("x".into()),
+            false,
         );
         assert_eq!(cue, Some(Cue::Warning));
     }
 
     #[test]
+    fn connecting_again_after_losing_the_connection_succeeds() {
+        // Offline, then setup needed, then a manual retry's Connecting.
+        let cue = status_cue(&MachineStatus::Connecting, &MachineStatus::Connected, true);
+        assert_eq!(cue, Some(Cue::Success));
+    }
+
+    #[test]
     fn first_connection_plays_nothing() {
-        let cue = status_cue(&MachineStatus::Connecting, &MachineStatus::Connected);
+        let cue = status_cue(&MachineStatus::Connecting, &MachineStatus::Connected, false);
         assert_eq!(cue, None);
     }
 }

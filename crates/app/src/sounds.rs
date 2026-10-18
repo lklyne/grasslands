@@ -34,12 +34,30 @@ pub fn cues() -> Option<&'static Cues> {
 /// moment is in `crates/cues/AGENTS.md`.
 /// Silent in tests and script runs, which drive the same code paths.
 pub fn play(cue: Cue, options: PlayOptions) {
+    #[cfg(debug_assertions)]
+    PLAYED
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .push(cue);
     if cfg!(test) || std::env::var_os("RT_SCRIPT").is_some() {
         return;
     }
     if let Some(cues) = cues() {
         cues.play(cue, options);
     }
+}
+
+/// Every cue asked for so far, played or not (debug builds), so script
+/// runs can check the sounds they would have made.
+#[cfg(debug_assertions)]
+static PLAYED: std::sync::Mutex<Vec<Cue>> = std::sync::Mutex::new(Vec::new());
+
+#[cfg(debug_assertions)]
+pub fn played() -> Vec<Cue> {
+    PLAYED
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone()
 }
 
 /// Options for a frequent action.
