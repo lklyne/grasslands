@@ -834,6 +834,8 @@ impl TerminalArea {
             .map(|w| w.tabs.iter().map(|tab| tab.info.clone()).collect())
             .unwrap_or_default();
         let active_id = active.map(|tab| tab.info.tab_id.clone());
+        let order: Rc<[String]> = tabs.iter().map(|tab| tab.tab_id.clone()).collect();
+        let area = cx.entity().downgrade();
         // The strip wears the panel headers' background; the selected tab
         // takes a neutral fill.
         let (strip_bg, active_bg, muted, border, drop) = (
@@ -875,6 +877,7 @@ impl TerminalArea {
                     label: label.clone().into(),
                 };
                 let accept_id = tab.tab_id.clone();
+                let (area, order) = (area.clone(), order.clone());
                 h_flex()
                     .id(SharedString::from(format!("tab-{}", tab.tab_id)))
                     .relative()
@@ -930,7 +933,8 @@ impl TerminalArea {
                             );
                         }),
                     )
-                    .on_drag(dragged, |dragged, _, _, cx| {
+                    .on_drag(dragged, move |dragged, _, _, cx| {
+                        area.update(cx, |this, _| this.tab_drag_tick = None).ok();
                         crate::sounds::play(cues::Cue::Select, cues::PlayOptions::default());
                         crate::workspace::keep_terminals_during_drag(cx);
                         cx.new(|_| dragged.clone())
@@ -958,13 +962,14 @@ impl TerminalArea {
                     ))
                     .on_drop(cx.listener(move |this, dragged: &DraggedTab, _, cx| {
                         this.tab_drag_tick = None;
+                        // Where the tab is now: tabs may have come or gone,
+                        // or the bar shows another workspace, since the drag began.
+                        let Some(from) = order.iter().position(|id| *id == dragged.tab_id) else {
+                            return;
+                        };
                         this.state
                             .read(cx)
-                            .move_tab(
-                                &dragged.tab_id,
-                                tab_insert_index(dragged.index, index),
-                                cx,
-                            )
+                            .move_tab(&dragged.tab_id, tab_insert_index(from, index), cx)
                             .detach_and_log_err(cx);
                     }))
                     .drag_over::<DraggedPane>(move |style, _, _, _| style.bg(drop))
