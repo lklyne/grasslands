@@ -7,6 +7,11 @@
 //! thread reopens the master with backoff at the same socket path whenever it
 //! drops. See `docs/decisions/0019-remote-machines.md`.
 //!
+//! The master's stdin is a pipe from this process and its remote command
+//! waits for EOF on it, so the master ends with the app however the app
+//! exits. Socket files are named per process and per link, so app instances
+//! never share them; files of processes that are gone are removed once.
+//!
 //! The remote herdr server is only ever read: never installed, started,
 //! restarted or upgraded from here.
 
@@ -16,9 +21,9 @@ use std::io::{self, Read};
 use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex, Once, PoisonError};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
@@ -45,6 +50,8 @@ const SLOW_RETRY: Duration = Duration::from_secs(30);
 /// Longer than ssh's own `ConnectTimeout`, which normally ends the wait first.
 const MASTER_READY_TIMEOUT: Duration = Duration::from_secs(30);
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(15);
+/// How long a master gets to exit after SIGTERM before SIGKILL.
+const TERM_GRACE: Duration = Duration::from_secs(1);
 const POLL: Duration = Duration::from_millis(100);
 
 /// herdr's usual install locations, for non-interactive SSH shells whose
@@ -54,6 +61,16 @@ const FIND_HERDR: &str = "command -v herdr || for p in \"$HOME/.local/bin/herdr\
     /opt/homebrew/bin/herdr /usr/local/bin/herdr /home/linuxbrew/.linuxbrew/bin/herdr \
     \"$HOME/.local/share/mise/shims/herdr\" \"$HOME/.nix-profile/bin/herdr\"; \
     do if [ -x \"$p\" ]; then echo \"$p\"; exit 0; fi; done; exit 1";
+
+/// The master's remote command: ends when the app's end of its stdin closes.
+/// Works under sh and fish.
+const MASTER_WAIT: &str = "cat >/dev/null";
+
+/// Numbers the links of this process, so a link being torn down never
+/// shares files with its replacement.
+static NEXT_LINK: AtomicU32 = AtomicU32::new(0);
+/// Stale files from earlier processes are cleaned once per process.
+static CLEANED: Once = Once::new();
 
 /// A saved SSH machine, from `herdr machine list --json`.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -197,6 +214,13 @@ impl SshTarget {
         (!bad).then_some(Self { host, port })
     }
 
+    fn placeholder() -> Self {
+        Self {
+            host: "grasslands".to_owned(),
+            port: None,
+        }
+    }
+
     /// `-p <port>`, when there is one.
     fn port_args(&self) -> Vec<String> {
         self.port
@@ -213,11 +237,13 @@ struct Paths {
 }
 
 impl Paths {
-    fn new(dir: &Path, id: &str) -> Self {
+    /// `<pid>-<link>-<id8>.{ctl,sock}`.
+    fn new(dir: &Path, pid: u32, link: u32, id: &str) -> Self {
         let id8: String = id.chars().take(8).collect();
+        let stem = format!("{pid}-{link}-{id8}");
         Self {
-            control: dir.join(format!("{id8}.ctl")),
-            socket: dir.join(format!("{id8}.sock")),
+            control: dir.join(format!("{stem}.ctl")),
+            socket: dir.join(format!("{stem}.sock")),
         }
     }
 
@@ -234,6 +260,56 @@ impl Paths {
     }
 }
 
+/// The process that owns a socket file name, if it is one of ours. ssh's
+/// temporary `<ctl>.<random>` names count too.
+fn owner(file_name: &str) -> Option<u32> {
+    let (stem, _) = file_name.split_once('.')?;
+    let (pid, rest) = stem.split_once('-')?;
+    (!rest.is_empty()).then_some(())?;
+    pid.parse().ok()
+}
+
+fn alive(pid: u32) -> bool {
+    let Ok(pid) = libc::pid_t::try_from(pid) else {
+        return false;
+    };
+    // SAFETY: signal 0 only checks that the process exists.
+    let found = unsafe { libc::kill(pid, 0) } == 0;
+    found || io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+}
+
+/// Removes the files of processes that are gone, first asking any master
+/// still listening on a leftover control socket to exit. Files of live
+/// processes, and names that aren't ours, are left alone.
+fn clean_stale(dir: &Path) {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+    let me = std::process::id();
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(pid) = name.to_str().and_then(owner) else {
+            continue;
+        };
+        if pid == me || alive(pid) {
+            continue;
+        }
+        let path = entry.path();
+        if path.extension().is_some_and(|ext| ext == "ctl") {
+            exit_master(&path);
+        }
+        log::info!("removing stale {}", path.display());
+        remove_file(&path);
+    }
+}
+
+/// `ssh -S <ctl> -O exit`, for a master this link didn't start. ssh needs a
+/// host argument but doesn't use it here.
+fn exit_master(control: &Path) {
+    let args = control_args(&SshTarget::placeholder(), control, "exit", &[]);
+    let _ = run(ssh(&args), Duration::from_secs(2));
+}
+
 fn remove_file(path: &Path) {
     if let Err(err) = fs::remove_file(path)
         && err.kind() != io::ErrorKind::NotFound
@@ -242,11 +318,12 @@ fn remove_file(path: &Path) {
     }
 }
 
-/// `ssh -M -N …`: the control master, which holds the connection open.
+/// `ssh -M -T … <target> <MASTER_WAIT>`: the control master, which holds
+/// the connection open until its stdin closes.
 fn master_args(target: &SshTarget, control: &Path) -> Vec<String> {
     let mut args: Vec<String> = [
         "-M",
-        "-N",
+        "-T",
         "-o",
         "BatchMode=yes",
         "-o",
@@ -264,6 +341,7 @@ fn master_args(target: &SshTarget, control: &Path) -> Vec<String> {
     args.push(format!("ControlPath={}", control.display()));
     args.extend(target.port_args());
     args.push(target.host.clone());
+    args.push(MASTER_WAIT.to_owned());
     args
 }
 
@@ -413,10 +491,17 @@ fn remote_socket(json: &[u8], label: &str) -> Result<String, String> {
     if server.compatible == Some(false) {
         return Err(format!("herdr on {label} needs a restart to update"));
     }
-    server
+    let socket = server
         .socket
         .filter(|s| !s.is_empty())
-        .ok_or_else(|| format!("herdr on {label} didn't report its socket"))
+        .ok_or_else(|| format!("herdr on {label} didn't report its socket"))?;
+    // `:` would split the `-L local:remote` forward spec.
+    if socket.contains(':') {
+        return Err(format!(
+            "herdr on {label} uses a socket path with ':', which can't be forwarded: {socket}"
+        ));
+    }
+    Ok(socket)
 }
 
 enum Msg {
@@ -429,8 +514,8 @@ struct Shared {
     status: Mutex<MachineStatus>,
     /// The remote herdr binary, once found.
     herdr: Mutex<Option<String>>,
-    /// The running control master. Drop kills it from here, so a supervisor
-    /// busy in a remote command still stops at once.
+    /// The running control master. `stop` signals it from here, so a
+    /// supervisor busy in a remote command still stops at once.
     master: Mutex<Option<Child>>,
     stopped: AtomicBool,
 }
@@ -447,14 +532,14 @@ pub struct MachineLink {
     shared: Arc<Shared>,
     statuses: async_channel::Receiver<MachineStatus>,
     inbox: mpsc::Sender<Msg>,
-    thread: Option<JoinHandle<()>>,
 }
 
 impl MachineLink {
     /// Starts the supervisor and returns at once, status `Connecting`
     /// (or `Disabled` without starting anything).
     pub fn start(profile: MachineProfile, socket_dir: PathBuf) -> Self {
-        let paths = Paths::new(&socket_dir, &profile.id);
+        let link = NEXT_LINK.fetch_add(1, Ordering::Relaxed);
+        let paths = Paths::new(&socket_dir, std::process::id(), link, &profile.id);
         let target = SshTarget::parse(&profile.target);
         let blocked = if !profile.enabled {
             Some(MachineStatus::Disabled("disabled in herdr".to_owned()))
@@ -486,24 +571,21 @@ impl MachineLink {
         // Unbounded: never full, and the receiver is held by `statuses`.
         let _ = status_tx.try_send(initial);
         let (inbox, inbox_rx) = mpsc::channel();
-        let thread = match (blocked, &target) {
-            (None, Some(target)) => {
-                let supervisor = Supervisor {
-                    profile: profile.clone(),
-                    target: target.clone(),
-                    paths: paths.clone(),
-                    shared: Arc::clone(&shared),
-                    statuses: status_tx,
-                    inbox: inbox_rx,
-                };
-                thread::Builder::new()
+        if let (None, Some(target)) = (blocked, &target) {
+            let supervisor = Supervisor {
+                profile: profile.clone(),
+                target: target.clone(),
+                paths: paths.clone(),
+                shared: Arc::clone(&shared),
+                statuses: status_tx,
+                inbox: inbox_rx,
+            };
+                // Detached: `stop` never waits for it.
+                let _ = thread::Builder::new()
                     .name(format!("machine-{}", profile.label))
                     .spawn(move || supervisor.run())
-                    .inspect_err(|err| log::error!("machine supervisor: {err}"))
-                    .ok()
-            }
-            _ => None,
-        };
+                    .inspect_err(|err| log::error!("machine supervisor: {err}"));
+        }
         Self {
             profile,
             target,
@@ -511,7 +593,6 @@ impl MachineLink {
             shared,
             statuses,
             inbox,
-            thread,
         }
     }
 
@@ -559,36 +640,48 @@ impl MachineLink {
     pub fn reconnect(&self) {
         let _ = self.inbox.send(Msg::Reconnect);
     }
-}
 
-impl Drop for MachineLink {
-    fn drop(&mut self) {
-        let Some(thread) = self.thread.take() else {
+    /// Ends the connection and removes the socket files. Returns at once:
+    /// the master gets SIGTERM and the supervisor reaps it on its own
+    /// thread. Safe to call more than once; Drop calls it too.
+    pub fn stop(&self) {
+        if self.shared.stopped.swap(true, Ordering::SeqCst) {
             return;
-        };
-        self.shared.stopped.store(true, Ordering::SeqCst);
-        let _ = self.inbox.send(Msg::Stop);
-        if let (Some(master), Some(target)) = (lock(&self.shared.master).take(), &self.target) {
-            stop_master(master, target, &self.paths.control);
         }
-        if thread.join().is_err() {
-            log::error!("machine supervisor for {} panicked", self.profile.label);
+        let _ = self.inbox.send(Msg::Stop);
+        if let Some(master) = lock(&self.shared.master).as_mut() {
+            terminate(master);
         }
         self.paths.remove();
     }
 }
 
-/// Asks the master to exit, then makes sure of it and reaps it.
-fn stop_master(mut master: Child, target: &SshTarget, control: &Path) {
-    if matches!(master.try_wait(), Ok(None)) {
-        let exit = ssh(&control_args(target, control, "exit", &[]));
-        let _ = run(exit, Duration::from_secs(2));
-        let deadline = Instant::now() + Duration::from_secs(1);
-        while matches!(master.try_wait(), Ok(None)) && Instant::now() < deadline {
-            thread::sleep(Duration::from_millis(20));
-        }
-        let _ = master.kill();
+impl Drop for MachineLink {
+    fn drop(&mut self) {
+        self.stop();
     }
+}
+
+/// SIGTERM, which lets ssh remove its control socket. Nothing once reaped,
+/// so the pid can't belong to anyone else.
+fn terminate(master: &mut Child) {
+    if !matches!(master.try_wait(), Ok(None)) {
+        return;
+    }
+    if let Ok(pid) = libc::pid_t::try_from(master.id()) {
+        // SAFETY: plain kill(2) on our own unreaped child.
+        unsafe { libc::kill(pid, libc::SIGTERM) };
+    }
+}
+
+/// Ends the master and reaps it: SIGTERM, then SIGKILL after a grace period.
+fn stop_master(mut master: Child) {
+    terminate(&mut master);
+    let deadline = Instant::now() + TERM_GRACE;
+    while matches!(master.try_wait(), Ok(None)) && Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(20));
+    }
+    let _ = master.kill();
     let _ = master.wait();
 }
 
@@ -661,6 +754,9 @@ struct Supervisor {
 
 impl Supervisor {
     fn run(self) {
+        if let Some(dir) = self.paths.control.parent() {
+            CLEANED.call_once(|| clean_stale(dir));
+        }
         let mut backoff = BACKOFF_MIN;
         loop {
             let (status, was_connected) = match self.connect() {
@@ -758,13 +854,19 @@ impl Supervisor {
 
     /// Starts the master, keeping its stderr. `None` once stopped.
     fn spawn_master(&self) -> io::Result<Option<Arc<Mutex<Vec<u8>>>>> {
+        if self.paths.control.exists() {
+            exit_master(&self.paths.control);
+            remove_file(&self.paths.control);
+        }
         let mut slot = lock(&self.shared.master);
         if self.stopped() {
             return Ok(None);
         }
-        remove_file(&self.paths.control);
+        // The pipe's write end stays in `Child::stdin`, never written to.
+        // It closes when the process exits, Drop or not, and then the
+        // remote `MASTER_WAIT` ends and the master with it.
         let mut child = ssh(&master_args(&self.target, &self.paths.control))
-            .stdin(Stdio::null())
+            .stdin(Stdio::piped())
             .stdout(Stdio::null())
             .stderr(Stdio::piped())
             .spawn()?;
@@ -910,7 +1012,7 @@ impl Supervisor {
     fn teardown(&self) {
         let master = lock(&self.shared.master).take();
         if let Some(master) = master {
-            stop_master(master, &self.target, &self.paths.control);
+            stop_master(master);
         }
         self.paths.remove();
     }
@@ -981,16 +1083,28 @@ mod tests {
     fn master_args_should_name_port_before_host() {
         let args = master_args(&target("ssh://u@h:2222"), Path::new("/m/abcd1234.ctl"));
         assert_eq!(
-            args[args.len() - 3..],
+            args[args.len() - 4..args.len() - 1],
             ["-p".to_owned(), "2222".into(), "u@h".into()]
         );
+    }
+
+    #[test]
+    fn master_args_should_end_with_a_wait_on_stdin() {
+        let args = master_args(&target("h"), Path::new("/m/x.ctl"));
+        assert_eq!(args.last().map(String::as_str), Some(MASTER_WAIT));
+    }
+
+    #[test]
+    fn master_args_should_not_use_n() {
+        let args = master_args(&target("h"), Path::new("/m/x.ctl"));
+        assert!(!args.iter().any(|arg| arg == "-N"));
     }
 
     #[test]
     fn master_args_should_use_batch_mode_and_control_path() {
         let args = master_args(&target("h"), Path::new("/m/abcd1234.ctl")).join(" ");
         assert!(
-            args.starts_with("-M -N -o BatchMode=yes")
+            args.starts_with("-M -T -o BatchMode=yes")
                 && args.contains("-o ControlPath=/m/abcd1234.ctl")
                 && args.contains("ControlPersist=no")
         );
@@ -1120,6 +1234,12 @@ mod tests {
     }
 
     #[test]
+    fn remote_status_should_refuse_socket_with_colon() {
+        let json = r#"{"server":{"running":true,"version":"0.9.5","socket":"/s:x/herdr.sock"}}"#;
+        assert!(remote_socket(json.as_bytes(), "box").is_err_and(|e| e.contains("':'")));
+    }
+
+    #[test]
     fn parse_machines_should_ignore_unknown_fields() {
         let json = br#"[{"id":"b87d0c96779caefd39b0583c9200208c","label":"dockerbox",
             "target":"ssh://lyle@127.0.0.1:2222","session":"default","enabled":true,
@@ -1135,21 +1255,63 @@ mod tests {
     }
 
     #[test]
-    fn paths_should_use_first_eight_chars_of_id() {
-        let paths = Paths::new(Path::new("/m"), "b87d0c96779caefd39b0583c9200208c");
-        assert_eq!(paths.socket, PathBuf::from("/m/b87d0c96.sock"));
+    fn paths_should_name_pid_link_and_first_eight_chars_of_id() {
+        let paths = Paths::new(Path::new("/m"), 4321, 7, "b87d0c96779caefd39b0583c9200208c");
+        assert_eq!(paths.socket, PathBuf::from("/m/4321-7-b87d0c96.sock"));
     }
 
     #[test]
-    fn paths_should_fit_in_a_typical_home() {
+    fn paths_should_fit_in_a_typical_home_with_a_large_pid() {
         let dir = Path::new("/Users/someone-long-name/.local/share/grasslands-herdr/m");
-        assert!(Paths::new(dir, "b87d0c96779caefd").fit());
+        assert!(Paths::new(dir, 9_999_999, 9999, "b87d0c96779caefd").fit());
     }
 
     #[test]
     fn paths_should_not_fit_in_a_very_deep_dir() {
         let dir = PathBuf::from("/").join("d".repeat(90));
-        assert!(!Paths::new(&dir, "b87d0c96").fit());
+        assert!(!Paths::new(&dir, 1, 0, "b87d0c96").fit());
+    }
+
+    #[test]
+    fn owner_should_read_pid_of_socket_and_temp_control() {
+        assert_eq!(
+            [owner("4321-0-b87d0c96.sock"), owner("4321-0-b87d0c96.ctl.AbCdEf0123456789")],
+            [Some(4321), Some(4321)]
+        );
+    }
+
+    #[test]
+    fn owner_should_skip_old_style_and_foreign_names() {
+        assert_eq!(
+            [owner("b87d0c96.ctl"), owner("notes.txt"), owner("4321-.sock")],
+            [None, None, None]
+        );
+    }
+
+    #[test]
+    fn alive_should_see_this_process() {
+        assert!(alive(std::process::id()));
+    }
+
+    #[test]
+    fn clean_stale_should_remove_only_dead_pids_files() {
+        let dir = env::temp_dir().join(format!("grasslands-clean-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let mut dead = Command::new("true").spawn().unwrap();
+        let dead_pid = dead.id();
+        dead.wait().unwrap();
+        let names = [
+            format!("{dead_pid}-0-aaaaaaaa.sock"),
+            format!("{}-0-bbbbbbbb.sock", std::process::id()),
+            "cccccccc.ctl".to_owned(),
+        ];
+        for name in &names {
+            fs::write(dir.join(name), b"").unwrap();
+        }
+        clean_stale(&dir);
+        let left: Vec<bool> = names.iter().map(|n| dir.join(n).exists()).collect();
+        fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(left, [false, true, true]);
     }
 
     #[test]
