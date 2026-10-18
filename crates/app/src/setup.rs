@@ -173,11 +173,11 @@ fn needed(state: &Entity<AppState>, check: &Check, cx: &App) -> AnyElement {
             )
         }
     };
-    let mut actions = h_flex().gap_2().justify_center();
+    let mut actions = v_flex().gap_2().items_center();
     if let (Some(fix), Some(command)) = (check.fix(), command.as_ref()) {
-        actions = actions.child(fix_button(state, fix));
-        let shown = command.display().to_owned();
-        actions = actions.child(command_line(shown, cx));
+        actions = actions
+            .child(fix_button(state, fix))
+            .child(command_line(command.display().to_owned(), cx));
     }
     let check_again = {
         let state = state.clone();
@@ -208,32 +208,37 @@ fn fix_button(state: &Entity<AppState>, fix: Fix) -> Button {
             .primary()
             .on_click(move |_, _, cx| state.update(cx, |state, cx| state.run_fix(fix, cx)));
     }
-    button.danger().on_click(move |_, window, cx| {
-        let agents = state.read(cx).snapshot.agents.len();
-        let mut message =
-            "Restarting herdr closes every pane in the session; whatever runs in them stops."
-                .to_owned();
-        if agents > 0 {
-            message.push_str(&format!(
-                " {agents} agent{} will stop.",
-                if agents == 1 { "" } else { "s" }
-            ));
-        }
-        let confirmation = Confirmation {
-            title: "Restart herdr?".into(),
-            message,
-            confirm_label: "Restart herdr".into(),
-        };
-        let state = state.clone();
-        let on_confirm = move |_: &mut Window, cx: &mut App| {
-            state.update(cx, |state, cx| state.run_fix(Fix::StopServer, cx));
-        };
-        if let Some(chrome) = crate::chrome::get(window, cx) {
-            chrome.update(cx, |chrome, cx| {
-                chrome.confirm(confirmation, on_confirm, window, cx)
-            });
-        }
-    })
+    button
+        .danger()
+        .on_click(move |_, window, cx| confirm_restart(&state, window, cx))
+}
+
+/// Asks before `herdr server stop`, which ends every pane, then runs it.
+pub fn confirm_restart(state: &Entity<AppState>, window: &mut Window, cx: &mut App) {
+    let agents = state.read(cx).snapshot.agents.len();
+    let mut message =
+        "Restarting herdr closes every pane in the session; whatever runs in them stops."
+            .to_owned();
+    if agents > 0 {
+        message.push_str(&format!(
+            " {agents} agent{} will stop.",
+            if agents == 1 { "" } else { "s" }
+        ));
+    }
+    let confirmation = Confirmation {
+        title: "Restart herdr?".into(),
+        message,
+        confirm_label: "Restart herdr".into(),
+    };
+    let state = state.clone();
+    let on_confirm = move |_: &mut Window, cx: &mut App| {
+        state.update(cx, |state, cx| state.run_fix(Fix::StopServer, cx));
+    };
+    if let Some(chrome) = crate::chrome::get(window, cx) {
+        chrome.update(cx, |chrome, cx| {
+            chrome.confirm(confirmation, on_confirm, window, cx)
+        });
+    }
 }
 
 /// The command a fix runs, with a copy button, for anyone who'd rather run
@@ -241,6 +246,7 @@ fn fix_button(state: &Entity<AppState>, fix: Fix) -> Button {
 fn command_line(command: String, cx: &App) -> impl IntoElement {
     let theme = cx.theme();
     h_flex()
+        .max_w(px(480.))
         .gap_1()
         .px_2()
         .py_1()
@@ -250,6 +256,8 @@ fn command_line(command: String, cx: &App) -> impl IntoElement {
         .bg(theme.muted)
         .child(
             div()
+                .min_w_0()
+                .truncate()
                 .font_family(theme.mono_font_family.clone())
                 .text_sm()
                 .child(command.clone()),

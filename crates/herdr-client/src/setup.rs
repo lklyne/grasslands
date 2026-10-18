@@ -159,7 +159,16 @@ impl FixCommand {
     fn new(argv: Vec<OsString>) -> Self {
         let display = argv
             .iter()
-            .map(|arg| shell_quote(&arg.to_string_lossy()))
+            .enumerate()
+            .map(|(i, arg)| {
+                let arg = Path::new(arg);
+                // `/opt/homebrew/bin/brew` is `brew` to whoever copies it.
+                let arg = match arg.file_name() {
+                    Some(name) if i == 0 && name == "brew" => Path::new(name),
+                    _ => arg,
+                };
+                shell_quote(&arg.to_string_lossy())
+            })
             .collect::<Vec<_>>()
             .join(" ");
         Self {
@@ -438,6 +447,12 @@ mod tests {
             command.as_deref(),
             Some("/opt/homebrew/bin/herdr --session dev server stop")
         );
+    }
+
+    #[test]
+    fn brew_should_display_without_its_path() {
+        let command = FixCommand::new(vec!["/opt/homebrew/bin/brew".into(), "upgrade".into()]);
+        assert_eq!(command.display(), "brew upgrade");
     }
 
     #[test]
