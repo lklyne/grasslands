@@ -4,6 +4,8 @@ A native macOS GUI for [herdr](https://herdr.dev) 0.9.5. herdr stays the source 
 
 Spec: [docs/spec.md](docs/spec.md). Decisions: [docs/decisions/](docs/decisions/).
 
+<img width="1387" height="930" alt="image" src="https://github.com/user-attachments/assets/e26fd95b-1585-45ff-81fc-4eec5c482787" />
+
 ## Requires
 
 Rust 1.99, Xcode 27, herdr 0.9.5, Zig 0.16 at `~/.local/zig-0.16/zig` (0.17 won't build libghostty; override with `ZIG`).
