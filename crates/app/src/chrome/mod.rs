@@ -31,7 +31,7 @@ use crate::herdr::{
 };
 use crate::overlay::{self, Capture, LayerId, Overlay};
 use crate::sounds;
-use crate::state::{AppEvent, AppState};
+use crate::state::{AppEvent, AppState, MachineId};
 
 pub use command::HerdrCommand;
 pub use confirm::Confirmation;
@@ -152,13 +152,12 @@ pub struct Chrome {
 impl Chrome {
     pub fn new(state: Entity<AppState>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let events = cx.subscribe_in(&state, window, |this, _, event, window, cx| {
-            if let AppEvent::AgentStatusChanged(change) = event {
-                this.agent_toast(change, window, cx);
+            if let AppEvent::AgentStatusChanged { machine, change } = event {
+                this.agent_toast(machine, change, window, cx);
             }
         });
         let badge = cx.observe(&state, |this, state, cx| {
-            let state = state.read(cx);
-            let count = state.attention.count(&state.snapshot);
+            let count = state.read(cx).attention_count();
             if count != this.badge {
                 this.badge = count;
                 dock::set_badge(count);
@@ -245,13 +244,21 @@ impl Chrome {
     /// A toast (bottom right) and a sound for an agent that needs you
     /// (blocked) or finished.
     /// While the window is in the background the toast also goes to the OS.
-    fn agent_toast(&mut self, change: &StatusChange, window: &mut Window, cx: &mut Context<Self>) {
+    fn agent_toast(
+        &mut self,
+        machine: &MachineId,
+        change: &StatusChange,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let (kind, message) = match change.status {
             AgentStatus::Blocked => (NotificationType::Warning, "needs your input"),
             AgentStatus::Done => (NotificationType::Success, "finished"),
             _ => return,
         };
-        let snapshot = &self.state.read(cx).snapshot;
+        let Some(snapshot) = self.state.read(cx).machine(machine).map(|m| m.snapshot()) else {
+            return;
+        };
         let workspace = find_agent(snapshot, &change.pane_id)
             .and_then(|agent| snapshot.workspace(&agent.workspace_id))
             .map(|w| format!(" in {}", w.info.label))
@@ -262,6 +269,7 @@ impl Chrome {
             NotificationDelivery::InAppAndSystem
         };
         let target = change.pane_id.clone();
+        let target_machine = machine.clone();
         let state = self.state.clone();
         let note = Notification::new()
             .id1::<AgentToast>(SharedString::from(change.pane_id.clone()))
@@ -275,8 +283,10 @@ impl Chrome {
             .on_click(move |_, _, cx| {
                 sounds::play(cues::Cue::Navigate, sounds::subtle());
                 state.update(cx, |state, cx| {
-                    state.mark_seen(&target, cx);
-                    state.focus_pane(&target, cx).detach_and_log_err(cx);
+                    state.mark_seen_on(&target_machine, &target, cx);
+                    state
+                        .focus_pane_on(&target_machine, &target, cx)
+                        .detach_and_log_err(cx);
                 });
             });
         self.floating(cx, move |window, cx| window.push_notification(note, cx));
@@ -414,7 +424,7 @@ impl Chrome {
     /// The herdr actions that make sense for `target`.
     pub fn default_entries(&self, target: &MenuTarget, cx: &App) -> Vec<MenuEntry> {
         use HerdrCommand as C;
-        let snapshot = &self.state.read(cx).snapshot;
+        let snapshot = self.state.read(cx).snapshot();
         match target {
             MenuTarget::Pane { pane_id } => {
                 let id = || pane_id.clone();
@@ -511,7 +521,7 @@ impl Chrome {
 
     /// Plugin actions declared for the target's context, invoked with it.
     fn plugin_entries(&self, target: &MenuTarget, cx: &App) -> Vec<MenuEntry> {
-        let snapshot = &self.state.read(cx).snapshot;
+        let snapshot = self.state.read(cx).snapshot();
         let (kind, context) = invocation_context(target, snapshot);
         self.plugin_actions
             .iter()
@@ -545,7 +555,7 @@ impl Chrome {
     /// Sends a herdr command, asking first when it would close a running
     /// agent or a whole worktree group (herdr closes immediately).
     pub fn run(&mut self, command: HerdrCommand, window: &mut Window, cx: &mut Context<Self>) {
-        let confirmation = confirm::needed_for(&command, &self.state.read(cx).snapshot);
+        let confirmation = confirm::needed_for(&command, self.state.read(cx).snapshot());
         let Some(confirmation) = confirmation else {
             self.send(command, window, cx);
             return;
@@ -597,7 +607,7 @@ impl Chrome {
     }
 
     fn prompt_rename(&mut self, target: MenuTarget, _window: &mut Window, cx: &mut Context<Self>) {
-        let snapshot = &self.state.read(cx).snapshot;
+        let snapshot = self.state.read(cx).snapshot();
         let (title, current) = match &target {
             MenuTarget::Pane { pane_id } => (
                 "Rename Pane",

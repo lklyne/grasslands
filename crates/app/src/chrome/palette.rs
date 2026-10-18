@@ -75,7 +75,7 @@ pub(super) fn open(
 }
 
 fn groups(state: &AppState, plugin_actions: &[PluginActionInfo]) -> Vec<Group> {
-    let snapshot = &state.snapshot;
+    let snapshot = state.snapshot();
     let focused = snapshot.focused_pane();
 
     let mut app: Vec<(SharedString, MenuCommand)> = Vec::new();

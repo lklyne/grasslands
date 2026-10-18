@@ -352,7 +352,7 @@ impl TerminalArea {
     }
 
     fn snapshot(&self, cx: &App) -> std::sync::Arc<Snapshot> {
-        self.state.read(cx).snapshot.clone()
+        self.state.read(cx).snapshot().clone()
     }
 
     fn on_app_event(&mut self, event: &AppEvent, window: &mut Window, cx: &mut Context<Self>) {
@@ -1490,7 +1490,7 @@ impl Render for TerminalArea {
                         config.session.as_deref().unwrap_or("default session")
                     )
                 } else if state.herdr_config.is_none() {
-                    format!("herdr is disconnected: {:?}", state.connection)
+                    format!("herdr is disconnected: {:?}", state.connection())
                 } else {
                     "No workspaces. Create one from the sidebar.".to_owned()
                 };

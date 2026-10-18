@@ -105,10 +105,10 @@ pub fn render(state: &Entity<AppState>, cx: &App) -> Option<AnyElement> {
 /// "Can't reach herdr" while the first read hasn't arrived and the last
 /// attempt failed. Before that, the plain connecting message is enough.
 fn connection_problem(app: &AppState, cx: &App) -> Option<AnyElement> {
-    let ConnectionStatus::Reconnecting { reason } = &app.connection else {
+    let ConnectionStatus::Reconnecting { reason } = &app.connection() else {
         return None;
     };
-    if app.snapshot.generation != 0 {
+    if app.snapshot().generation != 0 {
         return None;
     }
     Some(
@@ -215,7 +215,7 @@ fn fix_button(state: &Entity<AppState>, fix: Fix) -> Button {
 
 /// Asks before `herdr server stop`, which ends every pane, then runs it.
 pub fn confirm_restart(state: &Entity<AppState>, window: &mut Window, cx: &mut App) {
-    let agents = state.read(cx).snapshot.agents.len();
+    let agents = state.read(cx).snapshot().agents.len();
     let mut message =
         "Restarting herdr closes every pane in the session; whatever runs in them stops."
             .to_owned();

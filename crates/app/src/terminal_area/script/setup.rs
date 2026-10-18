@@ -29,7 +29,7 @@ impl Run {
                 let app = area.state.read(cx);
                 match expect.as_str() {
                     "unreachable" => {
-                        matches!(app.connection, ConnectionStatus::Reconnecting { .. })
+                        matches!(app.connection(), ConnectionStatus::Reconnecting { .. })
                     }
                     _ => !matches!(app.setup.stage, Stage::Checking),
                 }
@@ -121,7 +121,7 @@ impl Run {
         let connected = self
             .until(cx, Duration::from_secs(120), |area, _, cx| {
                 let app = area.state.read(cx);
-                app.setup.is_ready() && app.snapshot.generation > 0
+                app.setup.is_ready() && app.snapshot().generation > 0
             })
             .await;
         let run = cx.update(|_, cx| state.read(cx).setup.run.clone())?;

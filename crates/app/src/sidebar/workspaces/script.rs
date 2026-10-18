@@ -177,7 +177,7 @@ fn run_step(
 
 /// The row showing `workspace_id`, as a drag source or drop target.
 fn slot(this: &WorkspaceList, workspace_id: &str, cx: &App) -> Option<Slot> {
-    let snapshot = this.state.read(cx).snapshot.clone();
+    let snapshot = this.state.read(cx).snapshot().clone();
     this.entries(&snapshot)
         .iter()
         .find(|e| e.info.workspace_id == workspace_id)
@@ -185,12 +185,12 @@ fn slot(this: &WorkspaceList, workspace_id: &str, cx: &App) -> Option<Slot> {
 }
 
 fn repo_named(this: &WorkspaceList, name: &str, cx: &App) -> Option<Repo> {
-    let snapshot = this.state.read(cx).snapshot.clone();
+    let snapshot = this.state.read(cx).snapshot().clone();
     this.repos(&snapshot).into_iter().find(|r| r.name == name)
 }
 
 fn log(this: &WorkspaceList, label: &str, sort: Option<super::AgentSort>, cx: &App) {
-    let snapshot = this.state.read(cx).snapshot.clone();
+    let snapshot = this.state.read(cx).snapshot().clone();
     eprintln!(
         "[sidebar-script] {label}: focused workspace {:?}, pane {:?}, agents {sort:?}",
         snapshot.focused_workspace_id, snapshot.focused_pane_id,

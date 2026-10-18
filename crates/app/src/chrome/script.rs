@@ -219,7 +219,7 @@ fn log(chrome: &Chrome, label: &str, window: &mut Window, cx: &mut Context<Chrom
         (window.has_active_dialog(cx), window.notifications(cx).len())
     };
     let capturing = overlay::get(window, cx).is_some_and(|o| o.read(cx).is_capturing());
-    let snapshot = &chrome.state.read(cx).snapshot;
+    let snapshot = chrome.state.read(cx).snapshot();
     let panes: Vec<&str> = snapshot.panes.keys().map(String::as_str).collect();
     let agents: Vec<String> = snapshot
         .agents

@@ -33,7 +33,7 @@ impl Workspace {
     }
 
     pub(super) fn render_titlebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let snapshot = &self.state.read(cx).snapshot;
+        let snapshot = self.state.read(cx).snapshot();
         let name = snapshot
             .focused_workspace_id
             .as_deref()

@@ -340,7 +340,7 @@ fn clicking_a_finished_agent_marks_it_seen(cx: &mut TestAppContext) {
     let row = cx.debug_bounds("agent-w2:p1").unwrap().center();
     cx.simulate_click(row, Modifiers::none());
     cx.run_until_parked();
-    let unseen = state.read_with(cx, |s, _| s.attention.is_unseen_done(&s.snapshot, "w2:p1"));
+    let unseen = state.read_with(cx, |s, _| s.attention().is_unseen_done(s.snapshot(), "w2:p1"));
     assert!(!unseen);
 }
 
@@ -395,7 +395,7 @@ fn workspace_in_a_git_folder_shows_its_branch(cx: &mut TestAppContext) {
     });
     cx.run_until_parked();
     let branch = list.read_with(cx, |list, cx| {
-        let snapshot = list.state.read(cx).snapshot.clone();
+        let snapshot = list.state.read(cx).snapshot().clone();
         list.checkout(&snapshot, &snapshot.workspaces[0].info)
             .and_then(|c| c.branch.clone())
     });

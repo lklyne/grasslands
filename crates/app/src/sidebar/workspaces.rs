@@ -268,7 +268,7 @@ impl WorkspaceList {
     /// Reads folders of workspaces seen for the first time and forgets ones
     /// no workspace uses any more.
     fn sync_checkouts(&mut self, cx: &mut Context<Self>) {
-        let snapshot = self.state.read(cx).snapshot.clone();
+        let snapshot = self.state.read(cx).snapshot().clone();
         let wanted: HashSet<PathBuf> = snapshot
             .workspaces
             .iter()
@@ -447,7 +447,7 @@ impl WorkspaceList {
     /// Drops `dragged` where `target` is; see [`groups::reordered`].
     fn reorder(&mut self, dragged: &Slot, target: &Slot, cx: &mut Context<Self>) {
         let state = self.state.read(cx);
-        let snapshot = &state.snapshot;
+        let snapshot = state.snapshot();
         let infos: Vec<&WorkspaceInfo> = snapshot.workspaces.iter().map(|w| &w.info).collect();
         let entries = groups::entries(
             &infos,
@@ -508,7 +508,7 @@ impl WorkspaceList {
         let params = WorktreeParams {
             workspace_id: match repo_root {
                 Some(_) => None,
-                None => state.snapshot.focused_workspace_id.clone(),
+                None => state.snapshot().focused_workspace_id.clone(),
             },
             cwd: repo_root.map(str::to_owned),
             branch: Some(branch.to_owned()),
@@ -558,7 +558,7 @@ impl WorkspaceList {
             .collect();
         let unseen = agents
             .iter()
-            .any(|a| state.attention.is_unseen_done(snapshot, &a.pane_id));
+            .any(|a| state.attention().is_unseen_done(snapshot, &a.pane_id));
         let mut status = rolled_up(members.iter().map(|m| m.agent_status));
         // herdr's `done` means unseen; this app also counts looks herdr
         // can't see, and a seen result is idle again.
@@ -870,7 +870,7 @@ impl Panel for WorkspaceList {
 
 impl Render for WorkspaceList {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let snapshot = self.state.read(cx).snapshot.clone();
+        let snapshot = self.state.read(cx).snapshot().clone();
         self.drawn_rows.borrow_mut().clear();
         let entries = self.entries(&snapshot);
         let rows: Vec<AnyElement> = entries

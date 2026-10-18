@@ -18,32 +18,51 @@ use gpui_kit::*;
 
 use crate::attention::{Attention, StatusChange};
 use crate::herdr::{
-    self, Check, Client, ConnectionStatus, Fix, MIN_VERSION, PaneId, SessionSync, Snapshot, Update,
-    Version,
+    self, Agent, Check, Client, ConnectionStatus, Fix, MIN_VERSION, MachineLink, MachineProfile,
+    MachineStatus, PaneId, SessionSync, Snapshot, Update, Version, machines,
 };
 use crate::setup::{FixRun, Setup, Stage};
 use crate::{sounds, worktree};
 use cues::{Cue, PlayOptions};
 
+mod machine_list;
+
+pub use machine_list::MachineId;
+
 /// herdr 0.9.5 sends no event when a pane's folder changes, so the focused
 /// pane's folder is re-read this often (one `pane.get`).
 const CWD_POLL: Duration = Duration::from_secs(2);
+/// herdr sends nothing when its saved machines change, so the list is re-read
+/// this often (and on demand, after the app changes it).
+const MACHINES_POLL: Duration = Duration::from_secs(30);
 
 #[derive(Debug, Clone)]
 pub enum AppEvent {
     /// The focused pane's worktree root changed. The file tree re-roots and
-    /// the editor swaps to that worktree's tab set.
+    /// the editor swaps to that worktree's tab set. Always `None` while a
+    /// remote machine is selected.
     ActiveWorktreeChanged(Option<PathBuf>),
-    /// herdr's cache was replaced (any change: startup, events, reconnect).
-    /// The new one is `AppState::snapshot`.
+    /// The selected machine's herdr cache was replaced (any change: startup,
+    /// events, reconnect, or another machine being selected). The new one is
+    /// `AppState::snapshot`.
     SnapshotReplaced,
-    /// herdr's focused pane changed.
+    /// The selected machine's focused pane changed.
     FocusedPaneChanged(Option<PaneId>),
-    /// A herdr event as it arrived, before the cache re-read it triggers.
-    /// For reactions the cache can't express (toasts, "pane just created").
+    /// A herdr event from the selected machine as it arrived, before the
+    /// cache re-read it triggers. For reactions the cache can't express
+    /// (toasts, "pane just created").
     Herdr(Arc<herdr::Event>),
     /// A known agent's status changed between two caches (chrome toasts it).
-    AgentStatusChanged(StatusChange),
+    AgentStatusChanged {
+        machine: MachineId,
+        change: StatusChange,
+    },
+    /// The machine list, a machine's label or status, or a machine's cache
+    /// changed. Views listing every machine (the sidebar) redraw from
+    /// `AppState::machines`.
+    MachinesChanged,
+    /// Another machine was selected; `SnapshotReplaced` follows.
+    MachineSelected(MachineId),
     /// The file tree renamed or moved a file or folder; open editor tabs at or
     /// under `from` follow it to `to`.
     FileMoved { from: PathBuf, to: PathBuf },
@@ -51,26 +70,100 @@ pub enum AppEvent {
     FileTrashed(PathBuf),
 }
 
-pub struct AppState {
-    /// `None` when the endpoint was refused.
-    pub herdr_config: Option<herdr::Config>,
-    pub connection: ConnectionStatus,
-    /// What herdr needs before the app can use it, and the fix running.
-    pub setup: Setup,
+/// One herdr server: Local, or a saved SSH machine.
+pub struct Machine {
+    id: MachineId,
+    label: String,
+    status: MachineStatus,
+    connection: ConnectionStatus,
     /// The latest herdr cache: workspaces → tabs → split trees, panes, agents.
-    pub snapshot: Arc<Snapshot>,
-    pub focused_pane: Option<PaneId>,
+    snapshot: Arc<Snapshot>,
+    focused_pane: Option<PaneId>,
     /// Status changes and unseen results, for toasts and badges.
-    pub attention: Attention,
-    active_worktree: Option<PathBuf>,
-    /// The focused pane's folder the active worktree was last resolved from.
-    focused_dir: Option<PathBuf>,
-    /// `None` when the endpoint was refused.
+    attention: Attention,
+    /// `None` when Local's endpoint was refused, or before a remote machine
+    /// first connects.
     client: Option<Client>,
-    _sync: Option<(SessionSync, Task<()>)>,
+    /// Remote machines only.
+    link: Option<MachineLink>,
+    sync: Option<(SessionSync, Task<()>)>,
+    _statuses: Option<Task<()>>,
+}
+
+impl Machine {
+    fn new(id: MachineId, label: String, status: MachineStatus) -> Self {
+        Self {
+            id,
+            label,
+            status,
+            connection: ConnectionStatus::Connecting,
+            snapshot: Arc::default(),
+            focused_pane: None,
+            attention: Attention::default(),
+            client: None,
+            link: None,
+            sync: None,
+            _statuses: None,
+        }
+    }
+
+    pub fn id(&self) -> &MachineId {
+        &self.id
+    }
+
+    pub fn label(&self) -> &str {
+        &self.label
+    }
+
+    pub fn status(&self) -> &MachineStatus {
+        &self.status
+    }
+
+    pub fn connection(&self) -> &ConnectionStatus {
+        &self.connection
+    }
+
+    pub fn snapshot(&self) -> &Arc<Snapshot> {
+        &self.snapshot
+    }
+
+    pub fn focused_pane(&self) -> Option<&str> {
+        self.focused_pane.as_deref()
+    }
+
+    pub fn attention(&self) -> &Attention {
+        &self.attention
+    }
+
+    /// herdr's saved profile; `None` for Local.
+    pub fn profile(&self) -> Option<&MachineProfile> {
+        self.link.as_ref().map(MachineLink::profile)
+    }
+
+    /// The shell command that attaches a terminal surface to `terminal_id`
+    /// on this machine. `None` until a remote machine's herdr is found.
+    pub fn attach_command(&self, terminal_id: &str) -> Option<String> {
+        self.link.as_ref()?.attach_command(terminal_id)
+    }
+}
+
+pub struct AppState {
+    /// Local's herdr. `None` when the endpoint was refused.
+    pub herdr_config: Option<herdr::Config>,
+    /// What Local's herdr needs before the app can use it, and the fix running.
+    pub setup: Setup,
+    /// Local first, then herdr's saved machines in herdr's order.
+    machines: Vec<Machine>,
+    /// The machine whose workspace is active, as in herdr.
+    selected: MachineId,
+    /// Local's active worktree, whichever machine is selected.
+    local_worktree: Option<PathBuf>,
+    /// Local's focused pane folder the active worktree was last resolved from.
+    focused_dir: Option<PathBuf>,
     _cwd_poll: Option<Task<()>>,
     _check: Option<Task<()>>,
     _fix: Option<Task<()>>,
+    _machines_poll: Option<Task<()>>,
 }
 
 impl EventEmitter<AppEvent> for AppState {}
@@ -82,6 +175,9 @@ impl AppState {
     /// client, every call fails. Under `cargo test` it stays offline: GPUI's
     /// test scheduler rejects wakeups from the sync thread, and tests must
     /// never reach a real herdr by accident.
+    ///
+    /// herdr's saved machines load in the background and are re-read every
+    /// [`MACHINES_POLL`].
     pub fn new(herdr_config: herdr::Result<herdr::Config>, cx: &mut Context<Self>) -> Self {
         let herdr_config = match herdr_config {
             Ok(config) => config,
@@ -96,51 +192,404 @@ impl AppState {
             !herdr_config.auto_start,
             "tests must not build AppState from the environment; use an auto_start: false config"
         );
-        let mut this = Self {
-            client: Some(Client::new(herdr_config.clone())),
-            herdr_config: Some(herdr_config),
-            connection: ConnectionStatus::Connecting,
-            ..Self::disconnected(String::new())
-        };
+        let mut this = Self::disconnected(String::new());
+        this.local_mut().client = Some(Client::new(herdr_config.clone()));
+        this.local_mut().connection = ConnectionStatus::Connecting;
+        this.herdr_config = Some(herdr_config);
+        this.refresh_local_status();
         if !cfg!(test) {
             this.check_herdr(cx);
+            this._machines_poll = Some(Self::poll_machines(cx));
         }
         this
     }
 
     fn disconnected(reason: String) -> Self {
+        let mut local = Machine::new(
+            MachineId::Local,
+            "Local".into(),
+            MachineStatus::Offline(reason.clone()),
+        );
+        local.connection = ConnectionStatus::Disconnected { reason };
         Self {
             herdr_config: None,
-            connection: ConnectionStatus::Disconnected { reason },
             setup: Setup::default(),
-            snapshot: Arc::default(),
-            focused_pane: None,
-            attention: Attention::default(),
-            active_worktree: std::env::current_dir().ok(),
+            machines: vec![local],
+            selected: MachineId::Local,
+            local_worktree: std::env::current_dir().ok(),
             focused_dir: None,
-            client: None,
-            _sync: None,
             _cwd_poll: None,
             _check: None,
             _fix: None,
+            _machines_poll: None,
         }
     }
 
-    /// Starts the sync thread, once.
+    // Machines
+
+    /// Local first, then each saved machine in herdr's order.
+    pub fn machines(&self) -> impl Iterator<Item = &Machine> {
+        self.machines.iter()
+    }
+
+    pub fn machine(&self, id: &MachineId) -> Option<&Machine> {
+        self.machines.iter().find(|m| &m.id == id)
+    }
+
+    fn machine_mut(&mut self, id: &MachineId) -> Option<&mut Machine> {
+        self.machines.iter_mut().find(|m| &m.id == id)
+    }
+
+    fn local(&self) -> &Machine {
+        &self.machines[0]
+    }
+
+    fn local_mut(&mut self) -> &mut Machine {
+        &mut self.machines[0]
+    }
+
+    pub fn selected(&self) -> &MachineId {
+        &self.selected
+    }
+
+    pub fn selected_machine(&self) -> &Machine {
+        self.machine(&self.selected).unwrap_or_else(|| self.local())
+    }
+
+    /// The selected machine's cache.
+    pub fn snapshot(&self) -> &Arc<Snapshot> {
+        &self.selected_machine().snapshot
+    }
+
+    /// The selected machine's connection to its herdr server.
+    pub fn connection(&self) -> &ConnectionStatus {
+        &self.selected_machine().connection
+    }
+
+    /// The selected machine's focused pane.
+    pub fn focused_pane(&self) -> Option<&str> {
+        self.selected_machine().focused_pane()
+    }
+
+    /// The selected machine's agent attention.
+    pub fn attention(&self) -> &Attention {
+        &self.selected_machine().attention
+    }
+
+    /// Blocked agents plus unseen finished ones on every machine: the dock
+    /// badge count.
+    pub fn attention_count(&self) -> usize {
+        self.machines
+            .iter()
+            .map(|m| m.attention.count(&m.snapshot))
+            .sum()
+    }
+
+    /// Every agent on Local and on each connected machine, with its machine.
+    pub fn agents(&self) -> impl Iterator<Item = (&MachineId, &Agent)> {
+        self.machines
+            .iter()
+            .filter(|m| m.id.is_local() || m.status == MachineStatus::Connected)
+            .flat_map(|m| m.snapshot.agents.iter().map(move |agent| (&m.id, agent)))
+    }
+
+    /// Makes `id` the machine `snapshot`, `call` and the terminal area act on.
+    pub fn select_machine(&mut self, id: &MachineId, cx: &mut Context<Self>) {
+        if &self.selected == id || self.machine(id).is_none() {
+            return;
+        }
+        tracing::info!("machine selected: {id}");
+        let was_local = self.selected.is_local();
+        self.selected = id.clone();
+        self.announce_selection(was_local, cx);
+    }
+
+    fn announce_selection(&mut self, was_local: bool, cx: &mut Context<Self>) {
+        cx.emit(AppEvent::MachineSelected(self.selected.clone()));
+        cx.emit(AppEvent::SnapshotReplaced);
+        cx.emit(AppEvent::FocusedPaneChanged(
+            self.selected_machine().focused_pane.clone(),
+        ));
+        if was_local != self.selected.is_local() {
+            cx.emit(AppEvent::ActiveWorktreeChanged(self.active_worktree().cloned()));
+        }
+        cx.notify();
+    }
+
+    /// Re-reads herdr's saved machines in the background, then starts,
+    /// stops or relabels links to match.
+    pub fn refresh_machines(&mut self, cx: &mut Context<Self>) {
+        let Some(bin) = self.herdr_config.as_ref().map(|c| c.bin.clone()) else {
+            return;
+        };
+        let list = cx
+            .background_executor()
+            .spawn(async move { machines::list_machines(&bin) });
+        cx.spawn(async move |this, cx| match list.await {
+            Ok(profiles) => {
+                this.update(cx, |this, cx| this.apply_profiles(profiles, cx))
+                    .ok();
+            }
+            Err(error) => tracing::warn!("herdr machine list: {error}"),
+        })
+        .detach();
+    }
+
+    fn poll_machines(cx: &mut Context<Self>) -> Task<()> {
+        cx.spawn(async move |this, cx| {
+            loop {
+                if this.update(cx, Self::refresh_machines).is_err() {
+                    break;
+                }
+                cx.background_executor().timer(MACHINES_POLL).await;
+            }
+        })
+    }
+
+    fn apply_profiles(&mut self, saved: Vec<MachineProfile>, cx: &mut Context<Self>) {
+        let running: Vec<&MachineProfile> =
+            self.machines.iter().filter_map(Machine::profile).collect();
+        let diff = machine_list::diff_profiles(&running, &saved);
+        let changed = !diff.start.is_empty() || !diff.stop.is_empty() || !diff.relabel.is_empty();
+        if !changed {
+            return;
+        }
+        tracing::info!(
+            "machines: start {:?}, stop {:?}, relabel {:?}",
+            diff.start.iter().map(|p| &p.label).collect::<Vec<_>>(),
+            diff.stop,
+            diff.relabel
+        );
+        let restarted = |id: &MachineId| match id {
+            MachineId::Local => false,
+            MachineId::Remote(id) => diff.start.iter().any(|p| &p.id == id),
+        };
+        let selected_restarted = restarted(&self.selected);
+        self.machines
+            .retain(|m| !restarted(&m.id) && !matches!(&m.id, MachineId::Remote(id) if diff.stop.contains(id)));
+        for (id, label) in diff.relabel {
+            if let Some(machine) = self.machine_mut(&MachineId::Remote(id)) {
+                machine.label = label;
+            }
+        }
+        for profile in diff.start {
+            if let Some(machine) = self.start_machine(profile, cx) {
+                self.machines.push(machine);
+            }
+        }
+        // Local first, then herdr's order.
+        self.machines.sort_by_key(|m| match &m.id {
+            MachineId::Local => 0,
+            MachineId::Remote(id) => 1 + saved.iter().position(|p| &p.id == id).unwrap_or(0),
+        });
+        let selected = machine_list::reselect(&self.selected, self.machines.iter().map(|m| &m.id));
+        if selected != self.selected {
+            let was_local = self.selected.is_local();
+            self.selected = selected;
+            self.announce_selection(was_local, cx);
+        } else if selected_restarted {
+            // A new link starts with an empty cache.
+            cx.emit(AppEvent::SnapshotReplaced);
+        }
+        cx.emit(AppEvent::MachinesChanged);
+        cx.notify();
+    }
+
+    fn start_machine(&self, profile: MachineProfile, cx: &mut Context<Self>) -> Option<Machine> {
+        let Some(dir) = machines::socket_dir() else {
+            tracing::warn!("machine {}: no socket directory (HOME unset)", profile.label);
+            return None;
+        };
+        let id = MachineId::Remote(profile.id.clone());
+        let label = profile.label.clone();
+        let link = MachineLink::start(profile, dir);
+        let mut machine = Machine::new(id.clone(), label, link.status());
+        let statuses = link.statuses();
+        machine._statuses = Some(cx.spawn(async move |this, cx| {
+            while let Ok(status) = statuses.recv().await {
+                let id = id.clone();
+                if this
+                    .update(cx, |this, cx| this.machine_status(&id, status, cx))
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        }));
+        let connected = machine.status == MachineStatus::Connected;
+        machine.link = Some(link);
+        if connected {
+            Self::start_remote_sync(&mut machine, cx);
+        }
+        Some(machine)
+    }
+
+    fn machine_status(&mut self, id: &MachineId, status: MachineStatus, cx: &mut Context<Self>) {
+        let Some(machine) = self.machine_mut(id) else {
+            return;
+        };
+        if machine.status == status {
+            return;
+        }
+        tracing::info!("machine {}: {status:?}", machine.label);
+        if let Some(cue) = machine_list::status_cue(&machine.status, &status) {
+            sounds::play(cue, PlayOptions::default());
+        }
+        machine.status = status;
+        // The forwarded socket is fixed for the link's life, so one sync
+        // started on the first connection follows every reconnect.
+        if machine.status == MachineStatus::Connected && machine.sync.is_none() {
+            Self::start_remote_sync(machine, cx);
+        }
+        cx.emit(AppEvent::MachinesChanged);
+        cx.notify();
+    }
+
+    fn start_remote_sync(machine: &mut Machine, cx: &mut Context<Self>) {
+        let Some(link) = &machine.link else {
+            return;
+        };
+        match SessionSync::start(link.endpoint()) {
+            Ok(sync) => {
+                machine.client = Some(sync.client().clone());
+                let task = Self::forward_updates(machine.id.clone(), &sync, cx);
+                machine.sync = Some((sync, task));
+            }
+            Err(error) => {
+                tracing::warn!("machine {}: {error}", machine.label);
+                machine.connection = ConnectionStatus::Reconnecting {
+                    reason: error.to_string(),
+                };
+            }
+        }
+    }
+
+    /// Runs `herdr machine <args>` for a saved machine, then re-reads the list.
+    fn machine_command(
+        &mut self,
+        id: &MachineId,
+        args: Vec<String>,
+        cx: &mut Context<Self>,
+    ) -> Task<anyhow::Result<()>> {
+        let (MachineId::Remote(profile_id), Some(bin)) =
+            (id, self.herdr_config.as_ref().map(|c| c.bin.clone()))
+        else {
+            return Task::ready(Err(anyhow::anyhow!("{id} isn't a saved machine")));
+        };
+        let mut argv = vec!["machine".to_owned()];
+        argv.extend(args);
+        argv.push(profile_id.clone());
+        let run = cx.background_executor().spawn(async move {
+            let output = std::process::Command::new(&bin)
+                .args(&argv)
+                .stdin(std::process::Stdio::null())
+                .output()?;
+            if output.status.success() {
+                Ok(())
+            } else {
+                Err(anyhow::anyhow!(
+                    "herdr {}: {}",
+                    argv.join(" "),
+                    String::from_utf8_lossy(&output.stderr).trim()
+                ))
+            }
+        });
+        cx.spawn(async move |this, cx| {
+            let result = run.await;
+            if let Err(error) = &result {
+                tracing::warn!("{error:#}");
+            }
+            this.update(cx, Self::refresh_machines).ok();
+            result
+        })
+    }
+
+    pub fn rename_machine(
+        &mut self,
+        id: &MachineId,
+        label: &str,
+        cx: &mut Context<Self>,
+    ) -> Task<anyhow::Result<()>> {
+        sounds::play(Cue::Tap, sounds::subtle());
+        self.machine_command(id, vec!["rename".into(), "--label".into(), label.into()], cx)
+    }
+
+    pub fn disable_machine(
+        &mut self,
+        id: &MachineId,
+        cx: &mut Context<Self>,
+    ) -> Task<anyhow::Result<()>> {
+        sounds::play(Cue::Tap, sounds::subtle());
+        self.machine_command(id, vec!["disable".into()], cx)
+    }
+
+    pub fn enable_machine(
+        &mut self,
+        id: &MachineId,
+        cx: &mut Context<Self>,
+    ) -> Task<anyhow::Result<()>> {
+        sounds::play(Cue::Tap, sounds::subtle());
+        self.machine_command(id, vec!["enable".into()], cx)
+    }
+
+    /// Removes the saved machine from herdr; confirm first.
+    pub fn remove_machine(
+        &mut self,
+        id: &MachineId,
+        cx: &mut Context<Self>,
+    ) -> Task<anyhow::Result<()>> {
+        sounds::play(Cue::Close, sounds::strong());
+        self.machine_command(id, vec!["remove".into()], cx)
+    }
+
+    /// Retries a machine's connection now. For Local, checks herdr again
+    /// when it isn't ready.
+    pub fn reconnect_machine(&mut self, id: &MachineId, cx: &mut Context<Self>) {
+        match id {
+            MachineId::Local => {
+                if !self.setup.is_ready() {
+                    self.check_herdr(cx);
+                }
+            }
+            MachineId::Remote(_) => {
+                if let Some(link) = self.machine(id).and_then(|m| m.link.as_ref()) {
+                    link.reconnect();
+                }
+            }
+        }
+    }
+
+    fn refresh_local_status(&mut self) {
+        let setup_needed = match &self.setup.stage {
+            Stage::Needed(_) | Stage::Fixing(_) => Some("herdr needs setup".to_owned()),
+            Stage::Checking | Stage::Ready => None,
+        };
+        let local = self.local_mut();
+        local.status = machine_list::local_status(&local.connection, setup_needed);
+    }
+
+    // Local
+
+    /// Starts Local's sync thread, once.
     fn start_sync(&mut self, cx: &mut Context<Self>) {
-        let Some(config) = self.herdr_config.clone().filter(|_| self._sync.is_none()) else {
+        let Some(config) = self
+            .herdr_config
+            .clone()
+            .filter(|_| self.local().sync.is_none())
+        else {
             return;
         };
         match SessionSync::start(config) {
             Ok(sync) => {
-                let task = Self::forward_updates(&sync, cx);
-                self._sync = Some((sync, task));
+                let task = Self::forward_updates(MachineId::Local, &sync, cx);
+                self.local_mut().sync = Some((sync, task));
                 self._cwd_poll = Some(Self::poll_focused_dir(cx));
             }
             Err(error) => {
-                self.connection = ConnectionStatus::Reconnecting {
+                self.local_mut().connection = ConnectionStatus::Reconnecting {
                     reason: error.to_string(),
                 };
+                self.refresh_local_status();
             }
         }
     }
@@ -167,6 +616,8 @@ impl AppState {
                     sounds::play(Cue::Warning, PlayOptions::default());
                     this.setup.stage = Stage::Needed(check);
                 }
+                this.refresh_local_status();
+                cx.emit(AppEvent::MachinesChanged);
                 cx.notify();
             })
             .ok();
@@ -246,26 +697,31 @@ impl AppState {
         self.check_herdr(cx);
     }
 
-    fn forward_updates(sync: &SessionSync, cx: &mut Context<Self>) -> Task<()> {
+    fn forward_updates(machine: MachineId, sync: &SessionSync, cx: &mut Context<Self>) -> Task<()> {
         let updates = sync.updates();
         cx.spawn(async move |this, cx| {
             while let Ok(update) = updates.recv().await {
-                if this.update(cx, |this, cx| this.apply(update, cx)).is_err() {
+                if this
+                    .update(cx, |this, cx| this.apply(&machine, update, cx))
+                    .is_err()
+                {
                     break;
                 }
             }
         })
     }
 
-    /// Follows the focused pane into another folder (`cd`, or an agent
+    /// Follows Local's focused pane into another folder (`cd`, or an agent
     /// changing directory), which herdr reports no event for.
     fn poll_focused_dir(cx: &mut Context<Self>) -> Task<()> {
         cx.spawn(async move |this, cx| {
             loop {
                 cx.background_executor().timer(CWD_POLL).await;
                 let Ok(request) = this.update(cx, |this, cx| {
-                    let pane_id = this.focused_pane.clone()?;
-                    Some(this.call(cx, move |client| client.pane_get(&pane_id)))
+                    let pane_id = this.local().focused_pane.clone()?;
+                    Some(this.call_on(&MachineId::Local, cx, move |client| {
+                        client.pane_get(&pane_id)
+                    }))
                 }) else {
                     break;
                 };
@@ -276,7 +732,7 @@ impl AppState {
                     continue;
                 };
                 let followed = this.update(cx, |this, cx| {
-                    if this.focused_pane.as_ref() == Some(&pane.pane_id) {
+                    if this.local().focused_pane.as_ref() == Some(&pane.pane_id) {
                         this.follow_dir(pane.working_dir().map(PathBuf::from), cx);
                     }
                 });
@@ -287,28 +743,45 @@ impl AppState {
         })
     }
 
-    fn apply(&mut self, update: Update, cx: &mut Context<Self>) {
+    fn apply(&mut self, machine: &MachineId, update: Update, cx: &mut Context<Self>) {
         match update {
-            Update::State(snapshot) => self.replace_snapshot(snapshot, cx),
-            Update::Event(event) => cx.emit(AppEvent::Herdr(Arc::from(event))),
-            Update::Status(status) => {
-                match (&self.connection, &status) {
-                    (ConnectionStatus::Connected, ConnectionStatus::Reconnecting { .. }) => {
-                        sounds::play(Cue::Warning, PlayOptions::default());
-                    }
-                    (ConnectionStatus::Reconnecting { .. }, ConnectionStatus::Connected) => {
-                        sounds::play(Cue::Success, sounds::subtle());
-                    }
-                    _ => {}
+            Update::State(snapshot) => self.apply_snapshot(machine, snapshot, cx),
+            Update::Event(event) => {
+                if machine == &self.selected {
+                    cx.emit(AppEvent::Herdr(Arc::from(event)));
                 }
-                self.connection = status;
+            }
+            Update::Status(status) => {
+                let Some(target) = self.machine_mut(machine) else {
+                    return;
+                };
+                if target.id.is_local() {
+                    match (&target.connection, &status) {
+                        (ConnectionStatus::Connected, ConnectionStatus::Reconnecting { .. }) => {
+                            sounds::play(Cue::Warning, PlayOptions::default());
+                        }
+                        (ConnectionStatus::Reconnecting { .. }, ConnectionStatus::Connected) => {
+                            sounds::play(Cue::Success, sounds::subtle());
+                        }
+                        _ => {}
+                    }
+                }
+                target.connection = status;
+                if machine.is_local() {
+                    self.refresh_local_status();
+                }
+                cx.emit(AppEvent::MachinesChanged);
                 cx.notify();
             }
         }
     }
 
+    /// Local's active worktree while Local is selected. Remote machines'
+    /// folders aren't on this disk, so `None` while one is.
     pub fn active_worktree(&self) -> Option<&PathBuf> {
-        self.active_worktree.as_ref()
+        self.local_worktree
+            .as_ref()
+            .filter(|_| self.selected.is_local())
     }
 
     /// Announces a rename done in the app (see `AppEvent::FileMoved`).
@@ -321,42 +794,68 @@ impl AppState {
         cx.emit(AppEvent::FileTrashed(path));
     }
 
+    /// Sets Local's active worktree; announced only while Local is selected.
     pub fn set_active_worktree(&mut self, root: Option<PathBuf>, cx: &mut Context<Self>) {
-        if self.active_worktree == root {
+        if self.local_worktree == root {
             return;
         }
-        self.active_worktree.clone_from(&root);
-        cx.emit(AppEvent::ActiveWorktreeChanged(root));
-        cx.notify();
+        self.local_worktree.clone_from(&root);
+        if self.selected.is_local() {
+            cx.emit(AppEvent::ActiveWorktreeChanged(root));
+            cx.notify();
+        }
     }
 
+    /// Replaces the selected machine's cache, as a sync update would.
     pub fn replace_snapshot(&mut self, snapshot: Arc<Snapshot>, cx: &mut Context<Self>) {
+        let selected = self.selected.clone();
+        self.apply_snapshot(&selected, snapshot, cx);
+    }
+
+    fn apply_snapshot(&mut self, id: &MachineId, snapshot: Arc<Snapshot>, cx: &mut Context<Self>) {
         // A server from an older herdr (one started before an update, say):
         // the setup check names it and offers the restart.
-        let old_server = Version::parse(&snapshot.version).is_some_and(|v| v < MIN_VERSION);
-        if old_server && self.setup.is_ready() {
-            self.check_herdr(cx);
+        if id.is_local() {
+            let old_server = Version::parse(&snapshot.version).is_some_and(|v| v < MIN_VERSION);
+            if old_server && self.setup.is_ready() {
+                self.check_herdr(cx);
+            }
         }
+        let selected = id == &self.selected;
+        let Some(machine) = self.machine_mut(id) else {
+            return;
+        };
         let focused = snapshot.focused_pane_id.clone();
-        let changes = self.attention.update(&snapshot);
-        self.snapshot = snapshot;
-        cx.emit(AppEvent::SnapshotReplaced);
-        for change in changes {
-            cx.emit(AppEvent::AgentStatusChanged(change));
+        let changes = machine.attention.update(&snapshot);
+        machine.snapshot = snapshot;
+        let focus_changed = machine.focused_pane != focused;
+        machine.focused_pane.clone_from(&focused);
+        if selected {
+            cx.emit(AppEvent::SnapshotReplaced);
         }
-        if self.focused_pane != focused {
-            self.focused_pane.clone_from(&focused);
+        cx.emit(AppEvent::MachinesChanged);
+        for change in changes {
+            cx.emit(AppEvent::AgentStatusChanged {
+                machine: id.clone(),
+                change,
+            });
+        }
+        if selected && focus_changed {
             cx.emit(AppEvent::FocusedPaneChanged(focused));
         }
-        self.follow_focused_pane(cx);
+        if id.is_local() {
+            self.follow_focused_pane(cx);
+        }
         cx.notify();
     }
 
-    /// Re-roots on the focused pane's `foreground_cwd` (falling back to `cwd`),
-    /// so it also follows an agent that moves into another folder. With no
-    /// focused pane, or a folder that doesn't exist here, the root stays put.
+    /// Re-roots on Local's focused pane's `foreground_cwd` (falling back to
+    /// `cwd`), so it also follows an agent that moves into another folder.
+    /// With no focused pane, or a folder that doesn't exist here, the root
+    /// stays put.
     fn follow_focused_pane(&mut self, cx: &mut Context<Self>) {
         let dir = self
+            .local()
             .snapshot
             .focused_pane()
             .and_then(herdr::PaneInfo::working_dir)
@@ -374,19 +873,31 @@ impl AppState {
         }
     }
 
-    /// Runs one blocking herdr call on the background executor. The typed
-    /// methods below cover the common ones; use this for anything else.
+    /// Runs one blocking herdr call on the selected machine, on the
+    /// background executor. The typed methods below cover the common ones;
+    /// use this for anything else.
     #[track_caller]
     pub fn call<T: Send + 'static>(
         &self,
         cx: &App,
         call: impl FnOnce(&Client) -> herdr::Result<T> + Send + 'static,
     ) -> Task<herdr::Result<T>> {
+        self.call_on(&self.selected, cx, call)
+    }
+
+    /// [`Self::call`] on a given machine.
+    #[track_caller]
+    pub fn call_on<T: Send + 'static>(
+        &self,
+        machine: &MachineId,
+        cx: &App,
+        call: impl FnOnce(&Client) -> herdr::Result<T> + Send + 'static,
+    ) -> Task<herdr::Result<T>> {
         // Every herdr command error is logged here, whatever the caller does
         // with it, so a detached or `.ok()`ed command never fails silently.
         let caller = std::panic::Location::caller();
-        let Some(client) = self.client.clone() else {
-            tracing::warn!("herdr call from {caller} skipped: disconnected");
+        let Some(client) = self.machine(machine).and_then(|m| m.client.clone()) else {
+            tracing::warn!("herdr call on {machine} from {caller} skipped: disconnected");
             return Task::ready(Err(herdr::Error::Refused(
                 "herdr is disconnected; see the connection status".into(),
             )));
@@ -397,11 +908,32 @@ impl AppState {
         })
     }
 
-    /// The user looked at `pane_id` (focused it, clicked its agent).
+    /// The user looked at `pane_id` on the selected machine (focused it,
+    /// clicked its agent).
     pub fn mark_seen(&mut self, pane_id: &str, cx: &mut Context<Self>) {
-        if self.attention.mark_seen(&self.snapshot, pane_id) {
+        let selected = self.selected.clone();
+        self.mark_seen_on(&selected, pane_id, cx);
+    }
+
+    pub fn mark_seen_on(&mut self, machine: &MachineId, pane_id: &str, cx: &mut Context<Self>) {
+        let Some(machine) = self.machine_mut(machine) else {
+            return;
+        };
+        if machine.attention.mark_seen(&machine.snapshot, pane_id) {
             cx.notify();
         }
+    }
+
+    /// Selects `machine`, then focuses `pane_id` on it.
+    #[track_caller]
+    pub fn focus_pane_on(
+        &mut self,
+        machine: &MachineId,
+        pane_id: &str,
+        cx: &mut Context<Self>,
+    ) -> Task<herdr::Result<()>> {
+        self.select_machine(machine, cx);
+        self.focus_pane(pane_id, cx)
     }
 
     // Panes
@@ -486,7 +1018,7 @@ impl AppState {
 
     #[track_caller]
     pub fn focus_tab(&self, tab_id: &str, cx: &App) -> Task<herdr::Result<()>> {
-        if self.snapshot.focused_tab_id.as_deref() != Some(tab_id) {
+        if self.snapshot().focused_tab_id.as_deref() != Some(tab_id) {
             sounds::play(Cue::Select, PlayOptions::default());
         }
         let tab_id = tab_id.to_owned();
@@ -531,13 +1063,33 @@ impl AppState {
 
     // Workspaces and worktrees
 
+    /// Focuses a workspace on the selected machine.
     #[track_caller]
     pub fn focus_workspace(&self, workspace_id: &str, cx: &App) -> Task<herdr::Result<()>> {
-        if self.snapshot.focused_workspace_id.as_deref() != Some(workspace_id) {
+        if self.snapshot().focused_workspace_id.as_deref() != Some(workspace_id) {
             sounds::play(Cue::Select, PlayOptions::default());
         }
         let id = workspace_id.to_owned();
         self.call(cx, move |c| c.workspace_focus(&id))
+    }
+
+    /// Focuses a workspace on any machine, selecting that machine first
+    /// (workspace ids are per machine).
+    #[track_caller]
+    pub fn focus_workspace_on(
+        &mut self,
+        machine: &MachineId,
+        workspace_id: &str,
+        cx: &mut Context<Self>,
+    ) -> Task<herdr::Result<()>> {
+        if &self.selected != machine {
+            self.select_machine(machine, cx);
+            // `focus_workspace` only sounds for a workspace not yet focused.
+            if self.snapshot().focused_workspace_id.as_deref() == Some(workspace_id) {
+                sounds::play(Cue::Select, PlayOptions::default());
+            }
+        }
+        self.focus_workspace(workspace_id, cx)
     }
 
     #[track_caller]
@@ -669,7 +1221,7 @@ mod tests {
     #[gpui::test]
     fn refused_endpoint_leaves_app_disconnected(cx: &mut TestAppContext) {
         let state = cx.new(|cx| AppState::new(Err(refused()), cx));
-        let connection = cx.read(|cx| state.read(cx).connection.clone());
+        let connection = cx.read(|cx| state.read(cx).connection().clone());
         assert!(matches!(connection, ConnectionStatus::Disconnected { .. }));
     }
 

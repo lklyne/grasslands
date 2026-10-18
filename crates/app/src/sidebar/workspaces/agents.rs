@@ -101,8 +101,8 @@ impl AgentList {
     ) -> AnyElement {
         let state = self.state.read(cx);
         let theme = cx.theme();
-        let focused = state.focused_pane.as_deref() == Some(agent.pane_id.as_str());
-        let unseen = state.attention.is_unseen_done(snapshot, &agent.pane_id);
+        let focused = state.focused_pane() == Some(agent.pane_id.as_str());
+        let unseen = state.attention().is_unseen_done(snapshot, &agent.pane_id);
         let status = match agent.agent_status {
             AgentStatus::Done if !unseen => AgentStatus::Idle,
             status => status,
@@ -245,7 +245,7 @@ impl Panel for AgentList {
 
 impl Render for AgentList {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let snapshot = self.state.read(cx).snapshot.clone();
+        let snapshot = self.state.read(cx).snapshot().clone();
         let rows: Vec<AnyElement> = ordered(&snapshot, self.sort)
             .into_iter()
             .map(|agent| self.render_agent(agent, &snapshot, cx))
