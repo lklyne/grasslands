@@ -15,6 +15,7 @@ mod chrome;
 mod editor;
 mod herdr;
 mod logging;
+mod machines;
 mod overlay;
 mod prompt;
 mod settings;

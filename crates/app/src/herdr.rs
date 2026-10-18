@@ -2,7 +2,9 @@
 //! the views use. Nothing outside this module and `state` imports
 //! `herdr_client` directly.
 
-pub use herdr_client::machines;
+pub mod machines {
+    pub use herdr_client::{list_machines, socket_dir};
+}
 #[allow(
     unused_imports,
     reason = "the views pick these up as they are filled in"

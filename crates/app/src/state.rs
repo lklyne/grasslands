@@ -165,7 +165,6 @@ pub struct AppState {
     focused_dir: Option<PathBuf>,
     _cwd_poll: Option<Task<()>>,
     _check: Option<Task<()>>,
-    _fix: Option<Task<()>>,
     _machines_poll: Option<Task<()>>,
 }
 
@@ -223,7 +222,6 @@ impl AppState {
             focused_dir: None,
             _cwd_poll: None,
             _check: None,
-            _fix: None,
             _machines_poll: None,
         }
     }
@@ -587,7 +585,7 @@ impl AppState {
     fn refresh_local_status(&mut self) {
         let setup_needed = match &self.setup.stage {
             Stage::Needed(_) | Stage::Fixing(_) => Some("herdr needs setup".to_owned()),
-            Stage::Checking | Stage::Ready => None,
+            Stage::Checking | Stage::Done | Stage::Ready => None,
         };
         let local = self.local_mut();
         local.status = machine_list::local_status(&local.connection, setup_needed);
@@ -622,11 +620,22 @@ impl AppState {
     /// Checks the herdr binary and server (`herdr status`); connects when
     /// they're fine, else shows the setup screen.
     pub fn check_herdr(&mut self, cx: &mut Context<Self>) {
+        self.check(false, cx);
+    }
+
+    /// `after_fix` when the setup terminal's command just ended: the check
+    /// says whether the fix worked.
+    fn check(&mut self, after_fix: bool, cx: &mut Context<Self>) {
         let Some(config) = self.herdr_config.clone() else {
             return;
         };
-        self.setup.stage = Stage::Checking;
-        cx.notify();
+        let was = self.setup.stage.clone();
+        // A screen already showing stays put while it checks again.
+        if !matches!(was, Stage::Needed(_)) {
+            self.setup.stage = Stage::Checking;
+            cx.notify();
+        }
+        let shown = matches!(was, Stage::Needed(_)) || self.setup.run.is_some();
         let check = cx
             .background_executor()
             .spawn(async move { config.check() });
@@ -635,11 +644,19 @@ impl AppState {
             this.update(cx, |this, cx| {
                 tracing::info!("herdr check: {check:?}");
                 if check == Check::Ready {
-                    this.setup.stage = Stage::Ready;
+                    if after_fix {
+                        sounds::play(Cue::Success, sounds::strong());
+                    }
+                    this.setup.stage = if shown { Stage::Done } else { Stage::Ready };
                     this.start_sync(cx);
                 } else {
-                    sounds::play(Cue::Warning, PlayOptions::default());
-                    this.setup.stage = Stage::Needed(check);
+                    let stage = Stage::Needed(check);
+                    if after_fix {
+                        sounds::play(Cue::Error, PlayOptions::default());
+                    } else if was != stage {
+                        sounds::play(Cue::Warning, PlayOptions::default());
+                    }
+                    this.setup.stage = stage;
                 }
                 this.refresh_local_status();
                 cx.emit(AppEvent::MachinesChanged);
@@ -649,7 +666,8 @@ impl AppState {
         }));
     }
 
-    /// Runs `fix`, streaming its output to `setup.run`, then checks again.
+    /// Starts `fix` in the setup terminal; the terminal area runs it and
+    /// calls [`Self::fix_exited`] when it ends.
     pub fn run_fix(&mut self, fix: Fix, cx: &mut Context<Self>) {
         let Some(command) = self
             .herdr_config
@@ -660,66 +678,31 @@ impl AppState {
         };
         tracing::info!("herdr setup: running {}", command.display());
         sounds::play(Cue::Loading, PlayOptions::default());
+        let id = self.setup.run.as_ref().map_or(0, |run| run.id + 1);
         self.setup.stage = Stage::Fixing(fix);
-        self.setup.run = Some(FixRun::new(command.display().to_owned()));
+        self.setup.run = Some(FixRun {
+            id,
+            command: command.terminal_command(),
+        });
+        self.refresh_local_status();
+        cx.emit(AppEvent::MachinesChanged);
         cx.notify();
-        let (lines, output) = async_channel::unbounded::<String>();
-        let (done, finished) = async_channel::bounded(1);
-        // A brew install can take minutes; it gets its own thread rather
-        // than holding one of the executor's.
-        let spawned = std::thread::Builder::new()
-            .name("herdr-setup".into())
-            .spawn(move || {
-                let status = command.run(|line| {
-                    let _ = lines.send_blocking(line.to_owned());
-                });
-                let _ = done.send_blocking(status);
-            });
-        if let Err(error) = spawned {
-            self.fix_finished(Err(error), cx);
-            return;
-        }
-        self._fix = Some(cx.spawn(async move |this, cx| {
-            while let Ok(line) = output.recv().await {
-                let pushed = this.update(cx, |this, cx| {
-                    if let Some(run) = &mut this.setup.run {
-                        run.push(line);
-                        cx.notify();
-                    }
-                });
-                if pushed.is_err() {
-                    return;
-                }
-            }
-            let status = finished
-                .recv()
-                .await
-                .unwrap_or_else(|_| Err(std::io::Error::other("the command's thread stopped")));
-            this.update(cx, |this, cx| this.fix_finished(status, cx))
-                .ok();
-        }));
     }
 
-    fn fix_finished(
-        &mut self,
-        status: std::io::Result<std::process::ExitStatus>,
-        cx: &mut Context<Self>,
-    ) {
-        let failure = match status {
-            Ok(status) if status.success() => None,
-            Ok(status) => Some(format!("Failed ({status}).")),
-            Err(error) => Some(format!("Couldn't run it: {error}.")),
-        };
-        if let Some(failure) = &failure {
-            tracing::warn!("herdr setup: {failure}");
-            sounds::play(Cue::Error, PlayOptions::default());
-        } else {
-            sounds::play(Cue::Success, sounds::strong());
+    /// The setup terminal's command ended (or couldn't start); checks again.
+    pub fn fix_exited(&mut self, cx: &mut Context<Self>) {
+        if matches!(self.setup.stage, Stage::Fixing(_)) {
+            tracing::info!("herdr setup: the fix ended");
+            self.check(true, cx);
         }
-        if let Some(run) = &mut self.setup.run {
-            run.failure = failure;
+    }
+
+    /// Closes the setup screen once herdr is ready.
+    pub fn finish_setup(&mut self, cx: &mut Context<Self>) {
+        if self.setup.stage == Stage::Done {
+            self.setup = Setup::default();
+            cx.notify();
         }
-        self.check_herdr(cx);
     }
 
     fn forward_updates(machine: MachineId, sync: &SessionSync, cx: &mut Context<Self>) -> Task<()> {

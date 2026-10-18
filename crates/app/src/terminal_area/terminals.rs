@@ -22,6 +22,17 @@ use crate::state::MachineId;
 
 gpui_libghostty::bind_gpui!(gpui_kit);
 
+/// The setup terminal's name for its config file; herdr's terminal ids all
+/// start with `term_`.
+const SETUP_TERMINAL: &str = "setup-terminal";
+
+/// A terminal running a fix for the setup screen; see [`Terminals::spawn_setup`].
+pub struct SetupTerminal {
+    /// The [`crate::setup::FixRun`] it runs.
+    pub run: u64,
+    pub terminal: Entity<Terminal>,
+}
+
 pub struct TerminalView {
     pub terminal: Entity<Terminal>,
     pub pane_id: String,
@@ -372,6 +383,25 @@ impl Terminals {
         })
     }
 
+    /// A terminal running `command` for the setup screen, outside herdr.
+    /// It keeps its output on screen after the command ends.
+    pub fn spawn_setup<T: 'static>(
+        &self,
+        command: String,
+        window: &mut Window,
+        cx: &mut Context<T>,
+    ) -> anyhow::Result<Entity<Terminal>> {
+        let mut config = self.config(None, cx)?;
+        config.push_str("wait-after-command = true\n");
+        let path = self.config_dir.join(format!("{SETUP_TERMINAL}.ghostty"));
+        std::fs::write(&path, config)?;
+        let cwd = std::env::var_os("HOME").map_or_else(|| PathBuf::from("/"), PathBuf::from);
+        let mut options = TerminalOptions::new(command, cwd);
+        options.configuration = TerminalConfiguration::File(path);
+        options.quiet_login = true;
+        Terminal::spawn(options, window, cx).map_err(anyhow::Error::msg)
+    }
+
     /// Shows exactly the terminals in `visible` and hides the rest. A native
     /// view that drops out of the layout keeps its last frame, so it has to be
     /// hidden explicitly; a shown one appears at its next prepaint.
@@ -436,17 +466,7 @@ impl Terminals {
     /// The terminal's own config file: the user's Ghostty settings for the
     /// app, then colors from the app theme, then per-terminal overrides.
     fn write_config(&self, key: &TerminalKey, cx: &App) -> anyhow::Result<PathBuf> {
-        std::fs::create_dir_all(&self.config_dir)?;
-        let mut contents = String::new();
-        if let Some(user) = user_config_path().filter(|path| path.is_file()) {
-            contents.push_str(&std::fs::read_to_string(&user)?);
-            contents.push('\n');
-        }
-        contents.push_str(&theme_config(cx));
-        if let Some(extra) = self.overrides.get(key) {
-            contents.push_str(extra);
-            contents.push('\n');
-        }
+        let contents = self.config(Some(key), cx)?;
         let path = self.config_dir.join(format!(
             "{}-{}.ghostty",
             sanitize(&key.machine.to_string()),
@@ -454,6 +474,21 @@ impl Terminals {
         ));
         std::fs::write(&path, contents)?;
         Ok(path)
+    }
+
+    fn config(&self, key: Option<&TerminalKey>, cx: &App) -> anyhow::Result<String> {
+        std::fs::create_dir_all(&self.config_dir)?;
+        let mut contents = String::new();
+        if let Some(user) = user_config_path().filter(|path| path.is_file()) {
+            contents.push_str(&std::fs::read_to_string(&user)?);
+            contents.push('\n');
+        }
+        contents.push_str(&theme_config(cx));
+        if let Some(extra) = key.and_then(|key| self.overrides.get(key)) {
+            contents.push_str(extra);
+            contents.push('\n');
+        }
+        Ok(contents)
     }
 }
 
