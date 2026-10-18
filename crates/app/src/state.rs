@@ -1,6 +1,9 @@
 //! `AppState`: the one shared model every view reads.
 //!
-//! It holds the herdr cache and the active worktree. Views keep an
+//! It holds one herdr connection per machine (Local, then herdr's saved SSH
+//! machines; see docs/decisions/0019-remote-machines.md), which one is
+//! selected, and Local's active worktree. `snapshot`, `call` and the command
+//! methods act on the selected machine. Views keep an
 //! `Entity<AppState>`, read it in `render`, and `cx.observe` it to re-render.
 //! Discrete changes that views must react to (not just redraw) are emitted
 //! as `AppEvent`s; views `cx.subscribe` to those.
