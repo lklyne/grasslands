@@ -1,0 +1,16 @@
+Third-party software in grasslands
+
+grasslands includes the open-source software listed below. Each entry gives
+the license text and the crates it covers.
+{{#each licenses}}
+
+================================================================================
+{{name}}
+
+Used by:
+{{#each used_by}}
+  {{crate.name}} {{crate.version}}{{#if crate.repository}} ({{crate.repository}}){{/if}}
+{{/each}}
+
+{{text}}
+{{/each}}
