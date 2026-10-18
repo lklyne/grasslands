@@ -32,6 +32,7 @@ scripts/dev-run cargo run -p app   # debug build against an isolated herdr dev s
 scripts/herdr-dev pane list        # herdr CLI pointed at that same session
 scripts/relaunch-main              # rebuild and run against your real herdr session
 scripts/bundle.sh                  # unsigned release bundle in target/bundle/
+scripts/release.sh                 # signed, notarized release zip
 ```
 
 `scripts/dev-run` sets `ZIG` and points `HERDR_BIN`, `HERDR_SESSION` and `HERDR_SOCKET_PATH` at a dev session under `~/.local/share/grasslands-herdr`. Debug builds refuse to connect anywhere else unless `RT_ALLOW_LIVE_HERDR=1`, so they can't touch your real agents by accident. Ghostty settings live in `~/.config/grasslands/ghostty.conf`. [docs/development.md](docs/development.md) covers tests, script check modes, release builds, keys and known gaps.

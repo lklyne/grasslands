@@ -1,5 +1,6 @@
 #!/bin/sh
-# Build an unsigned release .app bundle: target/bundle/grasslands.app
+# Build an unsigned release .app bundle: target/bundle/grasslands.app.
+# scripts/release.sh signs and notarizes it.
 #
 #   scripts/bundle.sh            # build and bundle
 #   scripts/bundle.sh --no-build # re-bundle the existing release binary
@@ -7,7 +8,7 @@
 # Release builds are NOT socket-guarded (docs/decisions/0007-dev-herdr-guard.md):
 # launched plainly, the app connects to your default herdr session and takes
 # over its terminals. To try the bundle against a dev session instead, run its
-# launcher through the dev environment:
+# binary through the dev environment:
 #
 #   scripts/dev-run target/bundle/grasslands.app/Contents/MacOS/grasslands
 set -eu
@@ -28,19 +29,23 @@ bin="$root/target/release/grasslands"
 
 rm -rf "$app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
-cp "$bin" "$app/Contents/MacOS/grasslands-bin"
+cp "$bin" "$app/Contents/MacOS/grasslands"
 "$root/scripts/compile-icon.sh" "$app/Contents/Resources"
 
-# Apps started from Finder or the Dock get launchd's minimal PATH, so `herdr`
-# from Homebrew or ~/.local/bin wouldn't be found. The launcher adds the usual
-# install locations; HERDR_BIN, HERDR_SESSION and HERDR_SOCKET_PATH pass through.
-cat > "$app/Contents/MacOS/grasslands" <<'EOF'
-#!/bin/sh
-PATH="/opt/homebrew/bin:/usr/local/bin:$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
-export PATH
-exec "$(dirname "$0")/grasslands-bin" "$@"
-EOF
-chmod +x "$app/Contents/MacOS/grasslands"
+# A binary release has to carry its dependencies' notices. cargo-about covers
+# the crates; Ghostty (built from Zig source) and cuelume (ported, not a
+# dependency) come from files. Install it with
+# `cargo install cargo-about --locked --features cli`.
+command -v cargo-about >/dev/null || { echo "bundle: cargo-about missing" >&2; exit 1; }
+notices="$app/Contents/Resources/THIRD-PARTY-NOTICES.txt"
+cargo about generate --locked -c "$root/packaging/about.toml" -m "$root/crates/app/Cargo.toml" \
+  "$root/packaging/about.hbs" -o "$notices"
+for extra in "Ghostty:$root/vendor/gpui-libghostty/vendor/ghostty/LICENSE" \
+  "gpui-libghostty:$root/packaging/notices/gpui-libghostty.txt" \
+  "cuelume (ported in crates/cues):$root/packaging/notices/cuelume.txt"; do
+  printf '\n================================================================================\n%s\n\n' "${extra%%:*}" >>"$notices"
+  cat "${extra#*:}" >>"$notices"
+done
 
 cat > "$app/Contents/Info.plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
