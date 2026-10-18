@@ -1087,8 +1087,10 @@ impl WorkspaceList {
         }
     }
 
-    /// The Workspaces "+" menu: New Workspace (on the selected machine), New
-    /// Workspace on › (Local and each connected machine), Add Machine….
+    /// The Workspaces "+" menu once machines are saved: New Workspace (on the
+    /// selected machine), New Workspace on › (Local and each connected
+    /// machine), Add Machine…. Without saved machines "+" makes a workspace
+    /// and Add Machine… is in the panel's menu.
     pub fn open_new_menu(
         &mut self,
         position: Point<Pixels>,
@@ -1255,12 +1257,18 @@ impl Panel for WorkspaceList {
     }
 
     fn toolbar_buttons(&mut self, _: &mut Window, cx: &mut Context<Self>) -> Option<Vec<Button>> {
+        let has_machines = self.state.read(cx).machines().count() > 1;
         Some(vec![
             Button::new("spaces-new")
                 .icon(IconName::Plus)
-                .tooltip("New")
+                .tooltip(if has_machines { "New" } else { "New Workspace" })
                 .on_click(cx.listener(|this, event: &ClickEvent, window, cx| {
-                    this.open_new_menu(event.position(), window, cx)
+                    // With no saved machines it's one click, as before machines.
+                    if this.state.read(cx).machines().count() > 1 {
+                        this.open_new_menu(event.position(), window, cx)
+                    } else {
+                        this.new_workspace(cx)
+                    }
                 })),
         ])
     }
@@ -1271,7 +1279,11 @@ impl Panel for WorkspaceList {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) -> PopupMenu {
-        let (a, b) = (cx.entity().downgrade(), cx.entity().downgrade());
+        let (a, b, c) = (
+            cx.entity().downgrade(),
+            cx.entity().downgrade(),
+            cx.entity().downgrade(),
+        );
         menu.item(
             PopupMenuItem::new("New Workspace").on_click(move |_, _, cx| {
                 let _ = a.update(cx, |this, cx| this.new_workspace(cx));
@@ -1280,6 +1292,12 @@ impl Panel for WorkspaceList {
         .item(
             PopupMenuItem::new("New Worktree…").on_click(move |_, window, cx| {
                 let _ = b.update(cx, |this, cx| this.new_worktree(None, window, cx));
+            }),
+        )
+        .separator()
+        .item(
+            PopupMenuItem::new("Add Machine…").on_click(move |_, window, cx| {
+                let _ = c.update(cx, |this, cx| this.add_machine(window, cx));
             }),
         )
     }
