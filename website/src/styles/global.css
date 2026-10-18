@@ -8,6 +8,7 @@
   --rule: #e7e5e4;
   --code-bg: #ebe9e3;
   --sans: var(--font-inter), system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  --serif: var(--font-garamond), Garamond, Georgia, serif;
   --mono: ui-monospace, 'SF Mono', SFMono-Regular, Menlo, Consolas, monospace;
   --measure: 36rem;
 }
@@ -123,6 +124,14 @@ code {
 
 .muted {
   color: var(--muted);
+}
+
+.wordmark {
+  font-family: var(--serif);
+  font-style: italic;
+  font-weight: 500;
+  font-size: 19px;
+  letter-spacing: 0;
 }
 
 h1 .muted {
