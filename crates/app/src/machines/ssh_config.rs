@@ -110,10 +110,20 @@ fn parse(text: &str, base: &Path, depth: usize, blocks: &mut Vec<Block>) {
             }),
             "match" => blocks.push(Block::default()),
             "include" if depth < MAX_INCLUDE_DEPTH => {
+                let outer = blocks.last().map(|block| block.patterns.clone());
+                let before = blocks.len();
                 for pattern in &args {
                     for file in include_files(pattern, base) {
                         read_file(&file, base, depth + 1, blocks);
                     }
+                }
+                // The lines after the Include still belong to the block it
+                // sat in, not to the included file's last one.
+                if let Some(patterns) = outer.filter(|_| blocks.len() > before) {
+                    blocks.push(Block {
+                        patterns,
+                        ..Block::default()
+                    });
                 }
             }
             setting => {
@@ -412,6 +422,26 @@ Host *
             .collect();
         let _ = std::fs::remove_dir_all(&dir);
         assert_eq!(aliases, ["a", "b", "extra", "main"]);
+    }
+
+    #[test]
+    fn lines_after_an_include_stay_with_the_outer_block() {
+        let dir = scratch("include-in-host");
+        std::fs::write(
+            dir.join("config"),
+            "Host outer\n  Include inner\n  User outer-user\n",
+        )
+        .unwrap();
+        std::fs::write(dir.join("inner"), "Host inner-host\n").unwrap();
+        let found = hosts(&dir.join("config"));
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(
+            found,
+            [
+                host("outer", None, Some("outer-user"), None),
+                host("inner-host", None, None, None),
+            ]
+        );
     }
 
     #[test]
