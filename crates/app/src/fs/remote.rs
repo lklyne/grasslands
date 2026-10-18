@@ -24,7 +24,9 @@ const TIMEOUT: Duration = Duration::from_secs(30);
 /// line cap, with room for files that run one past their own cap.
 const MAX_GREP_LINES: usize = 2000;
 
-pub(super) fn runner(files: &RemoteFs) -> impl Fn(&[&str], Option<&Path>) -> io::Result<ExecOutput> {
+pub(super) fn runner(
+    files: &RemoteFs,
+) -> impl Fn(&[&str], Option<&Path>) -> io::Result<ExecOutput> {
     move |argv, cwd| files.exec(argv, cwd, TIMEOUT)
 }
 
@@ -103,7 +105,12 @@ fi"#;
 
 /// Names and contents below `root` matching `query`, with Local's caps and
 /// smart case.
-pub(super) fn search(run: &Run<'_>, root: &Path, query: &str, cancel: &AtomicBool) -> SearchResults {
+pub(super) fn search(
+    run: &Run<'_>,
+    root: &Path,
+    query: &str,
+    cancel: &AtomicBool,
+) -> SearchResults {
     if query.is_empty() {
         return SearchResults::default();
     }
@@ -275,7 +282,10 @@ mod tests {
             return;
         }
         std::fs::write(dir.join("x.log"), "").unwrap();
-        assert_eq!(names(&filter_listing(&local_run, &dir, listing(&dir))), vec!["x.log"]);
+        assert_eq!(
+            names(&filter_listing(&local_run, &dir, listing(&dir))),
+            vec!["x.log"]
+        );
     }
 
     #[test]
@@ -285,7 +295,10 @@ mod tests {
             parse_grep(output),
             vec![
                 ("notes.txt".to_owned(), vec![(11, "a: b".to_owned())]),
-                ("src/main.rs".to_owned(), vec![(0, "fn main() {".to_owned())]),
+                (
+                    "src/main.rs".to_owned(),
+                    vec![(0, "fn main() {".to_owned())]
+                ),
             ]
         );
     }
@@ -304,7 +317,11 @@ mod tests {
         std::fs::create_dir_all(dir.join("target")).unwrap();
         std::fs::write(dir.join("target/needle.txt"), "needle").unwrap();
         std::fs::write(dir.join("bin.dat"), b"needle\0").unwrap();
-        std::fs::write(dir.join("src/needle.rs"), "one\n  Needle here\nthree needle\n").unwrap();
+        std::fs::write(
+            dir.join("src/needle.rs"),
+            "one\n  Needle here\nthree needle\n",
+        )
+        .unwrap();
         std::fs::write(dir.join("a.txt"), "needle").unwrap();
         dir
     }

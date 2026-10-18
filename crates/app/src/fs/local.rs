@@ -6,8 +6,8 @@ use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use super::{Entry, sort_entries};
-use crate::sidebar::files::search::{Collector, MAX_FILE_BYTES};
 use crate::sidebar::files::SearchResults;
+use crate::sidebar::files::search::{Collector, MAX_FILE_BYTES};
 
 /// Lists `dir` one level deep, respecting .gitignore (and git's other ignore
 /// files) inside a repo. Dotfiles are shown; `.git` is not.
@@ -187,7 +187,10 @@ mod tests {
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
         write(&path, "new").unwrap();
         let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
-        assert_eq!((std::fs::read_to_string(&path).unwrap(), mode), ("new".into(), 0o755));
+        assert_eq!(
+            (std::fs::read_to_string(&path).unwrap(), mode),
+            ("new".into(), 0o755)
+        );
     }
 
     #[test]

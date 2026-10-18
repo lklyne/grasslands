@@ -68,7 +68,12 @@ struct Header<'a> {
     rest: &'a [u8],
 }
 
-fn run_git<'a>(run: &Run<'_>, dir: &Path, mode: &str, stdout: &'a mut Vec<u8>) -> Option<Header<'a>> {
+fn run_git<'a>(
+    run: &Run<'_>,
+    dir: &Path,
+    mode: &str,
+    stdout: &'a mut Vec<u8>,
+) -> Option<Header<'a>> {
     let out = match run(&["sh", "-c", GIT, "sh", mode], Some(dir)) {
         Ok(out) => out,
         Err(error) => {
@@ -268,7 +273,10 @@ mod tests {
         fixtures::commit_all(&repo, "ahead");
         let summary = remote(&local);
         assert_eq!(
-            (summary.as_ref().and_then(|s| s.parent.as_deref()), summary.clone()),
+            (
+                summary.as_ref().and_then(|s| s.parent.as_deref()),
+                summary.clone()
+            ),
             (Some("origin/main"), local_git::read(&local))
         );
     }
@@ -294,7 +302,14 @@ mod tests {
     fn patch_should_hold_edits_and_new_files_since_parent() {
         let dir = feature_branch("remote-patch");
         let patch = patch(&local_run, &dir).unwrap();
-        for line in ["diff --git a/a.txt b/a.txt", " one", "-two", "+2", "+x", "+y"] {
+        for line in [
+            "diff --git a/a.txt b/a.txt",
+            " one",
+            "-two",
+            "+2",
+            "+x",
+            "+y",
+        ] {
             assert!(patch.lines().any(|l| l == line), "{line:?} in {patch}");
         }
     }
@@ -390,9 +405,21 @@ mod tests {
             .map(|e| e.name)
             .collect();
         assert_eq!(shown, vec!["notes.txt"]);
-        let found = search(&ssh_run, api, "main", &std::sync::atomic::AtomicBool::new(false));
-        assert!(found.names.iter().any(|h| h.relative == "src/main.rs"), "{found:?}");
-        assert!(patch(&ssh_run, api).unwrap().contains("diff --git a/src/main.rs"));
+        let found = search(
+            &ssh_run,
+            api,
+            "main",
+            &std::sync::atomic::AtomicBool::new(false),
+        );
+        assert!(
+            found.names.iter().any(|h| h.relative == "src/main.rs"),
+            "{found:?}"
+        );
+        assert!(
+            patch(&ssh_run, api)
+                .unwrap()
+                .contains("diff --git a/src/main.rs")
+        );
         assert_eq!(
             resolve_root(&ssh_run, &api.join("src")),
             Some(api.to_path_buf())

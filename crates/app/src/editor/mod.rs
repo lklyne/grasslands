@@ -9,7 +9,6 @@
 //! the disk contents.
 
 mod buffer;
-mod disk;
 mod language;
 mod poll;
 mod titles;
@@ -31,9 +30,9 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use self::buffer::{Buffer, DiskChange, Prompt};
-use self::disk::Disk;
 use self::poll::Check;
 use self::watcher::FileWatcher;
+use crate::fs::Fs;
 use crate::herdr::MachineStatus;
 use crate::state::{AppEvent, AppState, MachineId};
 
@@ -54,7 +53,13 @@ type FileKey = (MachineId, PathBuf);
 /// One remote file's poll result: the check, and the contents if it read them.
 type Polled = (FileKey, Check, Option<Result<String, io::ErrorKind>>);
 
-/// Which tab set is shown: the selected machine's active worktree.
+/// A file's modification time, `None` if its machine doesn't report one.
+fn modified(fs: &Fs, path: &Path) -> io::Result<Option<SystemTime>> {
+    fs.metadata(path).map(|meta| meta.modified)
+}
+
+/// Which tab set is shown: the selected machine's active worktree
+/// (`AppState::active_root`).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
 struct GroupKey {
     machine: MachineId,
@@ -66,7 +71,7 @@ impl GroupKey {
     fn of(state: &AppState) -> Self {
         Self {
             machine: state.selected().clone(),
-            root: state.active_worktree().cloned(),
+            root: state.active_root().map(|root| root.path),
         }
     }
 }
@@ -130,7 +135,7 @@ pub struct Editor {
     watcher: Option<FileWatcher>,
     /// Stands in for every remote machine's disk in tests.
     #[cfg(test)]
-    fake: Option<std::sync::Arc<disk::fake::FakeDisk>>,
+    fake: Option<std::sync::Arc<crate::fs::fake::FakeFs>>,
     _subscriptions: [Subscription; 2],
     _disk_changes: Task<()>,
     _poll: Option<Task<()>>,
@@ -142,18 +147,17 @@ impl Editor {
             &state,
             window,
             |this, state, event, window, cx| match event {
-                AppEvent::ActiveWorktreeChanged(_) | AppEvent::MachineSelected(_) => {
+                AppEvent::ActiveRootChanged(_) | AppEvent::MachineSelected(_) => {
                     this.visible = GroupKey::of(state.read(cx));
                     cx.notify();
                 }
                 AppEvent::MachineConnected(_) => {
                     this.poll_remote(window.is_window_active(), window, cx)
                 }
-                AppEvent::FileMoved { from, to } => {
-                    let machine = this.visible.machine.clone();
-                    this.follow_move(&machine, from, to, cx)
+                AppEvent::FileMoved { machine, from, to } => {
+                    this.follow_move(machine, from, to, cx)
                 }
-                AppEvent::FileTrashed(path) => this.follow_trash(path, cx),
+                AppEvent::FileRemoved { machine, path } => this.follow_remove(machine, path, cx),
                 _ => {}
             },
         );
@@ -295,8 +299,8 @@ impl Editor {
                 .is_some_and(|m| m.status() == &MachineStatus::Connected)
     }
 
-    /// `machine`'s disk; `None` while it's offline.
-    fn disk(&self, machine: &MachineId, cx: &App) -> Option<Disk> {
+    /// `machine`'s files; `None` while it's offline.
+    fn fs(&self, machine: &MachineId, cx: &App) -> Option<Fs> {
         if !self.online(machine, cx) {
             return None;
         }
@@ -304,9 +308,9 @@ impl Editor {
         if let Some(fake) = &self.fake
             && !machine.is_local()
         {
-            return Some(Disk::Fake(fake.clone()));
+            return Some(Fs::Fake(fake.clone()));
         }
-        disk::disk_for(self.state.read(cx), machine)
+        self.state.read(cx).fs_for(machine)
     }
 
     /// Open `path` on `machine` in the visible group, or switch to its tab.
@@ -364,7 +368,7 @@ impl Editor {
             self.go_to_line(line, window, cx);
             return;
         }
-        let Some(disk) = self.disk(machine, cx) else {
+        let Some(fs) = self.fs(machine, cx) else {
             let offline = format!("{} is offline", self.label(machine, cx));
             let message = cannot_open(self, &offline, cx);
             notify_error(message, window, cx);
@@ -372,7 +376,7 @@ impl Editor {
         };
         let key = (machine.clone(), path);
         if machine.is_local() {
-            match disk.read(&key.1) {
+            match fs.read_to_string(&key.1) {
                 Ok(text) => {
                     let group = self.visible.clone();
                     self.add_buffer(group, key, (text, None), line, window, cx);
@@ -393,8 +397,8 @@ impl Editor {
             let read = cx
                 .background_spawn(async move {
                     // Time first: a change between the two shows up next poll.
-                    let modified = disk.modified(&path).ok().flatten();
-                    disk.read(&path).map(|text| (text, modified))
+                    let modified = modified(&fs, &path).ok().flatten();
+                    fs.read_to_string(&path).map(|text| (text, modified))
                 })
                 .await;
             let _ = this.update_in(cx, |this, window, cx| {
@@ -487,7 +491,7 @@ impl Editor {
             .filter(|buffer| buffer.machine.is_local() && paths.contains(&buffer.path))
         {
             buffer.refresh_file_id();
-            match buffer.classify(std::fs::read_to_string(&buffer.path)) {
+            match buffer.classify(Fs::Local.read_to_string(&buffer.path)) {
                 Ok(DiskChange::Deleted) => match buffer.find_moved(paths) {
                     Some(to) => moved.push((buffer.path.clone(), to)),
                     None => buffer.mark_deleted(),
@@ -511,7 +515,7 @@ impl Editor {
         if self.polling {
             return;
         }
-        let mut jobs: Vec<(FileKey, Option<SystemTime>, Disk)> = Vec::new();
+        let mut jobs: Vec<(FileKey, Option<SystemTime>, Fs)> = Vec::new();
         for buffer in self.groups.values().flat_map(|group| &group.buffers) {
             let machine = &buffer.machine;
             if machine.is_local()
@@ -522,12 +526,8 @@ impl Editor {
             {
                 continue;
             }
-            if let Some(disk) = self.disk(machine, cx) {
-                jobs.push((
-                    (machine.clone(), buffer.path.clone()),
-                    buffer.modified,
-                    disk,
-                ));
+            if let Some(fs) = self.fs(machine, cx) {
+                jobs.push(((machine.clone(), buffer.path.clone()), buffer.modified, fs));
             }
         }
         if jobs.is_empty() {
@@ -538,10 +538,10 @@ impl Editor {
             let found = cx
                 .background_spawn(async move {
                     jobs.into_iter()
-                        .map(|(key, seen, disk)| {
-                            let check = poll::check(seen, &disk.modified(&key.1));
+                        .map(|(key, seen, fs)| {
+                            let check = poll::check(seen, &modified(&fs, &key.1));
                             let text = matches!(check, Check::Read(_))
-                                .then(|| disk.read(&key.1).map_err(|error| error.kind()));
+                                .then(|| fs.read_to_string(&key.1).map_err(|error| error.kind()));
                             (key, check, text)
                         })
                         .collect::<Vec<Polled>>()
@@ -555,12 +555,7 @@ impl Editor {
         .detach();
     }
 
-    fn apply_poll(
-        &mut self,
-        found: Vec<Polled>,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
+    fn apply_poll(&mut self, found: Vec<Polled>, window: &mut Window, cx: &mut Context<Self>) {
         for ((machine, path), check, text) in found {
             for buffer in self
                 .buffers_mut()
@@ -616,16 +611,15 @@ impl Editor {
         cx.notify();
     }
 
-    /// The user trashed `path` (a file or folder, on the visible group's
-    /// machine) from the tree: clean tabs at or under it close; tabs with
-    /// unsaved edits stay, marked deleted.
-    fn follow_trash(&mut self, path: &Path, cx: &mut Context<Self>) {
-        let machine = self.visible.machine.clone();
+    /// The user removed `path` (a file or folder on `machine`) from the tree:
+    /// clean tabs at or under it close; tabs with unsaved edits stay, marked
+    /// deleted.
+    fn follow_remove(&mut self, machine: &MachineId, path: &Path, cx: &mut Context<Self>) {
         for group in self.groups.values_mut() {
             let active = group.active().map(|buffer| buffer.state.clone());
             let watcher = &mut self.watcher;
             group.buffers.retain_mut(|buffer| {
-                if buffer.machine != machine || !buffer.path.starts_with(path) {
+                if &buffer.machine != machine || !buffer.path.starts_with(path) {
                     return true;
                 }
                 if buffer.is_dirty() {
@@ -673,7 +667,7 @@ impl Editor {
             return;
         };
         let (machine, path) = (buffer.machine.clone(), buffer.path.clone());
-        let Some(disk) = self.disk(&machine, cx) else {
+        let Some(fs) = self.fs(&machine, cx) else {
             let message = format!(
                 "Cannot save {}: {} is offline. Your edits are kept; save again once it reconnects.",
                 path.display(),
@@ -692,8 +686,8 @@ impl Editor {
         cx.spawn_in(window, async move |this, cx| {
             let written = cx
                 .background_spawn(async move {
-                    disk.write(&path, &text)?;
-                    Ok(disk.modified(&path).ok().flatten())
+                    fs.write(&path, &text)?;
+                    Ok(modified(&fs, &path).ok().flatten())
                 })
                 .await;
             let _ = this.update_in(cx, |this, window, cx| {

@@ -13,9 +13,9 @@ use gpui_kit::{
 };
 
 use super::buffer::Prompt;
-use super::disk::fake::FakeDisk;
 use super::watcher::FileWatcher;
 use super::{Answer, Editor};
+use crate::fs::fake::FakeFs;
 use crate::state::{AppState, MachineId};
 
 struct Fixture {
@@ -297,8 +297,9 @@ impl Fixture {
     fn moved_in_tree(&self, cx: &mut TestAppContext, from: &Path, to: &Path) {
         std::fs::rename(from, to).unwrap();
         let (from, to) = (from.to_path_buf(), to.to_path_buf());
-        self.state
-            .update(cx, |state, cx| state.file_moved(from, to, cx));
+        self.state.update(cx, |state, cx| {
+            state.file_moved(MachineId::Local, from, to, cx)
+        });
         cx.run_until_parked();
     }
 
@@ -306,8 +307,9 @@ impl Fixture {
         // The real tree moves it to the Trash; for the editor only the event matters.
         std::fs::remove_file(path).unwrap();
         let path = path.to_path_buf();
-        self.state
-            .update(cx, |state, cx| state.file_trashed(path, cx));
+        self.state.update(cx, |state, cx| {
+            state.file_removed(MachineId::Local, path, cx)
+        });
         cx.run_until_parked();
     }
 }
@@ -424,8 +426,8 @@ fn remote() -> MachineId {
 }
 
 impl Fixture {
-    fn fake_remote(&self, cx: &mut TestAppContext) -> Arc<FakeDisk> {
-        let fake = Arc::new(FakeDisk::default());
+    fn fake_remote(&self, cx: &mut TestAppContext) -> Arc<FakeFs> {
+        let fake = Arc::new(FakeFs::default());
         self.editor
             .update(cx, |editor, _| editor.fake = Some(fake.clone()));
         fake
@@ -596,6 +598,62 @@ fn polling_an_offline_machine_leaves_the_buffer_alone(cx: &mut TestAppContext) {
     disk.offline.store(true, Ordering::SeqCst);
     f.poll(cx);
     assert_eq!((f.text(cx), f.dirty(cx)), ("a\n".to_owned(), false));
+}
+
+#[gpui::test]
+fn a_remote_rename_in_the_tree_retargets_only_that_machines_tab(cx: &mut TestAppContext) {
+    let f = fixture(cx, "remotemove");
+    let local = f.file("a.rs", "local\n");
+    let disk = f.fake_remote(cx);
+    disk.put(&local, "remote\n");
+    f.open(cx, &local);
+    f.open_on(cx, &remote(), &local);
+    let (from, to) = (local.clone(), f.dir.join("b.rs"));
+    f.state
+        .update(cx, |state, cx| state.file_moved(remote(), from, to, cx));
+    cx.run_until_parked();
+    assert_eq!(f.tab_titles(cx), ["a.rs", "b.rs — box"]);
+}
+
+#[gpui::test]
+fn a_remote_delete_in_the_tree_closes_only_that_machines_tab(cx: &mut TestAppContext) {
+    let f = fixture(cx, "remoteremove");
+    let local = f.file("a.rs", "local\n");
+    let disk = f.fake_remote(cx);
+    disk.put(&local, "remote\n");
+    f.open(cx, &local);
+    f.open_on(cx, &remote(), &local);
+    disk.remove(&local);
+    let path = local.clone();
+    f.state
+        .update(cx, |state, cx| state.file_removed(remote(), path, cx));
+    cx.run_until_parked();
+    assert_eq!(f.tab_titles(cx), ["a.rs"]);
+}
+
+#[gpui::test]
+fn remote_worktrees_get_their_own_tab_sets(cx: &mut TestAppContext) {
+    let f = fixture(cx, "remotegroups");
+    let disk = f.fake_remote(cx);
+    let (api, infra) = (Path::new("/home/lyle/api"), Path::new("/home/lyle/infra"));
+    disk.put(&api.join("a.rs"), "a");
+    let set_root = |cx: &mut TestAppContext, root: &Path| {
+        let root = root.to_path_buf();
+        f.state.update(cx, |state, cx| {
+            state.set_worktree(&remote(), Some(root), cx)
+        });
+        cx.run_until_parked();
+    };
+    f.state.update(cx, |state, cx| {
+        state.add_test_machine("box", "box", Arc::default());
+        state.select_machine(&remote(), cx);
+    });
+    set_root(cx, api);
+    f.open_on(cx, &remote(), &api.join("a.rs"));
+    set_root(cx, infra);
+    assert!(f.tab_titles(cx).is_empty());
+    set_root(cx, api);
+    assert_eq!(f.tab_titles(cx), ["a.rs — box"]);
 }
 
 #[test]

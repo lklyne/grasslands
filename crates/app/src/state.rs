@@ -20,11 +20,11 @@ use std::time::Duration;
 use gpui_kit::*;
 
 use crate::attention::{Attention, StatusChange};
+use crate::fs::Fs;
 use crate::herdr::{
     self, Agent, Check, Client, ConnectionStatus, Fix, MIN_VERSION, MachineLink, MachineProfile,
     MachineStatus, PaneId, SessionSync, Snapshot, Update, Version, machines,
 };
-use crate::fs::Fs;
 use crate::setup::{FixRun, Setup, Stage};
 use crate::{sounds, worktree};
 use cues::{Cue, PlayOptions};
@@ -83,9 +83,14 @@ pub enum AppEvent {
     MachineSelected(MachineId),
     /// The file tree renamed or moved a file or folder; open editor tabs at or
     /// under `from` follow it to `to`.
-    FileMoved { from: PathBuf, to: PathBuf },
-    /// The file tree moved a file or folder to the Trash.
-    FileTrashed(PathBuf),
+    FileMoved {
+        machine: MachineId,
+        from: PathBuf,
+        to: PathBuf,
+    },
+    /// The file tree removed a file or folder: to the Trash on Local, for
+    /// good on a saved machine.
+    FileRemoved { machine: MachineId, path: PathBuf },
 }
 
 /// Where the active workspace's files are: a folder on a machine.
@@ -838,7 +843,12 @@ impl AppState {
 
     /// A remote machine with no link, for tests.
     #[cfg(test)]
-    fn add_test_machine(&mut self, profile_id: &str, label: &str, snapshot: Arc<Snapshot>) {
+    pub(crate) fn add_test_machine(
+        &mut self,
+        profile_id: &str,
+        label: &str,
+        snapshot: Arc<Snapshot>,
+    ) {
         let mut machine = Machine::new(
             MachineId::Remote(profile_id.into()),
             label.into(),
@@ -1117,13 +1127,19 @@ impl AppState {
     }
 
     /// Announces a rename done in the app (see `AppEvent::FileMoved`).
-    pub fn file_moved(&mut self, from: PathBuf, to: PathBuf, cx: &mut Context<Self>) {
-        cx.emit(AppEvent::FileMoved { from, to });
+    pub fn file_moved(
+        &mut self,
+        machine: MachineId,
+        from: PathBuf,
+        to: PathBuf,
+        cx: &mut Context<Self>,
+    ) {
+        cx.emit(AppEvent::FileMoved { machine, from, to });
     }
 
-    /// Announces a trash done in the app (see `AppEvent::FileTrashed`).
-    pub fn file_trashed(&mut self, path: PathBuf, cx: &mut Context<Self>) {
-        cx.emit(AppEvent::FileTrashed(path));
+    /// Announces a removal done in the app (see `AppEvent::FileRemoved`).
+    pub fn file_removed(&mut self, machine: MachineId, path: PathBuf, cx: &mut Context<Self>) {
+        cx.emit(AppEvent::FileRemoved { machine, path });
     }
 
     /// Sets Local's active worktree.
@@ -1132,7 +1148,12 @@ impl AppState {
     }
 
     /// Sets `id`'s active worktree; announced only while `id` is selected.
-    fn set_worktree(&mut self, id: &MachineId, root: Option<PathBuf>, cx: &mut Context<Self>) {
+    pub(crate) fn set_worktree(
+        &mut self,
+        id: &MachineId,
+        root: Option<PathBuf>,
+        cx: &mut Context<Self>,
+    ) {
         let Some(machine) = self.machine_mut(id).filter(|m| m.worktree != root) else {
             return;
         };
@@ -1840,7 +1861,9 @@ mod tests {
             let roots = roots.clone();
             cx.subscribe(&state, move |_, event, _| {
                 if let AppEvent::ActiveRootChanged(root) = event {
-                    roots.borrow_mut().push(root.as_ref().map(|r| r.machine.clone()));
+                    roots
+                        .borrow_mut()
+                        .push(root.as_ref().map(|r| r.machine.clone()));
                 }
             })
         });
@@ -1854,7 +1877,12 @@ mod tests {
     #[gpui::test]
     fn local_files_are_always_available(cx: &mut TestAppContext) {
         let state = with_remote(cx);
-        let local = cx.read(|cx| state.read(cx).fs_for(&MachineId::Local).map(|f| f.is_local()));
+        let local = cx.read(|cx| {
+            state
+                .read(cx)
+                .fs_for(&MachineId::Local)
+                .map(|f| f.is_local())
+        });
         assert_eq!(local, Some(true));
     }
 

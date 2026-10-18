@@ -162,9 +162,7 @@ impl RemoteFs {
                 s.fsync(&handle)
             });
             let closed = s.close(&handle);
-            let result = written
-                .and(closed)
-                .and_then(|()| s.replace(&temp, &target));
+            let result = written.and(closed).and_then(|()| s.replace(&temp, &target));
             if result.is_err() && !s.broken {
                 let _ = s.status_request(REMOVE, &Body::new().bytes(&temp).0);
             }
@@ -615,7 +613,10 @@ impl Session {
         session.frame(INIT, 3, &[])?;
         let version = session.next_reply()?;
         if version.kind != VERSION {
-            return Err(bad_message(format!("expected VERSION, got {}", version.kind)));
+            return Err(bad_message(format!(
+                "expected VERSION, got {}",
+                version.kind
+            )));
         }
         let mut r = Reader(&version.body);
         while !r.0.is_empty() {
@@ -637,7 +638,10 @@ impl Session {
         packet.push(kind);
         packet.extend_from_slice(&id.to_be_bytes());
         packet.extend_from_slice(body);
-        let sent = self.stdin.write_all(&packet).and_then(|()| self.stdin.flush());
+        let sent = self
+            .stdin
+            .write_all(&packet)
+            .and_then(|()| self.stdin.flush());
         sent.map_err(|_| self.lost())
     }
 
@@ -654,7 +658,10 @@ impl Session {
             Ok(Err(_)) | Err(RecvTimeoutError::Disconnected) => Err(self.lost()),
             Err(RecvTimeoutError::Timeout) => {
                 self.broken = true;
-                Err(io::Error::new(io::ErrorKind::TimedOut, "sftp request timed out"))
+                Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "sftp request timed out",
+                ))
             }
         }
     }
@@ -677,7 +684,9 @@ impl Session {
         self.broken = true;
         // Let the stderr reader catch ssh's last words.
         thread::sleep(Duration::from_millis(20));
-        let stderr = String::from_utf8_lossy(&lock(&self.stderr)).trim().to_owned();
+        let stderr = String::from_utf8_lossy(&lock(&self.stderr))
+            .trim()
+            .to_owned();
         let message = if stderr.is_empty() {
             "the sftp session ended".to_owned()
         } else {
@@ -888,7 +897,10 @@ mod tests {
 
     #[test]
     fn exec_command_should_quote_every_word_and_cd_first() {
-        let cmd = exec_command(&["git", "log", "--format=%s", "it's"], Some(Path::new("/a b")));
+        let cmd = exec_command(
+            &["git", "log", "--format=%s", "it's"],
+            Some(Path::new("/a b")),
+        );
         assert_eq!(cmd, r"cd '/a b' && git log '--format=%s' 'it'\''s'");
     }
 
@@ -900,7 +912,10 @@ mod tests {
     #[test]
     fn temp_sibling_should_sit_next_to_the_file() {
         let temp = temp_sibling(b"/home/u/src/main.rs", 7);
-        let expected = format!("/home/u/src/.main.rs.grasslands-{}-7.tmp", std::process::id());
+        let expected = format!(
+            "/home/u/src/.main.rs.grasslands-{}-7.tmp",
+            std::process::id()
+        );
         assert_eq!(temp, expected.into_bytes());
     }
 
@@ -958,6 +973,9 @@ mod tests {
     fn read_packet_should_split_type_id_and_body() {
         let mut wire: &[u8] = &[0, 0, 0, 7, HANDLE, 0, 0, 0, 5, 0xAB, 0xCD];
         let packet = read_packet(&mut wire).unwrap();
-        assert_eq!((packet.kind, packet.id, packet.body), (HANDLE, 5, vec![0xAB, 0xCD]));
+        assert_eq!(
+            (packet.kind, packet.id, packet.body),
+            (HANDLE, 5, vec![0xAB, 0xCD])
+        );
     }
 }

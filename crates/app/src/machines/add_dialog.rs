@@ -129,17 +129,10 @@ pub fn open_add_machine_with(
                         .child(
                             div()
                                 .capture_action(typed_enter)
-                                .child(
-                                    host_list(&query, &hosts, loading, cx).on_confirm(picked),
-                                ),
+                                .child(host_list(&query, &hosts, loading, cx).on_confirm(picked)),
                         )
                         .when_some(problem, |this, problem| {
-                            this.child(
-                                div()
-                                    .text_sm()
-                                    .text_color(cx.theme().danger)
-                                    .child(problem),
-                            )
+                            this.child(div().text_sm().text_color(cx.theme().danger).child(problem))
                         })
                         .child(
                             div()
@@ -203,12 +196,7 @@ fn check_host(host: &str) -> Result<(), &'static str> {
     }
 }
 
-fn host_list(
-    query: &Entity<CommandState>,
-    hosts: &[SshHost],
-    loading: bool,
-    cx: &App,
-) -> Command {
+fn host_list(query: &Entity<CommandState>, hosts: &[SshHost], loading: bool, cx: &App) -> Command {
     let theme = cx.theme();
     let mono = theme.mono_font_family.clone();
     let muted = theme.muted_foreground;

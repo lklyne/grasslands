@@ -467,10 +467,11 @@ impl FileTree {
         cx: &mut Context<Self>,
     ) {
         let Some(fs) = self.fs(cx) else {
-            let label = self.state.read(cx).machine(&self.machine).map_or_else(
-                || self.machine.to_string(),
-                |m| m.label().to_owned(),
-            );
+            let label = self
+                .state
+                .read(cx)
+                .machine(&self.machine)
+                .map_or_else(|| self.machine.to_string(), |m| m.label().to_owned());
             return error(format!("{label} is offline"), window, cx);
         };
         let task = cx.background_executor().spawn(async move { op(&fs) });
@@ -586,7 +587,12 @@ impl FileTree {
             },
             move |this, (), _, cx| {
                 crate::sounds::play(cues::Cue::Tap, crate::sounds::strong());
-                let dirs: Vec<PathBuf> = from.parent().into_iter().chain([dir.as_path()]).map(Path::to_path_buf).collect();
+                let dirs: Vec<PathBuf> = from
+                    .parent()
+                    .into_iter()
+                    .chain([dir.as_path()])
+                    .map(Path::to_path_buf)
+                    .collect();
                 this.moved(from, target, cx);
                 if let Some(model) = this.model.as_mut()
                     && model.root() != dir
@@ -601,14 +607,11 @@ impl FileTree {
         );
     }
 
-    /// Tells open editor tabs on Local to follow a move. The editor's
-    /// events don't name a machine yet, so a saved machine's moves aren't
-    /// announced.
+    /// Tells open editor tabs to follow a move.
     fn moved(&self, from: PathBuf, to: PathBuf, cx: &mut Context<Self>) {
-        if self.machine.is_local() {
-            self.state
-                .update(cx, |state, cx| state.file_moved(from, to, cx));
-        }
+        let machine = self.machine.clone();
+        self.state
+            .update(cx, |state, cx| state.file_moved(machine, from, to, cx));
     }
 
     /// Local moves to the Trash, so a slip is recoverable. A saved machine
@@ -622,13 +625,12 @@ impl FileTree {
                 let path = removed.clone();
                 move |fs| fs.remove(&path)
             },
-            move |this, removal, _, cx| {
+            move |this, _: Removal, _, cx| {
                 crate::sounds::play(cues::Cue::Close, crate::sounds::strong());
                 let parent = removed.parent().map(Path::to_path_buf);
-                if removal == Removal::Trashed {
-                    this.state
-                        .update(cx, |state, cx| state.file_trashed(removed, cx));
-                }
+                let machine = this.machine.clone();
+                this.state
+                    .update(cx, |state, cx| state.file_removed(machine, removed, cx));
                 this.load(parent.into_iter().collect(), cx);
             },
             move |err| {
@@ -649,9 +651,10 @@ impl FileTree {
             tracing::warn!("files: no chrome to confirm deleting {}", path.display());
             return;
         };
-        let name = path
-            .file_name()
-            .map_or_else(|| path.display().to_string(), |n| n.to_string_lossy().into_owned());
+        let name = path.file_name().map_or_else(
+            || path.display().to_string(),
+            |n| n.to_string_lossy().into_owned(),
+        );
         let label = self
             .state
             .read(cx)
@@ -659,22 +662,31 @@ impl FileTree {
             .map_or_else(|| self.machine.to_string(), |m| m.label().to_owned());
         let confirmation = Confirmation {
             title: "Delete permanently?".into(),
-            message: format!("{name} is deleted from {label} for good. There's no Trash to undo it."),
+            message: format!(
+                "{name} is deleted from {label} for good. There's no Trash to undo it."
+            ),
             confirm_label: "Delete".into(),
         };
-        let (this, main, path) = (cx.entity().downgrade(), window.window_handle(), path.to_path_buf());
+        let (this, main, path) = (
+            cx.entity().downgrade(),
+            window.window_handle(),
+            path.to_path_buf(),
+        );
         // The dialog calls back in the overlay; delete from the main window,
         // where failures toast.
         let on_confirm = move |_: &mut Window, cx: &mut App| {
             let (this, path) = (this.clone(), path.clone());
             cx.defer(move |cx| {
                 cx.update_window(main, |_, window, cx| {
-                    this.update(cx, |this, cx| this.remove(&path, window, cx)).ok();
+                    this.update(cx, |this, cx| this.remove(&path, window, cx))
+                        .ok();
                 })
                 .ok();
             });
         };
-        chrome.update(cx, |chrome, cx| chrome.confirm(confirmation, on_confirm, window, cx));
+        chrome.update(cx, |chrome, cx| {
+            chrome.confirm(confirmation, on_confirm, window, cx)
+        });
     }
 
     fn reveal(path: &Path) {
@@ -797,7 +809,11 @@ impl FileTree {
             .separator()
             .item(item("Rename…", rename))
             .item(item(
-                if is_local { "Move to Trash" } else { "Delete…" },
+                if is_local {
+                    "Move to Trash"
+                } else {
+                    "Delete…"
+                },
                 remove,
             ))
             .separator();

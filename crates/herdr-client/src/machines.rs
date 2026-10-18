@@ -251,8 +251,7 @@ impl Paths {
     /// Whether both sockets can be bound (`sun_path` limit).
     fn fit(&self) -> bool {
         let len = |path: &Path| path.as_os_str().len();
-        len(&self.socket) < SUN_PATH_MAX
-            && len(&self.control) + CONTROL_TEMP_SUFFIX < SUN_PATH_MAX
+        len(&self.socket) < SUN_PATH_MAX && len(&self.control) + CONTROL_TEMP_SUFFIX < SUN_PATH_MAX
     }
 
     fn remove(&self) {
@@ -482,9 +481,7 @@ fn remote_socket(json: &[u8], label: &str) -> Result<String, String> {
         .and_then(Version::parse);
     match version {
         Some(v) if v < MIN_VERSION => {
-            return Err(format!(
-                "herdr {v} on {label} is older than {MIN_VERSION}"
-            ));
+            return Err(format!("herdr {v} on {label} is older than {MIN_VERSION}"));
         }
         None => return Err(format!("couldn't read the herdr version on {label}")),
         Some(_) => {}
@@ -585,11 +582,11 @@ impl MachineLink {
                 statuses: status_tx,
                 inbox: inbox_rx,
             };
-                // Detached: `stop` never waits for it.
-                let _ = thread::Builder::new()
-                    .name(format!("machine-{}", profile.label))
-                    .spawn(move || supervisor.run())
-                    .inspect_err(|err| log::error!("machine supervisor: {err}"));
+            // Detached: `stop` never waits for it.
+            let _ = thread::Builder::new()
+                .name(format!("machine-{}", profile.label))
+                .spawn(move || supervisor.run())
+                .inspect_err(|err| log::error!("machine supervisor: {err}"));
         }
         Self {
             profile,
@@ -712,7 +709,10 @@ impl LinkAccess {
 
     /// `command` on the machine through the master, killed after `timeout`.
     pub(crate) fn run(&self, command: &str, timeout: Duration) -> io::Result<Output> {
-        run(ssh(&remote_args(&self.target, &self.control, false, command)), timeout)
+        run(
+            ssh(&remote_args(&self.target, &self.control, false, command)),
+            timeout,
+        )
     }
 }
 
@@ -955,7 +955,12 @@ impl Supervisor {
                 thread::sleep(Duration::from_millis(50));
                 return Some(self.master_failed(stderr, false));
             }
-            let check = ssh(&control_args(&self.target, &self.paths.control, "check", &[]));
+            let check = ssh(&control_args(
+                &self.target,
+                &self.paths.control,
+                "check",
+                &[],
+            ));
             if run(check, COMMAND_TIMEOUT).is_ok_and(|out| out.status.success()) {
                 return None;
             }
@@ -1000,11 +1005,7 @@ impl Supervisor {
         };
         *lock(&self.shared.herdr) = Some(herdr.clone());
 
-        let status = herdr_command(
-            &herdr,
-            self.profile.remote_session(),
-            &["status", "--json"],
-        );
+        let status = herdr_command(&herdr, self.profile.remote_session(), &["status", "--json"]);
         let out = self.remote(&status)?;
         if !out.status.success() {
             return Err(MachineStatus::NeedsSetup(format!(
@@ -1226,7 +1227,9 @@ mod tests {
     #[test]
     fn classify_should_treat_host_key_failure_as_sign_in() {
         assert!(matches!(
-            classify_ssh_error("No ED25519 host key is known for h.\nHost key verification failed.\n"),
+            classify_ssh_error(
+                "No ED25519 host key is known for h.\nHost key verification failed.\n"
+            ),
             MachineStatus::NeedsSignIn(_)
         ));
     }
@@ -1235,14 +1238,18 @@ mod tests {
     fn classify_should_treat_refused_as_offline() {
         assert_eq!(
             classify_ssh_error("ssh: connect to host 127.0.0.1 port 2222: Connection refused\n"),
-            MachineStatus::Offline("connect to host 127.0.0.1 port 2222: Connection refused".into())
+            MachineStatus::Offline(
+                "connect to host 127.0.0.1 port 2222: Connection refused".into()
+            )
         );
     }
 
     #[test]
     fn classify_should_treat_unresolvable_host_as_offline() {
         assert!(matches!(
-            classify_ssh_error("ssh: Could not resolve hostname nope: nodename nor servname provided\n"),
+            classify_ssh_error(
+                "ssh: Could not resolve hostname nope: nodename nor servname provided\n"
+            ),
             MachineStatus::Offline(_)
         ));
     }
@@ -1278,13 +1285,15 @@ mod tests {
 
     #[test]
     fn remote_status_should_need_setup_when_old() {
-        let json = r#"{"server":{"running":true,"version":"0.9.4","compatible":true,"socket":"/s"}}"#;
+        let json =
+            r#"{"server":{"running":true,"version":"0.9.4","compatible":true,"socket":"/s"}}"#;
         assert!(remote_socket(json.as_bytes(), "box").is_err_and(|e| e.contains("older")));
     }
 
     #[test]
     fn remote_status_should_need_setup_when_incompatible() {
-        let json = r#"{"server":{"running":true,"version":"0.9.5","compatible":false,"socket":"/s"}}"#;
+        let json =
+            r#"{"server":{"running":true,"version":"0.9.5","compatible":false,"socket":"/s"}}"#;
         assert!(remote_socket(json.as_bytes(), "box").is_err());
     }
 
@@ -1330,7 +1339,10 @@ mod tests {
     #[test]
     fn owner_should_read_pid_of_socket_and_temp_control() {
         assert_eq!(
-            [owner("4321-0-b87d0c96.sock"), owner("4321-0-b87d0c96.ctl.AbCdEf0123456789")],
+            [
+                owner("4321-0-b87d0c96.sock"),
+                owner("4321-0-b87d0c96.ctl.AbCdEf0123456789")
+            ],
             [Some(4321), Some(4321)]
         );
     }
@@ -1338,7 +1350,11 @@ mod tests {
     #[test]
     fn owner_should_skip_old_style_and_foreign_names() {
         assert_eq!(
-            [owner("b87d0c96.ctl"), owner("notes.txt"), owner("4321-.sock")],
+            [
+                owner("b87d0c96.ctl"),
+                owner("notes.txt"),
+                owner("4321-.sock")
+            ],
             [None, None, None]
         );
     }

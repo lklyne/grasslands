@@ -21,7 +21,7 @@
 
 ## Editor follows the tree
 
-- Rename in the tree emits `AppEvent::FileMoved { from, to }`; the editor re-points every tab at or under `from` (a file or a whole folder) and moves its folder watch. Trash emits `AppEvent::FileTrashed(path)`: clean tabs at or under it close, tabs with unsaved edits stay open marked deleted (saving recreates the file).
+- Rename in the tree emits `AppEvent::FileMoved { machine, from, to }`; the editor re-points every tab at or under `from` (a file or a whole folder) and moves its folder watch. Trash (or a remote delete, 0020) emits `AppEvent::FileRemoved { machine, path }`: clean tabs at or under it close, tabs with unsaved edits stay open marked deleted (saving recreates the file).
 - Renames on disk (an agent's `mv`) are caught by the editor's watcher: when an open file vanishes, the editor looks for the same file (device + inode) among the event's paths and in the old folder, and re-points the tab. Not found → the existing rule: the tab stays, marked deleted.
 
 ## Known gaps

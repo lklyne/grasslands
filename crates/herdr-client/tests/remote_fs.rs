@@ -71,14 +71,21 @@ fn connect(link: &MachineLink) {
 }
 
 fn names(fs: &RemoteFs, dir: &Path) -> Vec<String> {
-    let mut names: Vec<_> = fs.read_dir(dir).unwrap().into_iter().map(|e| e.name).collect();
+    let mut names: Vec<_> = fs
+        .read_dir(dir)
+        .unwrap()
+        .into_iter()
+        .map(|e| e.name)
+        .collect();
     names.sort();
     names
 }
 
 fn mode(fs: &RemoteFs, path: &Path) -> String {
     let path = path.to_str().unwrap();
-    let out = fs.exec(&["stat", "-c", "%a", path], None, EXEC_TIMEOUT).unwrap();
+    let out = fs
+        .exec(&["stat", "-c", "%a", path], None, EXEC_TIMEOUT)
+        .unwrap();
     String::from_utf8_lossy(&out.stdout).trim().to_owned()
 }
 
@@ -122,7 +129,11 @@ fn remote_fs_should_read_write_exec_and_survive_a_restart() {
     for name in [".gitignore", "src", "target"] {
         assert!(listed.iter().any(|n| n == name), "~/api lacks {name}");
     }
-    let src = fs.read_dir(&api).unwrap().into_iter().find(|e| e.name == "src");
+    let src = fs
+        .read_dir(&api)
+        .unwrap()
+        .into_iter()
+        .find(|e| e.name == "src");
     assert!(src.is_some_and(|e| e.is_dir));
     assert!(!names(&fs, &api).iter().any(|n| n == "." || n == ".."));
 
@@ -166,8 +177,12 @@ fn remote_fs_should_read_write_exec_and_survive_a_restart() {
     assert_eq!(fs.read(&file).unwrap(), big);
     eprintln!("3 MB: write {wrote:?}, read {:?}", start.elapsed());
 
-    fs.exec(&["chmod", "640", file.to_str().unwrap()], None, EXEC_TIMEOUT)
-        .unwrap();
+    fs.exec(
+        &["chmod", "640", file.to_str().unwrap()],
+        None,
+        EXEC_TIMEOUT,
+    )
+    .unwrap();
     fs.write(&file, b"hello\n").unwrap();
     assert_eq!(fs.read(&file).unwrap(), b"hello\n");
     assert_eq!(mode(&fs, &file), "640", "write keeps the mode");
@@ -206,7 +221,11 @@ fn remote_fs_should_read_write_exec_and_survive_a_restart() {
     assert!(porcelain.contains("?? notes.txt"));
     assert!(!porcelain.contains("target"));
     let out = fs
-        .exec(&["printf", "%s|", "a b", "it's", "$HOME"], None, EXEC_TIMEOUT)
+        .exec(
+            &["printf", "%s|", "a b", "it's", "$HOME"],
+            None,
+            EXEC_TIMEOUT,
+        )
         .unwrap();
     assert_eq!(out.stdout, b"a b|it's|$HOME|");
     let err = fs

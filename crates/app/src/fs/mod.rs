@@ -8,6 +8,8 @@
 //! git, grep and find for ignore rules, search and Changes (`remote`,
 //! `remote_git`), parsed into the same shapes.
 
+#[cfg(test)]
+pub mod fake;
 mod local;
 mod local_git;
 mod remote;
@@ -54,6 +56,9 @@ pub enum Fs {
         label: String,
         files: Arc<herdr_client::RemoteFs>,
     },
+    /// An in-memory remote machine: files only, no git or search.
+    #[cfg(test)]
+    Fake(Arc<fake::FakeFs>),
 }
 
 impl Fs {
@@ -61,6 +66,8 @@ impl Fs {
         match self {
             Self::Local => MachineId::Local,
             Self::Remote { machine, .. } => machine.clone(),
+            #[cfg(test)]
+            Self::Fake(_) => MachineId::Remote("fake".into()),
         }
     }
 
@@ -77,6 +84,8 @@ impl Fs {
                 let listing = files.read_dir(dir)?;
                 Ok(remote::filter_listing(&remote::runner(files), dir, listing))
             }
+            #[cfg(test)]
+            Self::Fake(_) => Err(io::ErrorKind::Unsupported.into()),
         }
     }
 
@@ -98,6 +107,8 @@ impl Fs {
                     modified: meta.modified,
                 })
             }
+            #[cfg(test)]
+            Self::Fake(fake) => fake.metadata(path),
         }
     }
 
@@ -106,6 +117,8 @@ impl Fs {
             Self::Local => std::fs::read_to_string(path),
             Self::Remote { files, .. } => String::from_utf8(files.read(path)?)
                 .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "not UTF-8 text")),
+            #[cfg(test)]
+            Self::Fake(fake) => fake.read(path),
         }
     }
 
@@ -114,6 +127,8 @@ impl Fs {
         match self {
             Self::Local => local::write(path, contents),
             Self::Remote { files, .. } => files.write(path, contents.as_bytes()),
+            #[cfg(test)]
+            Self::Fake(fake) => fake.write(path, contents),
         }
     }
 
@@ -121,6 +136,8 @@ impl Fs {
         match self {
             Self::Local => local::create_file(path),
             Self::Remote { files, .. } => files.create_file(path),
+            #[cfg(test)]
+            Self::Fake(_) => Err(io::ErrorKind::Unsupported.into()),
         }
     }
 
@@ -128,6 +145,8 @@ impl Fs {
         match self {
             Self::Local => std::fs::create_dir(path),
             Self::Remote { files, .. } => files.create_dir(path),
+            #[cfg(test)]
+            Self::Fake(_) => Err(io::ErrorKind::Unsupported.into()),
         }
     }
 
@@ -136,6 +155,8 @@ impl Fs {
         match self {
             Self::Local => local::rename(from, to),
             Self::Remote { files, .. } => files.rename(from, to),
+            #[cfg(test)]
+            Self::Fake(_) => Err(io::ErrorKind::Unsupported.into()),
         }
     }
 
@@ -143,6 +164,8 @@ impl Fs {
         match self {
             Self::Local => local::trash(path).map(|()| Removal::Trashed),
             Self::Remote { files, .. } => files.remove(path).map(|()| Removal::Deleted),
+            #[cfg(test)]
+            Self::Fake(_) => Err(io::ErrorKind::Unsupported.into()),
         }
     }
 
@@ -158,6 +181,8 @@ impl Fs {
             Self::Remote { files, .. } => {
                 remote::search(&remote::runner(files), root, query, cancel)
             }
+            #[cfg(test)]
+            Self::Fake(_) => crate::sidebar::files::SearchResults::default(),
         }
     }
 
@@ -167,6 +192,8 @@ impl Fs {
         match self {
             Self::Local => local_git::read(dir),
             Self::Remote { files, .. } => remote_git::summary(&remote::runner(files), dir),
+            #[cfg(test)]
+            Self::Fake(_) => None,
         }
     }
 
@@ -175,6 +202,8 @@ impl Fs {
         match self {
             Self::Local => local_git::patch(dir),
             Self::Remote { files, .. } => remote_git::patch(&remote::runner(files), dir),
+            #[cfg(test)]
+            Self::Fake(_) => None,
         }
     }
 
@@ -185,6 +214,8 @@ impl Fs {
         match self {
             Self::Local => crate::worktree::resolve_root(dir),
             Self::Remote { files, .. } => remote_git::resolve_root(&remote::runner(files), dir),
+            #[cfg(test)]
+            Self::Fake(_) => None,
         }
     }
 
@@ -196,6 +227,8 @@ impl Fs {
                 crate::sidebar::workspaces::git::read(dir).map(|checkout| checkout.branch)
             }
             Self::Remote { files, .. } => remote_git::head_branch(&remote::runner(files), dir),
+            #[cfg(test)]
+            Self::Fake(_) => None,
         }
     }
 }
