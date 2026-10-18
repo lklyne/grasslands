@@ -21,9 +21,9 @@ use std::io::{self, Read};
 use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError};
-use std::sync::{Arc, Mutex, Once, PoisonError};
+use std::sync::{Arc, Mutex, Once, OnceLock, PoisonError};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
@@ -31,6 +31,7 @@ use serde::Deserialize;
 
 use crate::endpoint::{DEV_ROOT, Endpoint};
 use crate::error::{Error, Result};
+use crate::remote_fs::RemoteFs;
 use crate::setup::{MIN_VERSION, Version};
 
 /// Comma-separated machine labels a debug build may connect to.
@@ -408,7 +409,7 @@ fn attach_command_line(
         .join(" ")
 }
 
-fn shell_quote(value: &str) -> String {
+pub(crate) fn shell_quote(value: &str) -> String {
     if !value.is_empty()
         && value
             .chars()
@@ -518,9 +519,11 @@ struct Shared {
     /// supervisor busy in a remote command still stops at once.
     master: Mutex<Option<Child>>,
     stopped: AtomicBool,
+    /// Counts connections: bumped each time the link becomes `Connected`.
+    connection: AtomicU64,
 }
 
-fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+pub(crate) fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
@@ -532,6 +535,7 @@ pub struct MachineLink {
     shared: Arc<Shared>,
     statuses: async_channel::Receiver<MachineStatus>,
     inbox: mpsc::Sender<Msg>,
+    fs: OnceLock<Arc<RemoteFs>>,
 }
 
 impl MachineLink {
@@ -566,6 +570,7 @@ impl MachineLink {
             herdr: Mutex::new(None),
             master: Mutex::new(None),
             stopped: AtomicBool::new(false),
+            connection: AtomicU64::new(0),
         });
         let (status_tx, statuses) = async_channel::unbounded();
         // Unbounded: never full, and the receiver is held by `statuses`.
@@ -593,6 +598,7 @@ impl MachineLink {
             shared,
             statuses,
             inbox,
+            fs: OnceLock::new(),
         }
     }
 
@@ -636,13 +642,25 @@ impl MachineLink {
         ))
     }
 
-    /// Retry now, skipping the backoff wait.
-    /// The machine's files over this link's master; `None` until connected.
-    /// STUB: always `None` until the transport agent builds it.
-    pub fn remote_fs(&self) -> Option<std::sync::Arc<crate::RemoteFs>> {
-        None
+    /// The machine's files over this link's master; `None` until it first
+    /// connects, then the same one for the link's life, failing with
+    /// `NotConnected` while the link is down.
+    pub fn remote_fs(&self) -> Option<Arc<RemoteFs>> {
+        let target = self.target.as_ref()?;
+        if self.shared.connection.load(Ordering::SeqCst) == 0 {
+            return None;
+        }
+        let fs = self.fs.get_or_init(|| {
+            Arc::new(RemoteFs::new(LinkAccess {
+                target: target.clone(),
+                control: self.paths.control.clone(),
+                shared: Arc::clone(&self.shared),
+            }))
+        });
+        Some(Arc::clone(fs))
     }
 
+    /// Retry now, skipping the backoff wait.
     pub fn reconnect(&self) {
         let _ = self.inbox.send(Msg::Reconnect);
     }
@@ -665,6 +683,36 @@ impl MachineLink {
 impl Drop for MachineLink {
     fn drop(&mut self) {
         self.stop();
+    }
+}
+
+/// What a [`RemoteFs`] needs from its link: the master, and whether it's up.
+#[derive(Debug)]
+pub(crate) struct LinkAccess {
+    target: SshTarget,
+    control: PathBuf,
+    shared: Arc<Shared>,
+}
+
+impl LinkAccess {
+    /// The current connection's number, while connected.
+    pub(crate) fn connection(&self) -> Option<u64> {
+        let up = !self.shared.stopped.load(Ordering::SeqCst)
+            && *lock(&self.shared.status) == MachineStatus::Connected;
+        up.then(|| self.shared.connection.load(Ordering::SeqCst))
+    }
+
+    /// `ssh -S <ctl> -o ControlMaster=no [-p port] -s <target> sftp`.
+    pub(crate) fn sftp(&self) -> Command {
+        let mut args = remote_args(&self.target, &self.control, false, "sftp");
+        let host = args.len() - 2;
+        args.insert(host, "-s".to_owned());
+        ssh(&args)
+    }
+
+    /// `command` on the machine through the master, killed after `timeout`.
+    pub(crate) fn run(&self, command: &str, timeout: Duration) -> io::Result<Output> {
+        run(ssh(&remote_args(&self.target, &self.control, false, command)), timeout)
     }
 }
 
@@ -852,6 +900,7 @@ impl Supervisor {
             self.paths.socket.display(),
             socket
         );
+        self.shared.connection.fetch_add(1, Ordering::SeqCst);
         self.set(MachineStatus::Connected);
         let end = self.watch(&stderr);
         self.teardown();
