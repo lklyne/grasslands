@@ -1,0 +1,9 @@
+{
+  "name": "grasslands",
+  "private": true,
+  "packageManager": "pnpm@12.6.0",
+  "scripts": {
+    "dev": "pnpm --filter website dev",
+    "build": "pnpm --filter website build"
+  }
+}

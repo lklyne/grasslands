@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://grasslands.dev/sitemap-index.xml

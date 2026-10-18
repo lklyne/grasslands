@@ -4,3 +4,8 @@ target/
 .DS_Store
 !vendor/**/*.png
 .claude/settings.local.json
+
+node_modules/
+dist/
+.astro/
+.wrangler/
