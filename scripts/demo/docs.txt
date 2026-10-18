@@ -1,0 +1,19 @@
+{d}>{0} Write the "Eviction policies" guide. Cover LRU, LFU and TTL, with a
+  config example for each. Match the tone of the existing guides.
+
+{g}●{0} {B}Read{0}(src/content/docs/guides/sharding.md)
+  {d}⎿  Read 97 lines{0}
+{g}●{0} {B}Read{0}(src/content/docs/reference/config.md)
+  {d}⎿  Read 212 lines{0}
+
+{w}●{0} I'll follow the sharding guide's shape: a short why, one section
+  per policy, then a "choosing a policy" table at the end.
+
+{g}●{0} {B}Write{0}(src/content/docs/guides/eviction.md)
+  {d}⎿  Wrote 118 lines to src/content/docs/guides/eviction.md{0}
+
+{m}✢{0} {m}Checking the config examples against the schema…{0} {d}(38s · ↓ 1.2k tokens · esc to interrupt){0}
+
+{d}────────────────────────────────────────────────────────────────────────{0}
+{d}>{0}
+{d}────────────────────────────────────────────────────────────────────────{0}

@@ -15,7 +15,15 @@
 //! - `repo-worktree <repo name> <branch>`: submit that prompt with `branch`
 //! - `rename <workspace>`: the menu's Rename Workspace… (chrome's prompt)
 //! - `close <workspace>`: the row's × (chrome confirms if agents run)
-//! - `move <workspace> <target>`: drag a row and drop it on `target`'s row
+//! - `move <workspace> <target>`: drop a row on `target`'s row (no pointer)
+//! - `drag <workspace> <target>`: drag a row with GPUI mouse events and
+//!   release it over `target`: a workspace's row, `off` (the panel below the
+//!   rows), `outside` (the window) or `cancel` (the app stops the drag before
+//!   the release). The overlay is drawn at each step, as a toast or tooltip
+//!   would; after the release nothing is drawn on the script's behalf.
+//! - `overlay`: open the overlay window, as the first toast or menu would
+//! - `check-drag <label>`: print whether a drag is active and whether the
+//!   overlay's last frame was drawn during one (and so shows its preview)
 //! - `key <keystroke>`: one key press (`enter`, `escape`, `down`, …) to the
 //!   window that owns the keyboard: the overlay while a prompt or dialog is
 //!   open there (`overlay::dispatch_keystroke`)
@@ -56,6 +64,12 @@ pub(super) fn start(
         .spawn(cx, async move |cx| {
             for step in steps {
                 eprintln!("[sidebar-script] {step}");
+                if let Some(arg) = step.strip_prefix("drag ") {
+                    if drag(&spaces, arg, cx).await.is_err() {
+                        return;
+                    }
+                    continue;
+                }
                 if let Some(ms) = step.strip_prefix("wait ") {
                     let ms = ms.trim().parse().unwrap_or(500);
                     cx.background_executor()
@@ -82,6 +96,20 @@ pub(super) fn start(
                     // The main window by name: `update_in` would use whichever
                     // window the list was last used in (see chrome/script.rs).
                     None => cx.update(|window, cx| match step.split_once(' ') {
+                        _ if step == "overlay" => {
+                            if let Err(error) = overlay::get_or_open(window, cx) {
+                                eprintln!("[sidebar-script] overlay: {error:#}");
+                            }
+                        }
+                        Some(("check-drag", label)) => {
+                            let drew = overlay::get(window, cx)
+                                .map(|overlay| overlay.read(cx).drew_drag(cx));
+                            eprintln!(
+                                "[sidebar-script] check {}: drag_active={} overlay_drew_drag={drew:?}",
+                                label.trim(),
+                                cx.has_active_drag(),
+                            );
+                        }
                         Some(("agent", pane)) => {
                             let _ = agents
                                 .update(cx, |this, cx| this.activate(pane.trim(), window, cx));
@@ -208,4 +236,96 @@ fn log(this: &WorkspaceList, label: &str, sort: Option<super::AgentSort>, cx: &A
             a.workspace_id,
         );
     }
+}
+
+/// The `drag` step; see the module docs. Errs only when the window is gone.
+async fn drag(
+    spaces: &WeakEntity<WorkspaceList>,
+    arg: &str,
+    cx: &mut AsyncWindowContext,
+) -> anyhow::Result<()> {
+    let (dragged, target) = arg.split_once(' ').unwrap_or((arg, ""));
+    let (dragged, target) = (dragged.trim().to_owned(), target.trim().to_owned());
+    let rows = spaces.read_with(cx, |this, _| this.drawn_rows.borrow().clone())?;
+    let Some(from) = rows.get(&dragged).map(|b| b.center()) else {
+        eprintln!("[sidebar-script] drag: no row for {dragged}");
+        return Ok(());
+    };
+    let lowest = rows.values().map(|b| b.bottom()).fold(from.y, Pixels::max);
+    let to = match target.as_str() {
+        "off" => point(from.x, lowest + px(60.)),
+        "outside" => point(px(-200.), px(-200.)),
+        "cancel" => point(from.x, lowest + px(30.)),
+        id => match rows.get(id) {
+            Some(bounds) => bounds.center(),
+            None => {
+                eprintln!("[sidebar-script] drag: no row for {id}");
+                return Ok(());
+            }
+        },
+    };
+    let executor = cx.background_executor().clone();
+    let pause = || executor.timer(Duration::from_millis(40));
+    cx.update(|window, cx| {
+        window.dispatch_event(
+            PlatformInput::MouseMove(MouseMoveEvent {
+                position: from,
+                pressed_button: None,
+                modifiers: Modifiers::default(),
+            }),
+            cx,
+        );
+        window.dispatch_event(
+            PlatformInput::MouseDown(MouseDownEvent {
+                button: MouseButton::Left,
+                position: from,
+                modifiers: Modifiers::default(),
+                click_count: 1,
+                first_mouse: false,
+            }),
+            cx,
+        );
+    })?;
+    pause().await;
+    const STEPS: usize = 10;
+    for step in 1..=STEPS {
+        let t = step as f32 / STEPS as f32;
+        let position = from + (to - from) * t;
+        let handle = cx.update(|window, cx| {
+            window.dispatch_event(
+                PlatformInput::MouseMove(MouseMoveEvent {
+                    position,
+                    pressed_button: Some(MouseButton::Left),
+                    modifiers: Modifiers::default(),
+                }),
+                cx,
+            );
+            overlay::get(window, cx).map(|overlay| overlay.read(cx).window_handle())
+        })?;
+        if let Some(handle) = handle {
+            cx.update_window(handle, |_, window, cx| {
+                window.refresh();
+                let _ = window.draw(cx);
+            })
+            .ok();
+        }
+        pause().await;
+    }
+    cx.update(|window, cx| {
+        if target == "cancel" {
+            cx.stop_active_drag(window);
+        }
+        window.dispatch_event(
+            PlatformInput::MouseUp(MouseUpEvent {
+                button: MouseButton::Left,
+                position: to,
+                modifiers: Modifiers::default(),
+                click_count: 1,
+            }),
+            cx,
+        );
+    })?;
+    // Let frames come on their own: one the app asks for, none forced here.
+    executor.timer(Duration::from_millis(400)).await;
+    Ok(())
 }

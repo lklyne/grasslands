@@ -8,6 +8,8 @@ brew install --cask lklyne/tap/grasslands
 
 Needs macOS and herdr 0.9.5 (`brew install herdr`).
 
+<img width="1387" height="930" alt="grasslands showing herdr workspaces, terminals and the file tree" src="https://github.com/user-attachments/assets/e26fd95b-1585-45ff-81fc-4eec5c482787" />
+
 This is alpha software. It attaches to every herdr terminal with `--takeover`, so a herdr TUI attached to the same session loses those panes. Closing a pane in the app closes it in herdr and kills its process.
 
 ## What it does
@@ -28,10 +30,11 @@ You need Rust 1.99, Xcode 27 command line tools, and Zig 0.16 at `~/.local/zig-0
 ```sh
 scripts/dev-run cargo run -p app   # debug build against an isolated herdr dev session
 scripts/herdr-dev pane list        # herdr CLI pointed at that same session
+scripts/relaunch-main              # rebuild and run against your real herdr session
 scripts/bundle.sh                  # unsigned release bundle in target/bundle/
 ```
 
-`scripts/dev-run` sets `ZIG` and points `HERDR_BIN`, `HERDR_SESSION` and `HERDR_SOCKET_PATH` at a dev session under `~/.local/share/grasslands-herdr`. Debug builds refuse to connect anywhere else, so they can't touch your real agents. [docs/development.md](docs/development.md) covers tests, script check modes, release builds, keys and known gaps.
+`scripts/dev-run` sets `ZIG` and points `HERDR_BIN`, `HERDR_SESSION` and `HERDR_SOCKET_PATH` at a dev session under `~/.local/share/grasslands-herdr`. Debug builds refuse to connect anywhere else unless `RT_ALLOW_LIVE_HERDR=1`, so they can't touch your real agents by accident. Ghostty settings live in `~/.config/grasslands/ghostty.conf`. [docs/development.md](docs/development.md) covers tests, script check modes, release builds, keys and known gaps.
 
 The repo is a pnpm workspace around a Cargo workspace. Rust crates live in `crates/`, the website in `website/`, and design decisions in [docs/decisions/](docs/decisions/).
 

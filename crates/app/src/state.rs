@@ -395,6 +395,7 @@ impl AppState {
 
     #[track_caller]
     pub fn move_tab(&self, tab_id: &str, index: usize, cx: &App) -> Task<herdr::Result<()>> {
+        sounds::play(Cue::Tap, sounds::strong());
         let tab_id = tab_id.to_owned();
         self.call(cx, move |c| c.tab_move(&tab_id, index))
     }

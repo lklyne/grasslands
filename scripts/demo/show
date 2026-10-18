@@ -1,0 +1,13 @@
+#!/bin/sh
+# Paints a transcript into the pane and holds it there. Markers: {g} green,
+# {r} red, {y} yellow, {c} cyan, {m} magenta, {d} dim, {B} bold, {w} white,
+# {G}/{R} added/removed diff lines, {0} reset.
+e=$(printf '\033')
+stty -echo 2>/dev/null
+printf '%s[?25l%s[H%s[2J' "$e" "$e" "$e"
+sed -e "s/{g}/$e[32m/g" -e "s/{r}/$e[31m/g" -e "s/{y}/$e[33m/g" \
+    -e "s/{c}/$e[36m/g" -e "s/{m}/$e[38;5;174m/g" -e "s/{d}/$e[2m/g" \
+    -e "s/{B}/$e[1m/g" -e "s/{w}/$e[97m/g" \
+    -e "s/{G}/$e[38;5;151;48;5;22m/g" -e "s/{R}/$e[38;5;217;48;5;52m/g" \
+    -e "s/{0}/$e[0m/g" "$1"
+exec sleep 2147483647

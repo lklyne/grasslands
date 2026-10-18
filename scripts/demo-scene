@@ -1,0 +1,759 @@
+#!/usr/bin/env bash
+# Stages a believable herdr session for screenshots: three fake projects with
+# real git history (branches, worktrees, ahead/behind, uncommitted edits) and
+# agents parked in every state. Panes show canned transcripts from
+# scripts/demo/*.txt; nothing real runs.
+#
+#   scripts/demo-scene                 # (re)build the scene
+#   RT_SESSION=demo-scene scripts/dev-run cargo run -p app
+#
+# Uses its own herdr session (demo-scene, override with RT_SESSION) and
+# rebuilds the projects under ~/.local/share/grasslands-herdr/demo each run.
+set -euo pipefail
+
+export RT_SESSION="${RT_SESSION:-demo-scene}"
+here=$(cd "$(dirname "$0")" && pwd)
+. "$here/dev-env.sh"
+case "$HERDR_SESSION" in
+  default|"") echo "demo-scene: refusing to run against the live session" >&2; exit 1 ;;
+esac
+
+herdr() { "$here/herdr-dev" "$@"; }
+demo="$XDG_CONFIG_HOME/demo"
+projects="$demo/projects"
+remotes="$demo/remotes"
+show="$here/demo/show"
+
+# --- repos ---------------------------------------------------------------
+
+export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
+day=$(( $(date +%s) - 9 * 86400 ))
+commit() { # commit <author> <hours after day0> <message>
+  local name=$1 when=$(( day + $2 * 3600 )) msg=$3
+  local email
+  email="$(printf '%s' "${name%% *}" | tr '[:upper:]' '[:lower:]')@example.com"
+  git add -A
+  GIT_AUTHOR_NAME="$name" GIT_AUTHOR_EMAIL="$email" GIT_AUTHOR_DATE="@$when" \
+    GIT_COMMITTER_NAME="$name" GIT_COMMITTER_EMAIL="$email" GIT_COMMITTER_DATE="@$when" \
+    git commit -qm "$msg"
+}
+put() { mkdir -p "$(dirname "$1")"; cat >"$1"; }
+init_repo() { # init_repo <name>: fresh repo with a bare origin
+  rm -rf "${projects:?}/$1" "${remotes:?}/$1.git"
+  mkdir -p "$projects/$1" "$remotes"
+  git init -q --bare -b main "$remotes/$1.git"
+  cd "$projects/$1"
+  git init -q -b main
+  git remote add origin "$remotes/$1.git"
+}
+
+seed_tidepool() {
+  init_repo tidepool
+  put package.json <<'EOF'
+{
+  "name": "tidepool",
+  "version": "0.14.2",
+  "private": true,
+  "scripts": {
+    "dev": "next dev --turbopack",
+    "build": "next build",
+    "test": "vitest",
+    "lint": "eslint ."
+  },
+  "dependencies": {
+    "date-fns": "^4.1.0",
+    "date-fns-tz": "^3.2.0",
+    "next": "16.2.1",
+    "react": "19.2.0",
+    "react-dom": "19.2.0"
+  },
+  "devDependencies": {
+    "@types/react": "^19.2.2",
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.4"
+  }
+}
+EOF
+  put README.md <<'EOF'
+# tidepool
+
+Booking for small coastal rentals: listings, availability, checkout.
+
+```sh
+pnpm install
+pnpm dev        # http://localhost:3000
+pnpm test
+```
+
+Pricing lives in `src/lib/pricing.ts`; every quote the UI shows comes from
+`quoteStay()`, so start there when a total looks wrong.
+EOF
+  put .gitignore <<'EOF'
+node_modules/
+.next/
+.env.local
+EOF
+  put tsconfig.json <<'EOF'
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["dom", "dom.iterable", "esnext"],
+    "strict": true,
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "jsx": "preserve",
+    "paths": { "@/*": ["./src/*"] }
+  },
+  "include": ["src", "tests"]
+}
+EOF
+  put src/app/layout.tsx <<'EOF'
+import type { ReactNode } from "react";
+import "./globals.css";
+
+export const metadata = { title: "Tidepool", description: "Stay by the water." };
+
+export default function RootLayout({ children }: { children: ReactNode }) {
+  return (
+    <html lang="en">
+      <body>{children}</body>
+    </html>
+  );
+}
+EOF
+  put src/app/globals.css <<'EOF'
+:root {
+  --sand: #f4efe6;
+  --kelp: #2f4f3a;
+  --tide: #1f5f7a;
+}
+
+body {
+  margin: 0;
+  background: var(--sand);
+  color: var(--kelp);
+  font-family: ui-sans-serif, system-ui, sans-serif;
+}
+EOF
+  commit "Maya Okafor" 0 "chore: scaffold next app"
+  put src/app/page.tsx <<'EOF'
+import { BookingCard } from "@/components/BookingCard";
+import { featuredListings } from "@/lib/listings";
+
+export default async function Home() {
+  const listings = await featuredListings();
+  return (
+    <main className="grid">
+      {listings.map((listing) => (
+        <BookingCard key={listing.slug} listing={listing} />
+      ))}
+    </main>
+  );
+}
+EOF
+  put src/components/BookingCard.tsx <<'EOF'
+import type { Listing } from "@/lib/listings";
+
+export function BookingCard({ listing }: { listing: Listing }) {
+  return (
+    <a className="card" href={`/listings/${listing.slug}`}>
+      <img src={listing.photo} alt="" />
+      <h2>{listing.name}</h2>
+      <p>
+        {listing.town} · from ${listing.baseRate}/night
+      </p>
+    </a>
+  );
+}
+EOF
+  put src/lib/listings.ts <<'EOF'
+export type Listing = {
+  slug: string;
+  name: string;
+  town: string;
+  tz: string;
+  photo: string;
+  baseRate: number;
+  cleaningFee: number;
+};
+
+export async function featuredListings(): Promise<Listing[]> {
+  const res = await fetch(`${process.env.API_URL}/listings?featured=1`, {
+    next: { revalidate: 300 },
+  });
+  return res.json();
+}
+EOF
+  commit "Maya Okafor" 3 "feat: listings grid and booking card"
+  put src/lib/dates.ts <<'EOF'
+import { differenceInCalendarDays, format } from "date-fns";
+
+export function differenceInNights(checkIn: Date, checkOut: Date): number {
+  return differenceInCalendarDays(checkOut, checkIn);
+}
+
+export function toDateKey(date: Date): string {
+  return format(date, "yyyy-MM-dd");
+}
+
+export function isWeekendNight(date: Date): boolean {
+  const day = date.getDay();
+  return day === 5 || day === 6;
+}
+EOF
+  put src/lib/pricing.ts <<'EOF'
+import type { Listing } from "./listings";
+import { differenceInNights, isWeekendNight } from "./dates";
+
+const SERVICE_RATE = 0.12;
+const WEEKEND_MARKUP = 1.15;
+
+export type Quote = {
+  nights: number;
+  total: number;
+};
+
+export function nightlyRate(listing: Listing, night: Date): number {
+  const rate = listing.baseRate;
+  return isWeekendNight(night) ? Math.round(rate * WEEKEND_MARKUP) : rate;
+}
+
+export function quoteStay(listing: Listing, checkIn: Date, checkOut: Date): Quote {
+  const nights = differenceInNights(checkIn, checkOut);
+  const rate = nightlyRate(listing, checkIn);
+  const serviceFee = Math.round(nights * rate * SERVICE_RATE);
+  return { nights, total: nights * rate + listing.cleaningFee + serviceFee };
+}
+EOF
+  commit "Theo Lindqvist" 26 "feat(pricing): nightly quotes with weekend markup"
+  put src/app/checkout/page.tsx <<'EOF'
+import { quoteStay } from "@/lib/pricing";
+import { getListing } from "@/lib/listings";
+
+type Props = { searchParams: Promise<{ listing: string; from: string; to: string }> };
+
+export default async function Checkout({ searchParams }: Props) {
+  const { listing: slug, from, to } = await searchParams;
+  const listing = await getListing(slug);
+  const quote = quoteStay(listing, new Date(from), new Date(to));
+
+  return (
+    <main className="checkout">
+      <h1>{listing.name}</h1>
+      <p>
+        {quote.nights} nights · <strong>${quote.total}</strong>
+      </p>
+      <button type="submit">Reserve</button>
+    </main>
+  );
+}
+EOF
+  put src/lib/stripe.ts <<'EOF'
+export const stripeKey = process.env.STRIPE_SECRET_KEY ?? "";
+
+export function checkoutUrl(bookingId: string): string {
+  return `/api/stripe/checkout?booking=${encodeURIComponent(bookingId)}`;
+}
+EOF
+  put tests/pricing.test.ts <<'EOF'
+import { describe, expect, it } from "vitest";
+import { quoteStay } from "@/lib/pricing";
+
+const cabin = {
+  slug: "sea-ranch-a-frame",
+  name: "Sea Ranch A-Frame",
+  town: "The Sea Ranch",
+  tz: "America/Los_Angeles",
+  photo: "/a-frame.jpg",
+  baseRate: 240,
+  cleaningFee: 95,
+};
+
+describe("quoteStay", () => {
+  it("charges nights, cleaning and service", () => {
+    const q = quoteStay(cabin, new Date("2026-11-02"), new Date("2026-11-05"));
+    expect(q.nights).toBe(3);
+    expect(q.total).toBe(3 * 240 + 95 + 86);
+  });
+});
+EOF
+  commit "Maya Okafor" 50 "feat(checkout): quote on the checkout page"
+  printf '\nexport async function getListing(slug: string): Promise<Listing> {\n  const res = await fetch(`${process.env.API_URL}/listings/${slug}`);\n  return res.json();\n}\n' >>src/lib/listings.ts
+  commit "Theo Lindqvist" 75 "fix(listings): fetch a single listing by slug"
+  printf '\n.checkout {\n  max-width: 32rem;\n  margin: 4rem auto;\n}\n' >>src/app/globals.css
+  commit "Maya Okafor" 98 "style: checkout layout"
+  git push -q -u origin main 2>/dev/null
+  commit_feature_branches
+  # In-progress work the checkout agent is "doing".
+  python3 - <<'EOF'
+import re
+p = "src/lib/pricing.ts"
+s = open(p).read()
+s = s.replace("""export type Quote = {
+  nights: number;
+  total: number;
+};""", """export type LineItem = {
+  kind: "nights" | "cleaning" | "service";
+  label: string;
+  amount: number;
+};
+
+export type Quote = {
+  nights: number;
+  items: LineItem[];
+  total: number;
+};""")
+s = s.replace("""  return { nights, total: nights * rate + listing.cleaningFee + serviceFee };""",
+"""  const items: LineItem[] = [
+    { kind: "nights", label: nightsLabel(nights), amount: nights * rate },
+    { kind: "cleaning", label: "Cleaning fee", amount: listing.cleaningFee },
+    { kind: "service", label: "Service fee", amount: serviceFee },
+  ];
+  return { nights, items, total: sum(items.map((i) => i.amount)) };
+}
+
+function nightsLabel(nights: number): string {
+  return nights === 1 ? "1 night" : `${nights} nights`;
+}
+
+function sum(values: number[]): number {
+  return values.reduce((a, b) => a + b, 0);""")
+open(p, "w").write(s)
+EOF
+  put src/components/PriceBreakdown.tsx <<'EOF'
+import type { Quote } from "@/lib/pricing";
+
+const usd = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" });
+
+export function PriceBreakdown({ quote }: { quote: Quote }) {
+  return (
+    <dl className="breakdown">
+      {quote.items.map((item) => (
+        <div key={item.kind}>
+          <dt>{item.label}</dt>
+          <dd>{usd.format(item.amount)}</dd>
+        </div>
+      ))}
+      <div className="total">
+        <dt>Total</dt>
+        <dd>{usd.format(quote.total)}</dd>
+      </div>
+    </dl>
+  );
+}
+EOF
+}
+
+# Branches the worktree workspaces check out, each pushed and then ahead.
+commit_feature_branches() {
+  git switch -qc feat/stripe-webhooks
+  put src/app/api/bookings/route.ts <<'EOF'
+import { createBooking } from "@/lib/bookings";
+
+export async function POST(req: Request) {
+  const booking = await createBooking(await req.json());
+  return Response.json(booking, { status: 201 });
+}
+EOF
+  commit "Theo Lindqvist" 140 "feat(api): bookings route"
+  git push -q -u origin feat/stripe-webhooks 2>/dev/null
+  printf '\nexport const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET ?? "";\n' >>src/lib/stripe.ts
+  commit "Theo Lindqvist" 190 "chore(stripe): webhook secret env"
+
+  git switch -q main
+  git switch -qc fix/timezone-drift
+  git push -q -u origin fix/timezone-drift 2>/dev/null
+  git switch -q main
+}
+
+seed_ferrous() {
+  init_repo ferrous
+  put Cargo.toml <<'EOF'
+[package]
+name = "ferrous"
+version = "0.6.0"
+edition = "2024"
+description = "A sharded, embeddable in-memory cache"
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+ahash = "0.8"
+parking_lot = "0.12"
+
+[dev-dependencies]
+criterion = "0.7"
+
+[[bench]]
+name = "get_set"
+harness = false
+EOF
+  put README.md <<'EOF'
+# ferrous
+
+A sharded in-memory cache for Rust services that don't want a network hop.
+
+```rust
+let cache = ferrous::Cache::builder().capacity(1 << 20).shards(16).build();
+cache.set("session:42", payload);
+```
+
+LRU by default; LFU and TTL eviction behind `Policy`.
+EOF
+  put .gitignore <<'EOF'
+/target
+EOF
+  put src/lib.rs <<'EOF'
+//! A sharded in-memory cache.
+
+mod lru;
+mod shard;
+mod ttl;
+
+pub use shard::{Cache, CacheBuilder};
+
+/// How a full shard picks what to drop.
+#[derive(Clone, Copy, Debug, Default)]
+pub enum Policy {
+    #[default]
+    Lru,
+    Lfu,
+    Ttl(std::time::Duration),
+}
+EOF
+  put src/shard.rs <<'EOF'
+use std::hash::{BuildHasher, Hash};
+
+use ahash::RandomState;
+use parking_lot::Mutex;
+
+use crate::{Policy, lru::Lru};
+
+pub struct Cache<K, V> {
+    shards: Box<[Mutex<Lru<K, V>>]>,
+    hasher: RandomState,
+}
+
+impl<K: Hash + Eq + Clone, V: Clone> Cache<K, V> {
+    pub fn builder() -> CacheBuilder {
+        CacheBuilder::default()
+    }
+
+    pub fn get(&self, key: &K) -> Option<V> {
+        self.shard(key).lock().get(key).cloned()
+    }
+
+    pub fn set(&self, key: K, value: V) {
+        self.shard(&key).lock().insert(key, value);
+    }
+
+    fn shard(&self, key: &K) -> &Mutex<Lru<K, V>> {
+        let i = self.hasher.hash_one(key) as usize % self.shards.len();
+        &self.shards[i]
+    }
+}
+
+#[derive(Default)]
+pub struct CacheBuilder {
+    capacity: usize,
+    shards: usize,
+    policy: Policy,
+}
+EOF
+  put src/lru.rs <<'EOF'
+use std::collections::HashMap;
+use std::hash::Hash;
+
+pub struct Lru<K, V> {
+    map: HashMap<K, (V, u64)>,
+    clock: u64,
+    capacity: usize,
+}
+
+impl<K: Hash + Eq + Clone, V> Lru<K, V> {
+    pub fn get(&mut self, key: &K) -> Option<&V> {
+        self.clock += 1;
+        let entry = self.map.get_mut(key)?;
+        entry.1 = self.clock;
+        Some(&entry.0)
+    }
+
+    pub fn insert(&mut self, key: K, value: V) {
+        if self.map.len() >= self.capacity {
+            self.evict_oldest();
+        }
+        self.clock += 1;
+        self.map.insert(key, (value, self.clock));
+    }
+
+    fn evict_oldest(&mut self) {
+        if let Some(k) = self.map.iter().min_by_key(|(_, (_, t))| *t).map(|(k, _)| k.clone()) {
+            self.map.remove(&k);
+        }
+    }
+}
+EOF
+  commit "Priya Raman" 2 "init: sharded lru cache"
+  put src/ttl.rs <<'EOF'
+use std::time::{Duration, Instant};
+
+pub struct Expiring<V> {
+    pub value: V,
+    pub deadline: Instant,
+}
+
+impl<V> Expiring<V> {
+    pub fn new(value: V, ttl: Duration) -> Self {
+        Self { value, deadline: Instant::now() + ttl }
+    }
+
+    pub fn is_live(&self) -> bool {
+        Instant::now() < self.deadline
+    }
+}
+EOF
+  commit "Priya Raman" 20 "feat: ttl entries"
+  put benches/get_set.rs <<'EOF'
+use criterion::{Criterion, criterion_group, criterion_main};
+use ferrous::Cache;
+
+fn get_set(c: &mut Criterion) {
+    let cache = Cache::builder().build();
+    c.bench_function("set/small", |b| b.iter(|| cache.set(1u64, [0u8; 64])));
+    c.bench_function("get/hot", |b| b.iter(|| cache.get(&1u64)));
+}
+
+criterion_group!(benches, get_set);
+criterion_main!(benches);
+EOF
+  commit "Sam Achterberg" 44 "bench: criterion get/set"
+  git push -q -u origin main 2>/dev/null
+
+  git switch -qc perf/arena-alloc
+  git push -q -u origin perf/arena-alloc 2>/dev/null
+  put src/arena.rs <<'EOF'
+//! Slab arena for cache values: one allocation per size class instead of
+//! one per entry. Values over 64 KiB go to the global allocator.
+
+pub const MAX_SLOT: usize = 64 * 1024;
+
+pub struct Arena {
+    classes: Vec<SizeClass>,
+}
+
+struct SizeClass {
+    slot: usize,
+    chunks: Vec<Box<[u8]>>,
+    free: Vec<u32>,
+}
+
+impl Arena {
+    pub fn new() -> Self {
+        let classes = (6..=16).map(|p| SizeClass::new(1 << p)).collect();
+        Self { classes }
+    }
+
+    pub fn class_for(&self, len: usize) -> Option<usize> {
+        (len <= MAX_SLOT).then(|| len.next_power_of_two().trailing_zeros().saturating_sub(6) as usize)
+    }
+}
+
+impl SizeClass {
+    fn new(slot: usize) -> Self {
+        Self { slot, chunks: Vec::new(), free: Vec::new() }
+    }
+}
+EOF
+  perl -pi -e 's|^mod lru;|mod arena;\nmod lru;|' src/lib.rs
+  commit "Sam Achterberg" 150 "perf: slab arena for values"
+  printf '\n#[cfg(test)]\nmod tests {\n    #[test]\n    fn reuses_freed_slots() {}\n}\n' >>src/arena.rs
+  commit "Sam Achterberg" 171 "test: arena slot reuse"
+
+  # Someone else pushed to the branch meanwhile: behind by one.
+  local other="$demo/tmp-ferrous"
+  rm -rf "$other"
+  git clone -q -b perf/arena-alloc "$remotes/ferrous.git" "$other"
+  (cd "$other" && printf '\n## Benchmarks\n\n`cargo bench --bench get_set`\n' >>README.md && commit "Priya Raman" 180 "docs: how to run the benches" && git push -q 2>/dev/null)
+  rm -rf "$other"
+  git fetch -q
+}
+
+seed_atlas() {
+  init_repo atlas-docs
+  put package.json <<'EOF'
+{
+  "name": "atlas-docs",
+  "private": true,
+  "type": "module",
+  "scripts": { "dev": "astro dev", "build": "astro build" },
+  "dependencies": { "astro": "^5.14.4", "@astrojs/starlight": "^0.36.0" }
+}
+EOF
+  put astro.config.mjs <<'EOF'
+import { defineConfig } from "astro/config";
+import starlight from "@astrojs/starlight";
+
+export default defineConfig({
+  integrations: [
+    starlight({
+      title: "ferrous",
+      sidebar: [
+        { label: "Guides", autogenerate: { directory: "guides" } },
+        { label: "Reference", autogenerate: { directory: "reference" } },
+      ],
+    }),
+  ],
+});
+EOF
+  put src/content/docs/index.md <<'EOF'
+---
+title: ferrous
+description: A sharded, embeddable in-memory cache for Rust.
+---
+
+ferrous keeps hot data in your process, split across shards so readers on
+different cores don't fight over one lock.
+EOF
+  put src/content/docs/guides/getting-started.md <<'EOF'
+---
+title: Getting started
+---
+
+Add the crate, build a cache once at startup, and share it behind an `Arc`.
+
+```rust
+let cache = ferrous::Cache::builder().capacity(1 << 20).build();
+```
+EOF
+  commit "Priya Raman" 30 "docs: starlight site"
+  put src/content/docs/guides/sharding.md <<'EOF'
+---
+title: Sharding
+---
+
+Each key hashes to one shard, and each shard has its own lock. More shards
+means less contention and slightly worse eviction accuracy.
+EOF
+  put src/content/docs/reference/config.md <<'EOF'
+---
+title: Configuration
+---
+
+| Option     | Default | Meaning                          |
+| ---------- | ------- | -------------------------------- |
+| `capacity` | 65536   | Entries across all shards        |
+| `shards`   | 16      | Independent locks                |
+| `policy`   | `Lru`   | What a full shard drops first    |
+EOF
+  commit "Jules Moreau" 60 "docs: sharding guide"
+  git push -q -u origin main 2>/dev/null
+  git switch -qc docs/eviction-guide
+  put src/content/docs/guides/eviction.md <<'EOF'
+---
+title: Eviction policies
+---
+
+When a shard is full, ferrous has to drop something. Which entry goes is
+the policy's job.
+
+## LRU
+
+The default. Drops the entry read least recently. Good when recent reads
+predict the next ones, which is most request caches.
+
+```rust
+Cache::builder().policy(Policy::Lru)
+```
+
+## LFU
+
+Drops the entry read least often. Better for skewed workloads where a
+small set of keys stays hot for hours.
+EOF
+}
+
+for w in $(herdr workspace list | jq -r '.result.workspaces[].workspace_id'); do
+  herdr workspace close "$w" --group >/dev/null 2>&1 || true # worktrees go with their repo
+done
+rm -rf "${demo:?}"
+mkdir -p "$projects"
+( seed_tidepool )
+( seed_ferrous )
+( seed_atlas )
+unset GIT_CONFIG_GLOBAL GIT_CONFIG_NOSYSTEM
+
+# --- herdr session ---------------------------------------------------------
+
+
+pane_of() { jq -r "$1"; }
+paint() { herdr pane run "$1" "exec $show $here/demo/$2.txt" >/dev/null; }
+agent() { # agent <pane> <kind> <name> <state> <title>
+  herdr pane report-agent "$1" --source demo --agent "$2" --state "$4" >/dev/null
+  herdr pane report-metadata "$1" --source demo --agent "$2" --title "$5" >/dev/null
+  herdr agent rename "$1" "$3" >/dev/null
+}
+split() { herdr pane split "$1" --direction "$2" --ratio "$3" --cwd "$4" --no-focus | pane_of .result.pane.pane_id; }
+settle() { # let the shell reach its prompt before typing into it
+  herdr pane wait-output "$1" --match "→" --timeout 5000 >/dev/null 2>&1 || true
+}
+
+worktree() { # worktree <dir> <branch> <label>: a linked workspace on <branch>
+  git -C "$tp" worktree add -q "$projects/$1" "$2"
+  herdr worktree open --cwd "$tp" --path "$projects/$1" --label "$3" --no-focus --trust-repository
+}
+
+tp="$projects/tidepool"
+ws=$(herdr workspace create --cwd "$tp" --label tidepool --no-focus)
+tp_ws=$(echo "$ws" | pane_of .result.workspace.workspace_id)
+checkout=$(echo "$ws" | pane_of .result.root_pane.pane_id)
+herdr tab rename "$(echo "$ws" | pane_of .result.tab.tab_id)" checkout >/dev/null
+server=$(split "$checkout" right 0.62 "$tp")
+shell=$(split "$server" down 0.55 "$tp")
+for p in "$checkout" "$server" "$shell"; do settle "$p"; done
+paint "$checkout" checkout
+agent "$checkout" claude checkout working "Itemize checkout total"
+paint "$server" tidepool-dev
+herdr pane rename "$server" "pnpm dev" >/dev/null
+herdr pane run "$shell" "conda deactivate 2>/dev/null; clear; git status --short" >/dev/null
+
+wt=$(worktree tidepool-webhooks feat/stripe-webhooks stripe-webhooks)
+webhooks=$(echo "$wt" | jq -r '[.. | objects | select(has("pane_id")) | .pane_id][0]')
+settle "$webhooks"
+paint "$webhooks" webhooks
+agent "$webhooks" codex webhooks blocked "Stripe webhook route"
+
+wt=$(worktree tidepool-tz fix/timezone-drift timezone-drift)
+tz=$(echo "$wt" | jq -r '[.. | objects | select(has("pane_id")) | .pane_id][0]')
+settle "$tz"
+paint "$tz" tz-fix
+perl -pi -e 's|format\(date, "yyyy-MM-dd"\)|formatInTimeZone(date, tz, "yyyy-MM-dd")|; s|toDateKey\(date: Date\)|toDateKey(date: Date, tz: string)|' "$projects/tidepool-tz/src/lib/dates.ts"
+agent "$tz" claude tz-fix working "Timezone date keys"
+herdr pane report-agent "$tz" --source demo --agent claude --state idle >/dev/null
+
+fr="$projects/ferrous"
+git -C "$fr" switch -q perf/arena-alloc
+ws=$(herdr workspace create --cwd "$fr" --label ferrous --no-focus)
+arena=$(echo "$ws" | pane_of .result.root_pane.pane_id)
+herdr tab rename "$(echo "$ws" | pane_of .result.tab.tab_id)" bench >/dev/null
+tests=$(split "$arena" right 0.58 "$fr")
+settle "$arena"; settle "$tests"
+paint "$arena" arena
+agent "$arena" claude arena-bench idle "Arena allocator benchmarks"
+paint "$tests" ferrous-test
+herdr pane rename "$tests" "nextest" >/dev/null
+
+at="$projects/atlas-docs"
+ws=$(herdr workspace create --cwd "$at" --label atlas-docs --no-focus)
+docs=$(echo "$ws" | pane_of .result.root_pane.pane_id)
+herdr tab rename "$(echo "$ws" | pane_of .result.tab.tab_id)" guides >/dev/null
+astro=$(split "$docs" down 0.7 "$at")
+settle "$docs"; settle "$astro"
+paint "$docs" docs
+agent "$docs" claude docs working "Eviction policies guide"
+paint "$astro" atlas-dev
+herdr pane rename "$astro" "astro dev" >/dev/null
+
+herdr workspace focus "$tp_ws" >/dev/null
+herdr agent focus checkout >/dev/null
+
+echo "demo-scene: ready in session $HERDR_SESSION"
+echo "  RT_SESSION=$HERDR_SESSION scripts/dev-run cargo run -p app"

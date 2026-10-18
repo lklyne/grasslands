@@ -1,0 +1,39 @@
+{d}>{0} Split the checkout total into line items and show the cleaning fee
+  separately. Keep the existing pricing tests green.
+
+{w}●{0} I'll read the pricing logic and the checkout page first.
+
+{g}●{0} {B}Read{0}(src/lib/pricing.ts)
+  {d}⎿  Read 24 lines{0}
+{g}●{0} {B}Read{0}(src/app/checkout/page.tsx)
+  {d}⎿  Read 21 lines{0}
+
+{w}●{0} quoteStay() folds everything into one number, so the page can't
+  show what the guest is paying for. I'll have it return line items
+  and render them in a new PriceBreakdown component.
+
+{g}●{0} {B}Update{0}(src/lib/pricing.ts)
+  {d}⎿  Updated src/lib/pricing.ts with 18 additions and 6 removals{0}
+     {d}40{0}   const nights = differenceInNights(checkIn, checkOut);
+     {d}41{0}   const rate = nightlyRate(listing, checkIn);
+     {d}42{0} {R}-  return nights * rate + listing.cleaningFee + serviceFee;{0}
+     {d}42{0} {G}+  const items: LineItem[] = [{0}
+     {d}43{0} {G}+    { kind: "nights", label: nightsLabel(nights), amount: nights * rate },{0}
+     {d}44{0} {G}+    { kind: "cleaning", label: "Cleaning fee", amount: listing.cleaningFee },{0}
+     {d}45{0} {G}+    { kind: "service", label: "Service fee", amount: serviceFee },{0}
+     {d}46{0} {G}+  ];{0}
+     {d}47{0} {G}+  return { items, total: sum(items.map((i) => i.amount)) };{0}
+
+{g}●{0} {B}Bash{0}(pnpm vitest run tests/pricing.test.ts)
+  {d}⎿{0}  {g}✓{0} tests/pricing.test.ts {d}(14 tests){0} 38ms
+     {B}Test Files{0}  {g}1 passed{0} (1)
+
+{g}●{0} {B}Write{0}(src/components/PriceBreakdown.tsx)
+  {d}⎿  Wrote 41 lines to src/components/PriceBreakdown.tsx{0}
+
+{m}✶{0} {m}Wiring PriceBreakdown into checkout…{0} {d}(1m 52s · ↓ 3.1k tokens · esc to interrupt){0}
+
+{d}────────────────────────────────────────────────────────────────────────{0}
+{d}>{0}
+{d}────────────────────────────────────────────────────────────────────────{0}
+  {d}⏵⏵ accept edits on{0}
