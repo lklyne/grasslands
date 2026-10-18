@@ -7,7 +7,7 @@ Load the `rust-best-practices` skill before writing Rust.
 ## Important codebase conventions
 - For all UI related tasks, look at GPUI https://gpui.rs/ and GPUI-KIT https://gpui-kit.com/ use base primitives unless explicitly asked to build custom
 - Use built in theme colors, type ramp, and component conventions unless explicitly requested
-- Follow conventions to add sounds to new features when relavent
+- Follow conventions to add sounds to new features when relevant
 
 ## herdr
 
