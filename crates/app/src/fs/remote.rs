@@ -200,6 +200,22 @@ pub(super) fn local_run(argv: &[&str], cwd: Option<&Path>) -> io::Result<ExecOut
     })
 }
 
+/// Runs commands on the test machine over plain ssh, the way `RemoteFs`
+/// does over its master: `GRASSLANDS_SSH_TEST_TARGET=ssh://user@host:port`.
+#[cfg(test)]
+pub(super) fn ssh_run(argv: &[&str], cwd: Option<&Path>) -> io::Result<ExecOutput> {
+    let target = std::env::var("GRASSLANDS_SSH_TEST_TARGET").map_err(io::Error::other)?;
+    let target = target.trim_start_matches("ssh://");
+    let (host, port) = target.rsplit_once(':').unwrap_or((target, "22"));
+    let quote = |word: &str| format!("'{}'", word.replace('\'', r"'\''"));
+    let mut line = argv.iter().map(|w| quote(w)).collect::<Vec<_>>().join(" ");
+    if let Some(cwd) = cwd {
+        line = format!("cd {} && {line}", quote(&cwd.to_string_lossy()));
+    }
+    let ssh = ["ssh", "-o", "BatchMode=yes", "-p", port, host, &line];
+    local_run(&ssh, None)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

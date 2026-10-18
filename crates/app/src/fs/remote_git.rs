@@ -348,4 +348,55 @@ mod tests {
             )
         );
     }
+
+    /// The test machine's `~/api`: branch `feature` off `main`,
+    /// `src/main.rs` modified, `notes.txt` untracked, `target/` ignored.
+    #[test]
+    #[ignore = "needs GRASSLANDS_SSH_TEST_TARGET and the dockerbox container"]
+    fn remote_api_repo_should_read_like_local() {
+        use super::super::remote::{filter_listing, search, ssh_run};
+        let api = Path::new("/home/lyle/api");
+        let summary = summary(&ssh_run, api).expect("a summary");
+        let files: Vec<_> = summary.files.iter().map(|(p, c)| (p.clone(), *c)).collect();
+        assert_eq!(
+            (summary.branch.as_deref(), summary.parent.as_deref(), files),
+            (
+                Some("feature"),
+                Some("main"),
+                vec![
+                    (api.join("notes.txt"), FileChange::Added),
+                    (api.join("src/main.rs"), FileChange::Modified),
+                ]
+            )
+        );
+        let listing = vec![
+            herdr_client::RemoteEntry {
+                name: "target".into(),
+                is_dir: true,
+                is_symlink: false,
+                len: 0,
+                modified: None,
+            },
+            herdr_client::RemoteEntry {
+                name: "notes.txt".into(),
+                is_dir: false,
+                is_symlink: false,
+                len: 0,
+                modified: None,
+            },
+        ];
+        let shown: Vec<_> = filter_listing(&ssh_run, api, listing)
+            .into_iter()
+            .map(|e| e.name)
+            .collect();
+        assert_eq!(shown, vec!["notes.txt"]);
+        let found = search(&ssh_run, api, "main", &std::sync::atomic::AtomicBool::new(false));
+        assert!(found.names.iter().any(|h| h.relative == "src/main.rs"), "{found:?}");
+        assert!(patch(&ssh_run, api).unwrap().contains("diff --git a/src/main.rs"));
+        assert_eq!(
+            resolve_root(&ssh_run, &api.join("src")),
+            Some(api.to_path_buf())
+        );
+        assert_eq!(head_branch(&ssh_run, api), Some(Some("feature".into())));
+    }
 }
