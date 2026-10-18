@@ -1,10 +1,14 @@
-//! The file tree, rooted at the active worktree, with .gitignore respected.
+//! The file tree, rooted at the active worktree on its machine (through
+//! `crate::fs::Fs`), with .gitignore respected.
 //!
 //! Folders are listed lazily, one level when first expanded, on the
-//! background executor. A recursive watcher on the root re-lists any loaded
-//! folder whose contents change, so files agents create, edit and delete show
-//! up live. Clicking a file sends `OpenFile`; the context menu creates,
-//! renames, trashes and reveals. Rows drag onto folders to move them. The
+//! background executor. On Local a recursive watcher on the root re-lists any
+//! loaded folder whose contents change, so files agents create, edit and
+//! delete show up live; a saved machine has no watcher, so its shown folders
+//! and footer are re-read every few seconds while the window is active, and
+//! at once when it becomes active. Clicking a file sends `OpenFile`; the
+//! context menu creates, renames, removes (Trash on Local, a confirmed
+//! permanent delete elsewhere) and reveals. Rows drag onto folders to move them. The
 //! search box above swaps the tree for name and content matches. A footer
 //! shows the branch, its parent and the lines changed since (see
 //! `crate::changes`); clicking it opens the Changes tab. Rows changed on the
@@ -12,7 +16,7 @@
 //! folders holding a change yellow.
 
 mod model;
-mod search;
+pub(crate) mod search;
 mod watch;
 
 #[cfg(test)]
@@ -20,6 +24,7 @@ mod tests;
 
 pub use search::Results as SearchResults;
 
+use std::io;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
@@ -43,7 +48,10 @@ use self::model::FileModel;
 use self::watch::RootWatcher;
 use crate::actions::{OpenChanges, OpenFile, OpenFileAt};
 use crate::changes::git;
-use crate::state::{AppEvent, AppState};
+use crate::chrome::Confirmation;
+use crate::fs::{Fs, Removal};
+use crate::herdr::MachineStatus;
+use crate::state::{ActiveRoot, AppEvent, AppState, MachineId};
 
 /// Watcher events arriving within this window are folded into one re-list.
 const FS_DEBOUNCE: Duration = Duration::from_millis(75);
@@ -53,6 +61,8 @@ const SEARCH_DEBOUNCE: Duration = Duration::from_millis(120);
 /// (5x), for commits in a linked worktree's git dir the watcher can't see.
 const GIT_THROTTLE: Duration = Duration::from_secs(1);
 const GIT_REFRESH: Duration = Duration::from_secs(5);
+/// How often a saved machine's shown folders and footer are re-read.
+const REMOTE_POLL: Duration = Duration::from_secs(3);
 const INDENT: f32 = 12.;
 const ROW_HEIGHT: Pixels = px(24.);
 /// The chevron's column; files leave it empty so names line up.
@@ -67,6 +77,8 @@ pub struct FileTree {
     state: Entity<AppState>,
     tree: Entity<TreeState>,
     model: Option<FileModel>,
+    /// The machine the root is on.
+    machine: MachineId,
     watcher: Option<RootWatcher>,
     fs_changes: async_channel::Sender<Vec<PathBuf>>,
     focus: FocusHandle,
@@ -79,9 +91,10 @@ pub struct FileTree {
     git_reading: Option<Task<()>>,
     /// Something changed while `git_reading`; read again after it.
     git_stale: bool,
-    _subscriptions: [Subscription; 3],
+    _subscriptions: [Subscription; 4],
     _fs_task: Task<()>,
     _git_timer: Task<()>,
+    _remote_poll: Task<()>,
 }
 
 /// A file or folder being dragged to another folder.
@@ -112,7 +125,7 @@ impl FileTree {
         let query = cx.new(|cx| InputState::new(window, cx).placeholder("Search files"));
         let subscriptions = [
             cx.subscribe(&state, |this, state, event, cx| match event {
-                AppEvent::ActiveWorktreeChanged(root) => this.set_root(root.clone(), cx),
+                AppEvent::ActiveRootChanged(root) => this.set_root(root.clone(), cx),
                 // The remote placeholder names the selected machine.
                 AppEvent::MachineSelected(_) => cx.notify(),
                 AppEvent::MachinesChanged if !state.read(cx).selected().is_local() => {
@@ -121,6 +134,11 @@ impl FileTree {
                 _ => {}
             }),
             cx.subscribe(&tree, |this, _, event, cx| this.on_tree_event(event, cx)),
+            cx.observe_window_activation(window, |this, window, cx| {
+                if window.is_window_active() {
+                    this.poll(cx);
+                }
+            }),
             cx.subscribe(&query, |this, _, event: &InputEvent, cx| {
                 if matches!(event, InputEvent::Change) {
                     this.search(cx);
@@ -145,16 +163,35 @@ impl FileTree {
         let git_timer = cx.spawn(async move |this, cx| {
             loop {
                 cx.background_executor().timer(GIT_REFRESH).await;
-                if this.update(cx, |this, cx| this.refresh_git(cx)).is_err() {
+                let refreshed = this.update(cx, |this, cx| {
+                    if this.machine.is_local() {
+                        this.refresh_git(cx);
+                    }
+                });
+                if refreshed.is_err() {
                     break;
                 }
             }
         });
-        let root = state.read(cx).active_worktree().cloned();
+        let remote_poll = cx.spawn_in(window, async move |this, cx| {
+            loop {
+                cx.background_executor().timer(REMOTE_POLL).await;
+                let polled = this.update_in(cx, |this, window, cx| {
+                    if window.is_window_active() {
+                        this.poll(cx);
+                    }
+                });
+                if polled.is_err() {
+                    break;
+                }
+            }
+        });
+        let root = state.read(cx).active_root();
         let mut this = Self {
             state,
             tree,
             model: None,
+            machine: MachineId::Local,
             watcher: None,
             fs_changes,
             focus: cx.focus_handle(),
@@ -167,6 +204,7 @@ impl FileTree {
             _subscriptions: subscriptions,
             _fs_task: fs_task,
             _git_timer: git_timer,
+            _remote_poll: remote_poll,
         };
         this.set_root(root, cx);
         this
@@ -176,16 +214,27 @@ impl FileTree {
         self.model.as_ref().map(FileModel::root)
     }
 
-    fn set_root(&mut self, root: Option<PathBuf>, cx: &mut Context<Self>) {
-        if self.root() == root.as_deref() {
+    /// The root's files; `None` while its machine is offline.
+    fn fs(&self, cx: &App) -> Option<Fs> {
+        self.state.read(cx).fs_for(&self.machine)
+    }
+
+    fn set_root(&mut self, root: Option<ActiveRoot>, cx: &mut Context<Self>) {
+        let same_machine = root.as_ref().is_none_or(|r| r.machine == self.machine);
+        if same_machine && self.root() == root.as_ref().map(|r| r.path.as_path()) {
             return;
         }
         self.watcher = None;
+        let root = root.map(|root| {
+            self.machine = root.machine;
+            root.path
+        });
         self.model = root.map(FileModel::new);
         if let Some(root) = self.root().map(Path::to_path_buf) {
             // GPUI's test scheduler rejects wakeups from the watcher's thread;
             // tests call `on_fs_changes` directly and test the watcher alone.
-            if !cfg!(test) {
+            // Saved machines are polled instead.
+            if !cfg!(test) && self.machine.is_local() {
                 self.watcher = RootWatcher::new(&root, self.fs_changes.clone())
                     .inspect_err(|error| {
                         log::warn!("files: not watching {}: {error}", root.display());
@@ -200,6 +249,22 @@ impl FileTree {
         self.refresh_git(cx);
     }
 
+    /// Re-reads a saved machine's shown folders and footer, which nothing
+    /// watches. Local's watcher covers it there.
+    fn poll(&mut self, cx: &mut Context<Self>) {
+        if self.machine.is_local() {
+            return;
+        }
+        let Some(model) = &self.model else { return };
+        self.load(model.shown_dirs(), cx);
+        self.refresh_git(cx);
+    }
+
+    /// Whether `root` on `machine` is still the tree's root.
+    fn is_root(&self, machine: &MachineId, root: &Path) -> bool {
+        &self.machine == machine && self.root() == Some(root)
+    }
+
     /// Re-reads the git footer on the background executor, at most once per
     /// `GIT_THROTTLE`.
     fn refresh_git(&mut self, cx: &mut Context<Self>) {
@@ -207,20 +272,21 @@ impl FileTree {
             self.git_stale = true;
             return;
         }
-        let Some(root) = self.root().map(Path::to_path_buf) else {
+        let (Some(root), Some(fs)) = (self.root().map(Path::to_path_buf), self.fs(cx)) else {
             return;
         };
+        let machine = self.machine.clone();
         self.git_reading = Some(cx.spawn(async move |this, cx| {
             let summary = cx
                 .background_executor()
                 .spawn({
                     let root = root.clone();
-                    async move { git::read(&root) }
+                    async move { fs.git_summary(&root) }
                 })
                 .await;
             let _ = this.update(cx, |this, cx| {
                 // A read for a root we have since left.
-                if this.root() == Some(root.as_path()) && this.git != summary {
+                if this.is_root(&machine, &root) && this.git != summary {
                     this.git = summary;
                     cx.notify();
                 }
@@ -242,11 +308,12 @@ impl FileTree {
             cancel.store(true, Ordering::Relaxed);
         }
         let query = self.query.read(cx).value().trim().to_owned();
-        let Some(root) = self
-            .root()
-            .map(Path::to_path_buf)
-            .filter(|_| !query.is_empty())
-        else {
+        let (Some(root), Some(fs)) = (
+            self.root()
+                .map(Path::to_path_buf)
+                .filter(|_| !query.is_empty()),
+            self.fs(cx),
+        ) else {
             self.results = None;
             cx.notify();
             return;
@@ -259,7 +326,7 @@ impl FileTree {
                 let results = cx
                     .background_executor()
                     .spawn(async move {
-                        let results = search::search(&root, &query, &cancel);
+                        let results = fs.search(&root, &query, &cancel);
                         (!cancel.load(Ordering::Relaxed)).then_some(results)
                     })
                     .await;
@@ -277,25 +344,31 @@ impl FileTree {
 
     /// Lists `dirs` on the background executor, then updates the tree.
     fn load(&self, dirs: Vec<PathBuf>, cx: &mut Context<Self>) {
-        let Some(root) = self.root().map(Path::to_path_buf) else {
+        let (Some(root), Some(fs)) = (self.root().map(Path::to_path_buf), self.fs(cx)) else {
             return;
         };
         if dirs.is_empty() {
             return;
         }
+        let machine = self.machine.clone();
         cx.spawn(async move |this, cx| {
             let listings = cx
                 .background_executor()
                 .spawn(async move {
                     dirs.into_iter()
                         .map(|dir| {
-                            let listing = model::read_dir(&dir);
+                            let listing = fs.read_dir(&dir);
                             (dir, listing)
                         })
                         .collect::<Vec<_>>()
                 })
                 .await;
-            let _ = this.update(cx, |this, cx| this.apply_listings(&root, listings, cx));
+            let _ = this.update(cx, |this, cx| {
+                // Results for a root we have since left.
+                if this.is_root(&machine, &root) {
+                    this.apply_listings(&root, listings, cx);
+                }
+            });
         })
         .detach();
     }
@@ -303,19 +376,24 @@ impl FileTree {
     fn apply_listings(
         &mut self,
         root: &Path,
-        listings: Vec<(PathBuf, std::io::Result<Vec<model::Entry>>)>,
+        listings: Vec<(PathBuf, io::Result<Vec<model::Entry>>)>,
         cx: &mut Context<Self>,
     ) {
-        // Results for a root we have since left.
-        let Some(model) = self.model.as_mut().filter(|m| m.root() == root) else {
+        let Some(model) = self.model.as_mut() else {
             return;
         };
+        let mut failed = None;
         for (dir, listing) in listings {
             match listing {
                 Ok(entries) => model.set_listing(dir, entries),
+                // A dropped connection isn't an empty folder: keep what's shown.
+                Err(error) if is_connection_error(&error) => failed = Some(error),
                 Err(_) if dir == root => model.set_listing(dir, Vec::new()),
                 Err(_) => model.forget(&dir),
             }
+        }
+        if let Some(error) = failed {
+            tracing::warn!("files: listing on {}: {error}", self.machine);
         }
         self.rebuild(cx);
     }
@@ -364,8 +442,38 @@ impl FileTree {
         self.refresh_git(cx);
     }
 
-    // File operations. Each re-lists the affected folder right away rather than
-    // waiting for the watcher.
+    // File operations. Each runs on the background executor against the
+    // root's file system, then re-lists the affected folder right away
+    // rather than waiting for the watcher or the poll.
+
+    /// Runs `op` on the root's files off the main thread, then `done` here;
+    /// a failure toasts `failed`'s wording.
+    fn run_fs<T: Send + 'static>(
+        &self,
+        op: impl FnOnce(&Fs) -> io::Result<T> + Send + 'static,
+        done: impl FnOnce(&mut Self, T, &mut Window, &mut Context<Self>) + 'static,
+        failed: impl FnOnce(io::Error) -> String + 'static,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(fs) = self.fs(cx) else {
+            let label = self.state.read(cx).machine(&self.machine).map_or_else(
+                || self.machine.to_string(),
+                |m| m.label().to_owned(),
+            );
+            return error(format!("{label} is offline"), window, cx);
+        };
+        let task = cx.background_executor().spawn(async move { op(&fs) });
+        cx.spawn_in(window, async move |this, cx| {
+            let result = task.await;
+            this.update_in(cx, |this, window, cx| match result {
+                Ok(value) => done(this, value, window, cx),
+                Err(err) => error(failed(err), window, cx),
+            })
+            .ok();
+        })
+        .detach();
+    }
 
     fn create(
         &mut self,
@@ -379,45 +487,43 @@ impl FileTree {
             Ok(name) => dir.join(name),
             Err(message) => return error(message, window, cx),
         };
-        let created = if folder {
-            std::fs::create_dir(&path)
-        } else {
-            std::fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(&path)
-                .map(drop)
-        };
-        if let Err(err) = created {
-            return error(
-                format!("Could not create {}: {err}", path.display()),
-                window,
-                cx,
-            );
-        }
-        if let Some(model) = self.model.as_mut()
-            && model.root() != dir
-        {
-            model.set_expanded(&dir, true);
-        }
-        crate::sounds::play(cues::Cue::Tap, crate::sounds::subtle());
-        self.load(vec![dir], cx);
-        if !folder {
-            // Called from the name prompt, which lives in the Kit's dialog layer,
-            // outside `Workspace`: an action dispatched there never reaches the
-            // editor. Once the dialog has closed, focus the tree (inside
-            // `Workspace`) and dispatch from there.
-            cx.defer_in(window, move |this, window, cx| {
-                this.tree.update(cx, |tree, cx| tree.focus(window, cx));
-                window.dispatch_action(
-                    Box::new(OpenFile {
-                        path,
-                        machine: crate::state::MachineId::Local,
-                    }),
-                    cx,
-                );
-            });
-        }
+        let shown = path.display().to_string();
+        self.run_fs(
+            {
+                let path = path.clone();
+                move |fs| {
+                    if folder {
+                        fs.create_dir(&path)
+                    } else {
+                        fs.create_file(&path)
+                    }
+                }
+            },
+            move |this, (), window, cx| {
+                if let Some(model) = this.model.as_mut()
+                    && model.root() != dir
+                {
+                    model.set_expanded(&dir, true);
+                }
+                crate::sounds::play(cues::Cue::Tap, crate::sounds::subtle());
+                this.load(vec![dir], cx);
+                if folder {
+                    return;
+                }
+                // Called from the name prompt, which lives in the Kit's dialog
+                // layer, outside `Workspace`: an action dispatched there never
+                // reaches the editor. Focus the tree (inside `Workspace`) and
+                // dispatch from there.
+                let machine = this.machine.clone();
+                cx.defer_in(window, move |this, window, cx| {
+                    this.tree.update(cx, |tree, cx| tree.focus(window, cx));
+                    window.dispatch_action(Box::new(OpenFile { path, machine }), cx);
+                });
+            },
+            move |err| format!("Could not create {shown}: {err}"),
+            window,
+            cx,
+        );
     }
 
     fn rename(&mut self, path: &Path, name: &str, window: &mut Window, cx: &mut Context<Self>) {
@@ -428,22 +534,21 @@ impl FileTree {
         if target == path {
             return;
         }
-        if target.exists() {
-            return error(format!("{} already exists", target.display()), window, cx);
-        }
-        if let Err(err) = std::fs::rename(path, &target) {
-            return error(
-                format!("Could not rename {}: {err}", path.display()),
-                window,
-                cx,
-            );
-        }
-        crate::sounds::play(cues::Cue::Tap, crate::sounds::subtle());
         let from = path.to_path_buf();
-        self.state
-            .update(cx, |state, cx| state.file_moved(from, target, cx));
-        self.load(
-            path.parent().map(Path::to_path_buf).into_iter().collect(),
+        let shown = (from.display().to_string(), target.display().to_string());
+        self.run_fs(
+            {
+                let (from, target) = (from.clone(), target.clone());
+                move |fs| fs.rename(&from, &target)
+            },
+            move |this, (), _, cx| {
+                crate::sounds::play(cues::Cue::Tap, crate::sounds::subtle());
+                let parent = from.parent().map(Path::to_path_buf);
+                this.moved(from, target, cx);
+                this.load(parent.into_iter().collect(), cx);
+            },
+            move |err| move_error("rename", &shown.0, &shown.1, &err),
+            window,
             cx,
         );
     }
@@ -461,47 +566,105 @@ impl FileTree {
                 cx,
             );
         }
+        let (from, dir) = (path.to_path_buf(), dir.to_path_buf());
         let target = dir.join(name);
-        if target.exists() {
-            return error(format!("{} already exists", target.display()), window, cx);
-        }
-        if let Err(err) = std::fs::rename(path, &target) {
-            return error(
-                format!("Could not move {}: {err}", path.display()),
-                window,
-                cx,
-            );
-        }
-        crate::sounds::play(cues::Cue::Tap, crate::sounds::strong());
-        self.state.update(cx, |state, cx| {
-            state.file_moved(path.to_path_buf(), target, cx)
-        });
-        if let Some(model) = self.model.as_mut()
-            && model.root() != dir
-        {
-            model.set_expanded(dir, true);
-        }
-        let dirs = path.parent().into_iter().chain([dir]);
-        self.load(dirs.map(Path::to_path_buf).collect(), cx);
-    }
-
-    /// Moves to the Trash rather than deleting, so a slip is recoverable.
-    fn trash(&mut self, path: &Path, window: &mut Window, cx: &mut Context<Self>) {
-        if let Err(err) = trash::delete(path) {
-            return error(
-                format!("Could not move {} to the Trash: {err}", path.display()),
-                window,
-                cx,
-            );
-        }
-        crate::sounds::play(cues::Cue::Close, crate::sounds::strong());
-        let trashed = path.to_path_buf();
-        self.state
-            .update(cx, |state, cx| state.file_trashed(trashed, cx));
-        self.load(
-            path.parent().map(Path::to_path_buf).into_iter().collect(),
+        let shown = (from.display().to_string(), target.display().to_string());
+        self.run_fs(
+            {
+                let (from, target) = (from.clone(), target.clone());
+                move |fs| fs.rename(&from, &target)
+            },
+            move |this, (), _, cx| {
+                crate::sounds::play(cues::Cue::Tap, crate::sounds::strong());
+                let dirs: Vec<PathBuf> = from.parent().into_iter().chain([dir.as_path()]).map(Path::to_path_buf).collect();
+                this.moved(from, target, cx);
+                if let Some(model) = this.model.as_mut()
+                    && model.root() != dir
+                {
+                    model.set_expanded(&dir, true);
+                }
+                this.load(dirs, cx);
+            },
+            move |err| move_error("move", &shown.0, &shown.1, &err),
+            window,
             cx,
         );
+    }
+
+    /// Tells open editor tabs on Local to follow a move. The editor's
+    /// events don't name a machine yet, so a saved machine's moves aren't
+    /// announced.
+    fn moved(&self, from: PathBuf, to: PathBuf, cx: &mut Context<Self>) {
+        if self.machine.is_local() {
+            self.state
+                .update(cx, |state, cx| state.file_moved(from, to, cx));
+        }
+    }
+
+    /// Local moves to the Trash, so a slip is recoverable. A saved machine
+    /// has no trash, so it asks first (`confirm_remove`).
+    fn remove(&mut self, path: &Path, window: &mut Window, cx: &mut Context<Self>) {
+        let removed = path.to_path_buf();
+        let shown = removed.display().to_string();
+        let is_local = self.machine.is_local();
+        self.run_fs(
+            {
+                let path = removed.clone();
+                move |fs| fs.remove(&path)
+            },
+            move |this, removal, _, cx| {
+                crate::sounds::play(cues::Cue::Close, crate::sounds::strong());
+                let parent = removed.parent().map(Path::to_path_buf);
+                if removal == Removal::Trashed {
+                    this.state
+                        .update(cx, |state, cx| state.file_trashed(removed, cx));
+                }
+                this.load(parent.into_iter().collect(), cx);
+            },
+            move |err| {
+                if is_local {
+                    format!("Could not move {shown} to the Trash: {err}")
+                } else {
+                    format!("Could not delete {shown}: {err}")
+                }
+            },
+            window,
+            cx,
+        );
+    }
+
+    /// Asks before deleting on a saved machine, where it is permanent.
+    fn confirm_remove(&mut self, path: &Path, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(chrome) = crate::chrome::get(window, cx) else {
+            tracing::warn!("files: no chrome to confirm deleting {}", path.display());
+            return;
+        };
+        let name = path
+            .file_name()
+            .map_or_else(|| path.display().to_string(), |n| n.to_string_lossy().into_owned());
+        let label = self
+            .state
+            .read(cx)
+            .machine(&self.machine)
+            .map_or_else(|| self.machine.to_string(), |m| m.label().to_owned());
+        let confirmation = Confirmation {
+            title: "Delete permanently?".into(),
+            message: format!("{name} is deleted from {label} for good. There's no Trash to undo it."),
+            confirm_label: "Delete".into(),
+        };
+        let (this, main, path) = (cx.entity().downgrade(), window.window_handle(), path.to_path_buf());
+        // The dialog calls back in the overlay; delete from the main window,
+        // where failures toast.
+        let on_confirm = move |_: &mut Window, cx: &mut App| {
+            let (this, path) = (this.clone(), path.clone());
+            cx.defer(move |cx| {
+                cx.update_window(main, |_, window, cx| {
+                    this.update(cx, |this, cx| this.remove(&path, window, cx)).ok();
+                })
+                .ok();
+            });
+        };
+        chrome.update(cx, |chrome, cx| chrome.confirm(confirmation, on_confirm, window, cx));
     }
 
     fn reveal(path: &Path) {
@@ -537,7 +700,12 @@ impl FileTree {
         );
     }
 
-    fn context_menu(this: &WeakEntity<Self>, entry: &TreeEntry, menu: PopupMenu) -> PopupMenu {
+    fn context_menu(
+        this: &WeakEntity<Self>,
+        is_local: bool,
+        entry: &TreeEntry,
+        menu: PopupMenu,
+    ) -> PopupMenu {
         let id = entry.item().id.as_ref();
         if model::is_placeholder(id) {
             return menu;
@@ -592,11 +760,15 @@ impl FileTree {
                 },
             )
         };
-        let trash = {
+        let remove = {
             let path = path.clone();
             Rc::new(
                 move |this: &mut Self, window: &mut Window, cx: &mut Context<Self>| {
-                    this.trash(&path, window, cx);
+                    if is_local {
+                        this.remove(&path, window, cx);
+                    } else {
+                        this.confirm_remove(&path, window, cx);
+                    }
                 },
             )
         };
@@ -609,14 +781,22 @@ impl FileTree {
                 cx.write_to_clipboard(ClipboardItem::new_string(path.display().to_string()));
             },
         );
-        menu.item(item("New File…", new_in(false)))
+        let menu = menu
+            .item(item("New File…", new_in(false)))
             .item(item("New Folder…", new_in(true)))
             .separator()
             .item(item("Rename…", rename))
-            .item(item("Move to Trash", trash))
-            .separator()
-            .item(item("Reveal in Finder", reveal))
-            .item(item("Copy Path", copy_path))
+            .item(item(
+                if is_local { "Move to Trash" } else { "Delete…" },
+                remove,
+            ))
+            .separator();
+        let menu = if is_local {
+            menu.item(item("Reveal in Finder", reveal))
+        } else {
+            menu
+        };
+        menu.item(item("Copy Path", copy_path))
     }
 
     /// Asks for a name, then creates a file (or folder) in the selected
@@ -658,6 +838,7 @@ fn render_row(
     ix: usize,
     entry: &TreeEntry,
     this: &WeakEntity<FileTree>,
+    machine: &MachineId,
     git: Option<&git::Summary>,
     cx: &App,
 ) -> ListItem {
@@ -759,11 +940,12 @@ fn render_row(
     if entry.is_folder() {
         return row;
     }
+    let machine = machine.clone();
     row.on_click(move |_, window, cx| {
         window.dispatch_action(
             Box::new(OpenFile {
                 path: path.clone(),
-                machine: crate::state::MachineId::Local,
+                machine: machine.clone(),
             }),
             cx,
         );
@@ -771,7 +953,7 @@ fn render_row(
 }
 
 /// The query's matches: file names first, then lines grouped by file.
-fn render_results(results: &search::Results, cx: &App) -> AnyElement {
+fn render_results(results: &search::Results, machine: &MachineId, cx: &App) -> AnyElement {
     let theme = cx.theme();
     let muted = theme.muted_foreground;
     let mark = HighlightStyle {
@@ -817,6 +999,7 @@ fn render_results(results: &search::Results, cx: &App) -> AnyElement {
     }
     for (ix, hit) in results.names.iter().enumerate() {
         let path = hit.path.clone();
+        let machine = machine.clone();
         list = list.child(
             row(
                 ElementId::NamedInteger("files-name-hit".into(), ix as u64),
@@ -830,7 +1013,7 @@ fn render_results(results: &search::Results, cx: &App) -> AnyElement {
                 window.dispatch_action(
                     Box::new(OpenFile {
                         path: path.clone(),
-                        machine: crate::state::MachineId::Local,
+                        machine: machine.clone(),
                     }),
                     cx,
                 );
@@ -842,6 +1025,7 @@ fn render_results(results: &search::Results, cx: &App) -> AnyElement {
     }
     for (file_ix, file) in results.contents.iter().enumerate() {
         let path = file.path.clone();
+        let file_machine = machine.clone();
         list = list.child(
             row(
                 ElementId::NamedInteger("files-content-file".into(), file_ix as u64),
@@ -858,7 +1042,7 @@ fn render_results(results: &search::Results, cx: &App) -> AnyElement {
                 window.dispatch_action(
                     Box::new(OpenFile {
                         path: path.clone(),
-                        machine: crate::state::MachineId::Local,
+                        machine: file_machine.clone(),
                     }),
                     cx,
                 );
@@ -866,6 +1050,7 @@ fn render_results(results: &search::Results, cx: &App) -> AnyElement {
         );
         for (line_ix, hit) in file.lines.iter().enumerate() {
             let path = file.path.clone();
+            let machine = machine.clone();
             let line = hit.line;
             let id =
                 ElementId::NamedInteger(format!("files-line-hit-{file_ix}").into(), line_ix as u64);
@@ -888,7 +1073,7 @@ fn render_results(results: &search::Results, cx: &App) -> AnyElement {
                             Box::new(OpenFileAt {
                                 path: path.clone(),
                                 line,
-                                machine: crate::state::MachineId::Local,
+                                machine: machine.clone(),
                             }),
                             cx,
                         );
@@ -968,6 +1153,27 @@ fn valid_name(name: &str) -> Result<&str, String> {
     Ok(name)
 }
 
+/// A rename or move's failure, worded for the toast.
+fn move_error(verb: &str, from: &str, to: &str, err: &io::Error) -> String {
+    if err.kind() == io::ErrorKind::AlreadyExists {
+        format!("{to} already exists")
+    } else {
+        format!("Could not {verb} {from}: {err}")
+    }
+}
+
+/// The machine dropped off rather than the folder being unreadable.
+fn is_connection_error(err: &io::Error) -> bool {
+    matches!(
+        err.kind(),
+        io::ErrorKind::NotConnected
+            | io::ErrorKind::BrokenPipe
+            | io::ErrorKind::ConnectionReset
+            | io::ErrorKind::ConnectionAborted
+            | io::ErrorKind::TimedOut
+    )
+}
+
 fn error(message: impl Into<SharedString>, window: &mut Window, cx: &mut App) {
     crate::sounds::play(cues::Cue::Error, crate::sounds::subtle());
     window.push_notification(Notification::error(message), cx);
@@ -976,7 +1182,7 @@ fn error(message: impl Into<SharedString>, window: &mut Window, cx: &mut App) {
 impl Render for FileTree {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let machine = self.state.read(cx).selected_machine();
-        if !machine.id().is_local() {
+        if !machine.id().is_local() && *machine.status() != MachineStatus::Connected {
             let label = machine.label().to_owned();
             return div()
                 .size_full()
@@ -1006,9 +1212,11 @@ impl Render for FileTree {
             ),
         );
         let body = match &self.results {
-            Some(results) => render_results(results, cx),
+            Some(results) => render_results(results, &self.machine, cx),
             None => {
                 let rows = this.clone();
+                let machine = self.machine.clone();
+                let is_local = machine.is_local();
                 let git = self.git.clone();
                 let menu = this.clone();
                 let root = self.root().map(Path::to_path_buf);
@@ -1026,13 +1234,13 @@ impl Render for FileTree {
                     })
                     .child(
                         tree(&self.tree, move |ix, entry, _selected, _window, cx| {
-                            render_row(ix, entry, &rows, git.as_ref(), cx)
+                            render_row(ix, entry, &rows, &machine, git.as_ref(), cx)
                         })
                         .size_full()
                         .p_1()
                         .context_menu(
                             move |_ix, entry, popup, _window, _cx| {
-                                Self::context_menu(&menu, entry, popup)
+                                Self::context_menu(&menu, is_local, entry, popup)
                             },
                         ),
                     )

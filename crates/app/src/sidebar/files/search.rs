@@ -1,17 +1,16 @@
-//! Searching the worktree by file name and by contents, .gitignore respected.
-//! Runs on the background executor; `cancel` stops a search the user has
-//! typed past.
+//! What a search of the worktree by file name and by contents finds, and
+//! the matching and caps every file system's search shares (see
+//! `crate::fs::Fs::search`).
 
 use std::ops::Range;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
 
 /// Caps that keep a one-letter query from listing the whole repo.
 const MAX_NAME_HITS: usize = 100;
 const MAX_LINE_HITS: usize = 500;
-const MAX_HITS_PER_FILE: usize = 20;
+pub(crate) const MAX_HITS_PER_FILE: usize = 20;
 /// Files larger than this are matched by name only.
-const MAX_FILE_BYTES: u64 = 1 << 20;
+pub(crate) const MAX_FILE_BYTES: u64 = 1 << 20;
 /// Lines are cut to this many characters around the match.
 const MAX_LINE_CHARS: usize = 160;
 
@@ -51,90 +50,84 @@ pub struct LineHit {
     pub range: Range<usize>,
 }
 
-/// Matches `query` against every path and file below `root`. Smart case: a
-/// query with no capitals ignores case.
-pub fn search(root: &Path, query: &str, cancel: &AtomicBool) -> Results {
-    let mut results = Results::default();
-    if query.is_empty() {
-        return results;
+/// Gathers matches under the caps from files offered in display order, so
+/// every file system's search gives the same `Results`.
+pub(crate) struct Collector {
+    matcher: Matcher,
+    results: Results,
+    line_hits: usize,
+}
+
+impl Collector {
+    pub fn new(query: &str) -> Self {
+        Self {
+            matcher: Matcher::new(query),
+            results: Results::default(),
+            line_hits: 0,
+        }
     }
-    let matcher = Matcher::new(query);
-    let walk = ignore::WalkBuilder::new(root)
-        .hidden(false)
-        .filter_entry(|e| e.file_name() != ".git")
-        .sort_by_file_path(Ord::cmp)
-        .build();
-    let mut line_hits = 0;
-    for entry in walk.filter_map(Result::ok) {
-        if cancel.load(Ordering::Relaxed) {
-            break;
+
+    /// Smart case: a query with no capitals ignores case.
+    pub fn ignore_case(&self) -> bool {
+        self.matcher.ignore_case
+    }
+
+    pub fn offer_name(&mut self, path: &Path, relative: &str) {
+        let Some(range) = self.matcher.find(relative) else {
+            return;
+        };
+        if self.results.names.len() < MAX_NAME_HITS {
+            self.results.names.push(NameHit {
+                path: path.to_path_buf(),
+                relative: relative.to_owned(),
+                range,
+            });
+        } else {
+            self.results.truncated = true;
         }
-        if !entry.file_type().is_some_and(|t| t.is_file()) {
-            continue;
+    }
+
+    /// Whether another file's lines still fit under the cap.
+    pub fn wants_lines(&mut self) -> bool {
+        if self.line_hits >= MAX_LINE_HITS {
+            self.results.truncated = true;
+            return false;
         }
-        let path = entry.path();
-        let relative = path
-            .strip_prefix(root)
-            .unwrap_or(path)
-            .to_string_lossy()
-            .into_owned();
-        if let Some(range) = matcher.find(&relative) {
-            if results.names.len() < MAX_NAME_HITS {
-                results.names.push(NameHit {
-                    path: path.to_path_buf(),
-                    relative: relative.clone(),
-                    range,
-                });
-            } else {
-                results.truncated = true;
+        true
+    }
+
+    /// Matches one file's `(0-based number, line)` pairs.
+    pub fn offer_lines<'a>(
+        &mut self,
+        path: &Path,
+        relative: String,
+        lines: impl IntoIterator<Item = (u32, &'a str)>,
+    ) {
+        let mut hits = Vec::new();
+        for (line, content) in lines {
+            let Some(range) = self.matcher.find(content) else {
+                continue;
+            };
+            if hits.len() == MAX_HITS_PER_FILE {
+                self.results.truncated = true;
+                break;
             }
+            let (text, range) = excerpt(content, range);
+            hits.push(LineHit { line, text, range });
         }
-        if line_hits >= MAX_LINE_HITS {
-            results.truncated = true;
-            continue;
-        }
-        let lines = search_file(path, &matcher, &mut results.truncated);
-        if !lines.is_empty() {
-            line_hits += lines.len();
-            results.contents.push(FileHits {
+        if !hits.is_empty() {
+            self.line_hits += hits.len();
+            self.results.contents.push(FileHits {
                 path: path.to_path_buf(),
                 relative,
-                lines,
+                lines: hits,
             });
         }
     }
-    results
-}
 
-fn search_file(path: &Path, matcher: &Matcher, truncated: &mut bool) -> Vec<LineHit> {
-    if std::fs::metadata(path).map_or(true, |m| m.len() > MAX_FILE_BYTES) {
-        return Vec::new();
+    pub fn finish(self) -> Results {
+        self.results
     }
-    let Ok(bytes) = std::fs::read(path) else {
-        return Vec::new();
-    };
-    // Binary files, by the same test git uses.
-    if bytes[..bytes.len().min(8000)].contains(&0) {
-        return Vec::new();
-    }
-    let text = String::from_utf8_lossy(&bytes);
-    let mut hits = Vec::new();
-    for (line, content) in text.lines().enumerate() {
-        let Some(range) = matcher.find(content) else {
-            continue;
-        };
-        if hits.len() == MAX_HITS_PER_FILE {
-            *truncated = true;
-            break;
-        }
-        let (text, range) = excerpt(content, range);
-        hits.push(LineHit {
-            line: line as u32,
-            text,
-            range,
-        });
-    }
-    hits
 }
 
 /// `line` with leading whitespace dropped and cut to `MAX_LINE_CHARS`,
@@ -214,62 +207,6 @@ fn eq_ignore_case(a: char, b: char) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn temp_dir(name: &str) -> PathBuf {
-        let dir =
-            std::env::temp_dir().join(format!("grasslands-search-{name}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(dir.join("src")).unwrap();
-        git2::Repository::init(&dir).unwrap();
-        dir.canonicalize().unwrap()
-    }
-
-    fn run(dir: &Path, query: &str) -> Results {
-        search(dir, query, &AtomicBool::new(false))
-    }
-
-    #[test]
-    fn search_should_match_names_below_root() {
-        let dir = temp_dir("names");
-        std::fs::write(dir.join("src/main.rs"), "").unwrap();
-        std::fs::write(dir.join("readme.md"), "").unwrap();
-        let names: Vec<_> = run(&dir, "main")
-            .names
-            .into_iter()
-            .map(|h| h.relative)
-            .collect();
-        assert_eq!(names, vec!["src/main.rs"]);
-    }
-
-    #[test]
-    fn search_should_report_matching_lines_with_numbers() {
-        let dir = temp_dir("lines");
-        std::fs::write(dir.join("a.txt"), "one\n  needle here\nthree needle\n").unwrap();
-        let hits = run(&dir, "needle").contents;
-        let lines: Vec<_> = hits[0]
-            .lines
-            .iter()
-            .map(|l| (l.line, &l.text[l.range.clone()]))
-            .collect();
-        assert_eq!(lines, vec![(1, "needle"), (2, "needle")]);
-    }
-
-    #[test]
-    fn search_should_skip_ignored_and_binary_files() {
-        let dir = temp_dir("ignored");
-        std::fs::write(dir.join(".gitignore"), "target\n").unwrap();
-        std::fs::create_dir_all(dir.join("target")).unwrap();
-        std::fs::write(dir.join("target/x.txt"), "needle").unwrap();
-        std::fs::write(dir.join("bin.dat"), b"needle\0").unwrap();
-        assert_eq!(run(&dir, "needle"), Results::default());
-    }
-
-    #[test]
-    fn search_should_respect_case_when_query_has_capitals() {
-        let dir = temp_dir("case");
-        std::fs::write(dir.join("a.txt"), "Needle\nneedle\n").unwrap();
-        assert_eq!(run(&dir, "Needle").contents[0].lines.len(), 1);
-    }
 
     #[test]
     fn find_should_give_ranges_in_the_original_text() {

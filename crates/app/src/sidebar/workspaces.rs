@@ -1388,7 +1388,7 @@ pub fn start_script(
 }
 
 mod agents;
-mod git;
+pub(crate) mod git;
 mod groups;
 mod script;
 #[cfg(test)]
