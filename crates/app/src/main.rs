@@ -29,6 +29,7 @@ mod state;
 mod status;
 mod terminal_area;
 mod theme;
+mod window_registry;
 mod workspace;
 mod worktree;
 

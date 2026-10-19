@@ -36,6 +36,7 @@ use crate::overlay::{self, Capture, LayerId, Overlay};
 use crate::sounds;
 use crate::state::{AppEvent, AppState, MachineId};
 use crate::status;
+use crate::window_registry;
 
 pub use command::HerdrCommand;
 pub use confirm::Confirmation;
@@ -124,6 +125,22 @@ impl MenuEntry {
     }
 }
 
+/// `entries` as text, for tests: items by label, `---` for a separator and
+/// `Label › [...]` for a submenu.
+#[cfg(test)]
+pub fn labels(entries: &[MenuEntry]) -> Vec<String> {
+    entries
+        .iter()
+        .map(|entry| match entry {
+            MenuEntry::Item { label, .. } => label.to_string(),
+            MenuEntry::Separator => "---".to_owned(),
+            MenuEntry::Submenu { label, entries } => {
+                format!("{label} › {:?}", labels(entries))
+            }
+        })
+        .collect()
+}
+
 struct OpenMenu {
     position: Point<Pixels>,
     menu: Entity<PopupMenu>,
@@ -154,17 +171,10 @@ impl Render for MenuLayer {
 /// replaces the older.
 struct AgentToast;
 
-/// Each main window's chrome, so views that only have the window (the
-/// terminal area) can reach it: see [`get`].
-#[derive(Default)]
-struct Chromes(HashMap<WindowId, WeakEntity<Chrome>>);
-
-impl Global for Chromes {}
-
-/// The chrome of the main window `window`, if it has one.
+/// The chrome of the main window `window`, if it has one, for views that
+/// only have the window (the terminal area).
 pub fn get(window: &Window, cx: &App) -> Option<Entity<Chrome>> {
-    let id = window.window_handle().window_id();
-    cx.try_global::<Chromes>()?.0.get(&id)?.upgrade()
+    window_registry::upgrade(window, cx)
 }
 
 pub struct Chrome {
@@ -200,10 +210,7 @@ impl Chrome {
             }
         });
         let main_window = window.window_handle();
-        let weak = cx.entity().downgrade();
-        cx.default_global::<Chromes>()
-            .0
-            .insert(main_window.window_id(), weak);
+        window_registry::insert(window, cx.entity().downgrade(), cx);
         let mut chrome = Self {
             state,
             main_window,
@@ -990,21 +997,54 @@ fn build_menu(
     })
 }
 
+/// Opens a menu of `entries` at `position` through the chrome of `window`
+/// (the main window), for views without a `Chrome` handle.
+pub fn open_menu(
+    entries: Vec<MenuEntry>,
+    position: Point<Pixels>,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    if entries.is_empty() {
+        return;
+    }
+    if let Some(chrome) = get(window, cx) {
+        chrome.update(cx, |chrome, cx| chrome.menu(entries, position, window, cx));
+    }
+}
+
+/// Fills a Kit popup `menu` with `entries`, run through the chrome of
+/// `window` like a context menu's. For menus Kit builds and draws itself in
+/// the main window (a dock panel's title-bar menu), so they share the
+/// floating menus' entries.
+pub fn fill_popup(
+    menu: PopupMenu,
+    entries: &[MenuEntry],
+    window: &mut Window,
+    cx: &mut App,
+) -> PopupMenu {
+    let Some(chrome) = get(window, cx) else {
+        return menu;
+    };
+    add_entries(menu, &chrome.downgrade(), entries, window, cx)
+}
+
 fn add_entries(
     mut menu: PopupMenu,
     chrome: &WeakEntity<Chrome>,
     entries: &[MenuEntry],
     window: &mut Window,
-    cx: &mut Context<PopupMenu>,
+    cx: &mut App,
 ) -> PopupMenu {
     for entry in entries {
         menu = match entry {
             MenuEntry::Separator => menu.separator(),
             MenuEntry::Submenu { label, entries } => {
-                let (chrome, entries) = (chrome.clone(), entries.clone());
-                menu.submenu(label.clone(), window, cx, move |menu, window, cx| {
-                    add_entries(menu, &chrome, &entries, window, cx).min_w(px(160.))
-                })
+                let chrome = chrome.clone();
+                let submenu = PopupMenu::build(window, cx, move |menu, window, cx| {
+                    add_entries(menu, &chrome, entries, window, cx).min_w(px(160.))
+                });
+                menu.item(PopupMenuItem::submenu(label.clone(), submenu))
             }
             MenuEntry::Item {
                 label,

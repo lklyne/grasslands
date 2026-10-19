@@ -517,3 +517,80 @@ fn search_should_wait_for_the_one_running_then_run_the_latest(cx: &mut TestAppCo
     });
     assert_eq!(shown, (true, false));
 }
+
+fn menu_labels(f: &Fixture, scope: &Scope, id: &str, folder: bool) -> Vec<String> {
+    let entries = FileTree::context_entries(&f.files.downgrade(), Some(scope), id, folder, "name");
+    crate::chrome::labels(&entries)
+}
+
+#[gpui::test]
+fn local_row_menu_trashes_and_reveals(cx: &mut TestAppContext) {
+    let f = fixture(cx, "menu-local");
+    let scope = cx.read(|cx| f.files.read(cx).scope(cx).unwrap());
+    let file = f.dir.join("a.txt").to_string_lossy().into_owned();
+    assert_eq!(
+        menu_labels(&f, &scope, &file, false),
+        [
+            "New File…",
+            "New Folder…",
+            "---",
+            "Rename…",
+            "Move to Trash",
+            "---",
+            "Reveal in Finder",
+            "Copy Path"
+        ]
+    );
+}
+
+#[gpui::test]
+fn remote_row_menu_deletes_and_has_no_reveal(cx: &mut TestAppContext) {
+    let f = fixture(cx, "menu-remote");
+    let (_, scope) = f.root_on_fake(cx);
+    let file = Path::new(BOX_ROOT)
+        .join("x.txt")
+        .to_string_lossy()
+        .into_owned();
+    assert_eq!(
+        menu_labels(&f, &scope, &file, false),
+        [
+            "New File…",
+            "New Folder…",
+            "---",
+            "Rename…",
+            "Delete…",
+            "---",
+            "Copy Path"
+        ]
+    );
+}
+
+#[gpui::test]
+fn placeholder_row_gets_no_menu(cx: &mut TestAppContext) {
+    let f = fixture(cx, "menu-placeholder");
+    let scope = cx.read(|cx| f.files.read(cx).scope(cx).unwrap());
+    let id = format!("{}\0placeholder", f.dir.display());
+    assert!(menu_labels(&f, &scope, &id, true).is_empty());
+}
+
+/// Picking a row's menu item runs it on the tree: Copy Path fills the
+/// clipboard.
+#[gpui::test]
+fn row_menu_copy_path_copies_the_path(cx: &mut TestAppContext) {
+    let f = fixture(cx, "menu-copy");
+    let scope = cx.read(|cx| f.files.read(cx).scope(cx).unwrap());
+    let file = f.dir.join("a.txt").to_string_lossy().into_owned();
+    let entries =
+        FileTree::context_entries(&f.files.downgrade(), Some(&scope), &file, false, "a.txt");
+    let Some(crate::chrome::MenuEntry::Item {
+        command: crate::chrome::MenuCommand::Callback(copy),
+        ..
+    }) = entries.last().cloned()
+    else {
+        panic!("Copy Path is a callback");
+    };
+    cx.update_window(f.window, |_, window, cx| copy(window, cx))
+        .unwrap();
+    let copied = cx.read_from_clipboard().and_then(|item| item.text());
+    assert_eq!(copied, Some(file));
+}

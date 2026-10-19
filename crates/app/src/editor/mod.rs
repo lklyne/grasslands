@@ -178,7 +178,8 @@ impl Editor {
             &state,
             window,
             |this, state, event, window, cx| match event {
-                AppEvent::ActiveRootChanged(_) | AppEvent::MachineSelected(_) => {
+                // Also sent after every `MachineSelected`.
+                AppEvent::ActiveRootChanged(_) => {
                     this.visible = GroupKey::of(state.read(cx));
                     cx.notify();
                 }

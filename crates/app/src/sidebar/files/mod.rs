@@ -32,7 +32,7 @@ use gpui_kit::component::button::Button;
 use gpui_kit::component::dock::{BasePanel, Panel, PanelControl, PanelEvent};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::list::ListItem;
-use gpui_kit::component::menu::{PopupMenu, PopupMenuItem};
+use gpui_kit::component::menu::PopupMenu;
 use gpui_kit::component::notification::Notification;
 use gpui_kit::component::tree::{TreeEntry, TreeEvent, TreeState, tree};
 use gpui_kit::component::{
@@ -44,7 +44,7 @@ use gpui_kit::*;
 use self::model::FileModel;
 use self::watch::RootWatcher;
 use crate::actions::{OpenChanges, OpenFile, OpenFileAt};
-use crate::chrome::Confirmation;
+use crate::chrome::{self, Confirmation, MenuCommand, MenuEntry};
 use crate::fs::{Fs, Removal, git, search};
 use crate::herdr::MachineStatus;
 use crate::state::{ActiveRoot, AppEvent, AppState, MachineId};
@@ -967,32 +967,51 @@ impl FileTree {
         );
     }
 
-    /// `scope` is the root as the menu opened; every item acts there.
-    fn context_menu(
+    /// The panel's title-bar menu: new entries in the selected folder (as
+    /// the toolbar buttons).
+    fn panel_entries(this: &WeakEntity<Self>) -> Vec<MenuEntry> {
+        let item = |label: &'static str, folder: bool| {
+            let this = this.clone();
+            MenuEntry::item(
+                label,
+                MenuCommand::Callback(Rc::new(move |window, cx| {
+                    let _ = this.update(cx, |this, cx| this.new_in_selected(folder, window, cx));
+                })),
+            )
+        };
+        vec![item("New File…", false), item("New Folder…", true)]
+    }
+
+    /// A row's context menu, drawn by the chrome in the overlay so it stays
+    /// above the terminals. `scope` is the root as the menu opened; every
+    /// item acts there. Placeholder rows get none.
+    fn context_entries(
         this: &WeakEntity<Self>,
         scope: Option<&Scope>,
-        entry: &TreeEntry,
-        menu: PopupMenu,
-    ) -> PopupMenu {
-        let id = entry.item().id.as_ref();
+        id: &str,
+        is_folder: bool,
+        name: &str,
+    ) -> Vec<MenuEntry> {
         let Some(scope) = scope.filter(|_| !model::is_placeholder(id)) else {
-            return menu;
+            return Vec::new();
         };
         let is_local = scope.fs.is_local();
         let path = PathBuf::from(id);
-        let dir = if entry.is_folder() {
+        let dir = if is_folder {
             path.clone()
         } else {
             path.parent()
                 .map_or_else(|| path.clone(), Path::to_path_buf)
         };
-        let name = entry.item().label.to_string();
+        let name = name.to_owned();
         let item = |label: &'static str, run: TreeOp| {
             let this = this.clone();
-            PopupMenuItem::new(label).on_click(move |_, window, cx| {
-                let run = run.clone();
-                let _ = this.update(cx, |this, cx| run(this, window, cx));
-            })
+            MenuEntry::item(
+                label,
+                MenuCommand::Callback(Rc::new(move |window, cx| {
+                    let _ = this.update(cx, |this, cx| run(this, window, cx));
+                })),
+            )
         };
         let new_in = |folder: bool| {
             let (dir, scope) = (dir.clone(), scope.clone());
@@ -1046,26 +1065,26 @@ impl FileTree {
                 cx.write_to_clipboard(ClipboardItem::new_string(path.display().to_string()));
             },
         );
-        let menu = menu
-            .item(item("New File…", new_in(false)))
-            .item(item("New Folder…", new_in(true)))
-            .separator()
-            .item(item("Rename…", rename))
-            .item(item(
+        let mut entries = vec![
+            item("New File…", new_in(false)),
+            item("New Folder…", new_in(true)),
+            MenuEntry::Separator,
+            item("Rename…", rename),
+            item(
                 if is_local {
                     "Move to Trash"
                 } else {
                     "Delete…"
                 },
                 remove,
-            ))
-            .separator();
-        let menu = if is_local {
-            menu.item(item("Reveal in Finder", reveal))
-        } else {
-            menu
-        };
-        menu.item(item("Copy Path", copy_path))
+            ),
+            MenuEntry::Separator,
+        ];
+        if is_local {
+            entries.push(item("Reveal in Finder", reveal));
+        }
+        entries.push(item("Copy Path", copy_path));
+        entries
     }
 
     /// Asks for a name, then creates a file (or folder) in the selected
@@ -1170,6 +1189,15 @@ fn render_row(
     };
     let drop_bg = cx.theme().drop_target;
     let row = row
+        .on_mouse_down(MouseButton::Right, {
+            let (this, scope) = (this.clone(), scope.cloned());
+            let (id, is_folder, name) = (item.id.clone(), entry.is_folder(), item.label.clone());
+            move |event, window, cx| {
+                let entries =
+                    FileTree::context_entries(&this, scope.as_ref(), &id, is_folder, &name);
+                chrome::open_menu(entries, event.position, window, cx);
+            }
+        })
         .on_drag(
             DraggedPath {
                 path: path.clone(),
@@ -1501,9 +1529,7 @@ impl Render for FileTree {
                 let rows = this.clone();
                 let machine = self.machine.clone();
                 let scope = self.scope(cx).ok();
-                let menu_scope = scope.clone();
                 let git = self.git.clone();
-                let menu = this.clone();
                 let root = self.root().map(Path::to_path_buf);
                 let drop_bg = cx.theme().drop_target;
                 // Drops that miss every row land in the root.
@@ -1521,12 +1547,7 @@ impl Render for FileTree {
                             render_row(ix, entry, &rows, scope.as_ref(), &machine, git.as_ref(), cx)
                         })
                         .size_full()
-                        .p_1()
-                        .context_menu(
-                            move |_ix, entry, popup, _window, _cx| {
-                                Self::context_menu(&menu, menu_scope.as_ref(), entry, popup)
-                            },
-                        ),
+                        .p_1(),
                     )
                     .into_any_element()
             }
@@ -1614,23 +1635,14 @@ impl Panel for FileTree {
     fn dropdown_menu(
         &mut self,
         menu: PopupMenu,
-        _: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> PopupMenu {
         if self.root().is_none() {
             return menu;
         }
-        let (a, b) = (cx.entity().downgrade(), cx.entity().downgrade());
-        menu.item(
-            PopupMenuItem::new("New File").on_click(move |_, window, cx| {
-                let _ = a.update(cx, |this, cx| this.new_in_selected(false, window, cx));
-            }),
-        )
-        .item(
-            PopupMenuItem::new("New Folder").on_click(move |_, window, cx| {
-                let _ = b.update(cx, |this, cx| this.new_in_selected(true, window, cx));
-            }),
-        )
+        let entries = Self::panel_entries(&cx.entity().downgrade());
+        chrome::fill_popup(menu, &entries, window, cx)
     }
 
     fn zoom_control(&self, _: &App) -> Option<PanelControl> {

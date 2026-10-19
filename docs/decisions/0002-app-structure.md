@@ -30,7 +30,7 @@ else in the module is yours.
   worktree. Views hold the entity and read it in `render`.
 - Redraw on any change: `cx.observe(&state, |_, _, cx| cx.notify())`.
 - React to discrete changes: `cx.subscribe(&state, ...)` on `AppEvent`
-  (`ActiveWorktreeChanged(Option<PathBuf>)`, `SnapshotReplaced`; add variants
+  (`ActiveRootChanged(Option<ActiveRoot>)`, `SnapshotReplaced`; add variants
   as needed).
 - `crate::herdr` re-exports `herdr-client` types under the names views use
   (`Snapshot` = `herdr_client::State`, `Agent`, `AgentStatus`, `SplitTree`,
