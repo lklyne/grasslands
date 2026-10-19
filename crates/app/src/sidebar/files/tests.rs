@@ -1,7 +1,9 @@
 //! The file tree in a headless window. Watcher events are fed to
 //! `on_fs_changes` directly; the watcher has its own test.
 
+use std::cell::RefCell;
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 use std::sync::Arc;
 
 use gpui_kit::component::dialog::{Cancel, Confirm};
@@ -11,9 +13,11 @@ use gpui_kit::{
     WindowOptions, px, size,
 };
 
-use super::FileTree;
+use super::{FileTree, Scope};
+use crate::fs::Fs;
+use crate::fs::fake::FakeFs;
 use crate::herdr;
-use crate::state::AppState;
+use crate::state::{ActiveRoot, AppEvent, AppState, MachineId};
 
 struct Fixture {
     window: AnyWindowHandle,
@@ -147,7 +151,8 @@ fn new_file_should_be_created_and_listed(cx: &mut TestAppContext) {
     let f = fixture(cx, "create");
     let src = f.dir.join("src");
     f.with_window(cx, |files, window, cx| {
-        files.create(src, "lib.rs", false, window, cx)
+        let scope = files.scope(cx).unwrap();
+        files.create(&scope, src, "lib.rs", false, window, cx)
     });
     assert!(f.dir.join("src/lib.rs").is_file());
     assert_eq!(
@@ -161,7 +166,8 @@ fn rename_should_move_file_and_relist(cx: &mut TestAppContext) {
     let f = fixture(cx, "rename");
     let path = f.dir.join("a.txt");
     f.with_window(cx, |files, window, cx| {
-        files.rename(&path, "z.txt", window, cx)
+        let scope = files.scope(cx).unwrap();
+        files.rename(&scope, &path, "z.txt", window, cx)
     });
     assert_eq!(f.rows(cx), vec!["src", ".gitignore", "z.txt"]);
 }
@@ -171,7 +177,8 @@ fn invalid_name_should_not_create_anything(cx: &mut TestAppContext) {
     let f = fixture(cx, "invalid");
     let root = f.dir.clone();
     f.with_window(cx, |files, window, cx| {
-        files.create(root, "a/b", false, window, cx)
+        let scope = files.scope(cx).unwrap();
+        files.create(&scope, root, "a/b", false, window, cx)
     });
     assert!(!f.dir.join("a").exists());
 }
@@ -214,7 +221,10 @@ fn enter_in_new_file_prompt_should_create_file(cx: &mut TestAppContext) {
             "New File",
             "Create",
             "",
-            move |files, name, window, cx| files.create(root.clone(), name, false, window, cx),
+            move |files, name, window, cx| {
+                let scope = files.scope(cx).unwrap();
+                files.create(&scope, root.clone(), name, false, window, cx)
+            },
             window,
             cx,
         );
@@ -234,7 +244,10 @@ impl Fixture {
                 "New File",
                 "Create",
                 "",
-                move |files, name, window, cx| files.create(root.clone(), name, false, window, cx),
+                move |files, name, window, cx| {
+                    let scope = files.scope(cx).unwrap();
+                    files.create(&scope, root.clone(), name, false, window, cx)
+                },
                 window,
                 cx,
             );
@@ -267,7 +280,8 @@ fn move_into_should_move_file_into_folder(cx: &mut TestAppContext) {
     let f = fixture(cx, "move");
     let (path, src) = (f.dir.join("a.txt"), f.dir.join("src"));
     f.with_window(cx, |files, window, cx| {
-        files.move_into(&path, &src, window, cx)
+        let scope = files.scope(cx).unwrap();
+        files.move_into(&scope, &path, &src, window, cx)
     });
     assert_eq!(
         f.rows(cx),
@@ -282,7 +296,8 @@ fn move_into_should_refuse_folder_into_its_own_child(cx: &mut TestAppContext) {
     std::fs::create_dir_all(src.join("deep")).unwrap();
     let deep = src.join("deep");
     f.with_window(cx, |files, window, cx| {
-        files.move_into(&src, &deep, window, cx)
+        let scope = files.scope(cx).unwrap();
+        files.move_into(&scope, &src, &deep, window, cx)
     });
     assert!(src.join("main.rs").is_file());
 }
@@ -334,4 +349,170 @@ fn typing_a_query_should_show_name_and_content_matches(cx: &mut TestAppContext) 
             vec!["src/main.rs".to_owned()]
         ))
     );
+}
+
+// A tree action acts on the machine and root it was chosen on, never on
+// whatever the tree shows when it runs.
+
+const BOX_ROOT: &str = "/home/lyle/api";
+
+fn fake_machine() -> MachineId {
+    MachineId::Remote("fake".into())
+}
+
+impl Fixture {
+    /// Roots the tree at `BOX_ROOT` on an in-memory machine holding
+    /// `x.txt`; returns its disk and the scope an action chosen now captures.
+    fn root_on_fake(&self, cx: &mut TestAppContext) -> (Arc<FakeFs>, Scope) {
+        let fake = Arc::new(FakeFs::default());
+        fake.put(&Path::new(BOX_ROOT).join("x.txt"), "x");
+        let root = ActiveRoot {
+            machine: fake_machine(),
+            path: BOX_ROOT.into(),
+        };
+        self.files.update(cx, |files, cx| {
+            files.fake = Some(fake.clone());
+            files.set_root(Some(root), cx)
+        });
+        cx.run_until_parked();
+        let scope = Scope {
+            machine: fake_machine(),
+            root: BOX_ROOT.into(),
+            fs: Fs::Fake(fake.clone()),
+        };
+        (fake, scope)
+    }
+
+    /// Moves the tree back to the local repo, as a focus change would.
+    fn root_on_local(&self, cx: &mut TestAppContext) {
+        let root = ActiveRoot {
+            machine: MachineId::Local,
+            path: self.dir.clone(),
+        };
+        self.files
+            .update(cx, |files, cx| files.set_root(Some(root), cx));
+        cx.run_until_parked();
+    }
+}
+
+#[gpui::test]
+fn remove_should_delete_on_captured_machine(cx: &mut TestAppContext) {
+    let f = fixture(cx, "scope-remove");
+    let (fake, scope) = f.root_on_fake(cx);
+    let path = Path::new(BOX_ROOT).join("x.txt");
+    f.with_window(cx, |files, window, cx| {
+        files.remove(&scope, &path, window, cx)
+    });
+    assert_eq!(fake.get(&path), None);
+}
+
+#[gpui::test]
+fn remove_should_refuse_once_root_has_moved(cx: &mut TestAppContext) {
+    let f = fixture(cx, "scope-remove-moved");
+    let (fake, scope) = f.root_on_fake(cx);
+    f.root_on_local(cx);
+    let path = Path::new(BOX_ROOT).join("x.txt");
+    f.with_window(cx, |files, window, cx| {
+        files.remove(&scope, &path, window, cx)
+    });
+    assert_eq!(fake.get(&path).as_deref(), Some("x"));
+}
+
+#[gpui::test]
+fn rename_should_refuse_once_root_has_moved(cx: &mut TestAppContext) {
+    let f = fixture(cx, "scope-rename-moved");
+    let (fake, scope) = f.root_on_fake(cx);
+    f.root_on_local(cx);
+    let path = Path::new(BOX_ROOT).join("x.txt");
+    f.with_window(cx, |files, window, cx| {
+        files.rename(&scope, &path, "y.txt", window, cx)
+    });
+    assert_eq!(fake.get(&path).as_deref(), Some("x"));
+}
+
+#[gpui::test]
+fn ask_remove_should_not_delete_remote_file_without_confirmation(cx: &mut TestAppContext) {
+    let f = fixture(cx, "scope-ask");
+    let (fake, scope) = f.root_on_fake(cx);
+    let path = Path::new(BOX_ROOT).join("x.txt");
+    f.with_window(cx, |files, window, cx| {
+        files.ask_remove(&scope, &path, window, cx)
+    });
+    assert_eq!(fake.get(&path).as_deref(), Some("x"));
+}
+
+#[gpui::test]
+fn remove_should_report_captured_machine_when_root_moves_mid_operation(cx: &mut TestAppContext) {
+    let f = fixture(cx, "scope-report");
+    let (_fake, scope) = f.root_on_fake(cx);
+    let removed = Rc::new(RefCell::new(Vec::new()));
+    let _subscription = cx.update(|cx| {
+        let removed = removed.clone();
+        cx.subscribe(&f.state, move |_, event, _| {
+            if let AppEvent::FileRemoved { machine, .. } = event {
+                removed.borrow_mut().push(machine.clone());
+            }
+        })
+    });
+    let path = Path::new(BOX_ROOT).join("x.txt");
+    // Start the delete, then move the root before it completes.
+    cx.update_window(f.window, |_, window, cx| {
+        f.files
+            .update(cx, |files, cx| files.remove(&scope, &path, window, cx));
+    })
+    .unwrap();
+    f.root_on_local(cx);
+    assert_eq!(*removed.borrow(), vec![fake_machine()]);
+}
+
+#[gpui::test]
+fn fake_machine_root_should_list_its_files(cx: &mut TestAppContext) {
+    let f = fixture(cx, "fake-list");
+    f.root_on_fake(cx);
+    assert_eq!(f.rows(cx), vec!["x.txt"]);
+}
+
+#[gpui::test]
+fn poll_should_wait_for_the_one_still_out(cx: &mut TestAppContext) {
+    let f = fixture(cx, "poll-guard");
+    let (fake, _) = f.root_on_fake(cx);
+    let before = fake.lists.load(std::sync::atomic::Ordering::SeqCst);
+    f.files.update(cx, |files, cx| {
+        files.poll(cx);
+        files.poll(cx);
+    });
+    cx.run_until_parked();
+    f.files.update(cx, |files, cx| files.poll(cx));
+    cx.run_until_parked();
+    let lists = fake.lists.load(std::sync::atomic::Ordering::SeqCst) - before;
+    assert_eq!(lists, 2);
+}
+
+#[gpui::test]
+fn search_should_wait_for_the_one_running_then_run_the_latest(cx: &mut TestAppContext) {
+    let f = fixture(cx, "search-one");
+    f.root_on_fake(cx);
+    // A search's command is still out.
+    f.files.update(cx, |files, _| files.search_running = true);
+    for query in ["a", "ab"] {
+        f.with_window(cx, |files, window, cx| files.set_query(query, window, cx));
+        cx.executor().advance_clock(super::SEARCH_DEBOUNCE);
+        cx.run_until_parked();
+    }
+    let waiting = cx.read(|cx| {
+        let files = f.files.read(cx);
+        files.search_pending.as_ref().map(|job| job.query.clone())
+    });
+    assert_eq!(waiting.as_deref(), Some("ab"));
+    // It ends (cancelled, superseded): the latest runs.
+    f.files.update(cx, |files, cx| {
+        let cancel = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        files.search_done(&cancel, None, cx)
+    });
+    cx.run_until_parked();
+    let shown = cx.read(|cx| {
+        let files = f.files.read(cx);
+        (files.results.is_some(), files.search_pending.is_some())
+    });
+    assert_eq!(shown, (true, false));
 }

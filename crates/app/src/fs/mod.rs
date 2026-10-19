@@ -56,7 +56,8 @@ pub enum Fs {
         label: String,
         files: Arc<herdr_client::RemoteFs>,
     },
-    /// An in-memory remote machine: files only, no git or search.
+    /// An in-memory remote machine: files only (folders exist only through
+    /// the files in them), no git or search.
     #[cfg(test)]
     Fake(Arc<fake::FakeFs>),
 }
@@ -75,17 +76,21 @@ impl Fs {
         matches!(self, Self::Local)
     }
 
-    /// One level deep, respecting .gitignore inside a repo; dotfiles shown,
-    /// `.git` hidden; folders first, then case-insensitive by name.
-    pub fn read_dir(&self, dir: &Path) -> io::Result<Vec<Entry>> {
+    /// Each of `dirs` one level deep, respecting .gitignore inside a repo;
+    /// dotfiles shown, `.git` hidden; folders first, then case-insensitive
+    /// by name. A saved machine asks git about all of them in one command.
+    pub fn read_dirs(&self, dirs: &[PathBuf]) -> Vec<io::Result<Vec<Entry>>> {
         match self {
-            Self::Local => local::read_dir(dir),
+            Self::Local => dirs.iter().map(|dir| local::read_dir(dir)).collect(),
             Self::Remote { files, .. } => {
-                let listing = files.read_dir(dir)?;
-                Ok(remote::filter_listing(&remote::runner(files), dir, listing))
+                let listings = dirs
+                    .iter()
+                    .map(|dir| (dir.as_path(), files.read_dir(dir)))
+                    .collect();
+                remote::filter_listings(&remote::runner(files), listings)
             }
             #[cfg(test)]
-            Self::Fake(_) => Err(io::ErrorKind::Unsupported.into()),
+            Self::Fake(fake) => dirs.iter().map(|dir| fake.read_dir(dir)).collect(),
         }
     }
 
@@ -137,7 +142,7 @@ impl Fs {
             Self::Local => local::create_file(path),
             Self::Remote { files, .. } => files.create_file(path),
             #[cfg(test)]
-            Self::Fake(_) => Err(io::ErrorKind::Unsupported.into()),
+            Self::Fake(fake) => fake.create_file(path),
         }
     }
 
@@ -156,7 +161,7 @@ impl Fs {
             Self::Local => local::rename(from, to),
             Self::Remote { files, .. } => files.rename(from, to),
             #[cfg(test)]
-            Self::Fake(_) => Err(io::ErrorKind::Unsupported.into()),
+            Self::Fake(fake) => fake.rename(from, to),
         }
     }
 
@@ -165,7 +170,7 @@ impl Fs {
             Self::Local => local::trash(path).map(|()| Removal::Trashed),
             Self::Remote { files, .. } => files.remove(path).map(|()| Removal::Deleted),
             #[cfg(test)]
-            Self::Fake(_) => Err(io::ErrorKind::Unsupported.into()),
+            Self::Fake(fake) => fake.remove_all(path).map(|()| Removal::Deleted),
         }
     }
 
@@ -187,11 +192,15 @@ impl Fs {
     }
 
     /// The Changes summary for the checkout containing `dir`; `None`
-    /// outside git, an error if a saved machine couldn't be asked.
+    /// outside git, an error if a saved machine couldn't be asked. A saved
+    /// machine's comes from a `git_patch` of `dir` moments ago if there was one.
     pub fn git_summary(&self, dir: &Path) -> io::Result<Option<crate::changes::git::Summary>> {
         match self {
             Self::Local => Ok(local_git::read(dir)),
-            Self::Remote { files, .. } => remote_git::summary(&remote::runner(files), dir),
+            Self::Remote { machine, files, .. } => match remote_git::shared(machine, dir) {
+                Some(summary) => Ok(summary),
+                None => remote_git::summary(&remote::runner(files), dir),
+            },
             #[cfg(test)]
             Self::Fake(_) => Ok(None),
         }
@@ -202,7 +211,11 @@ impl Fs {
     pub fn git_patch(&self, dir: &Path) -> io::Result<Option<String>> {
         match self {
             Self::Local => Ok(local_git::patch(dir)),
-            Self::Remote { files, .. } => remote_git::patch(&remote::runner(files), dir),
+            Self::Remote { machine, files, .. } => {
+                let read = remote_git::patch(&remote::runner(files), dir)?;
+                remote_git::share(machine, dir, read.as_ref().map(|(_, s)| s.clone()));
+                Ok(read.map(|(patch, _)| patch))
+            }
             #[cfg(test)]
             Self::Fake(_) => Ok(None),
         }

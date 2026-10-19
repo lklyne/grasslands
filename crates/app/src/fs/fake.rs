@@ -13,6 +13,8 @@ pub struct FakeFs {
     clock: AtomicU64,
     pub offline: AtomicBool,
     pub reads: AtomicU64,
+    /// Folder listings asked for.
+    pub lists: AtomicU64,
 }
 
 impl FakeFs {
@@ -60,6 +62,76 @@ impl FakeFs {
         let modified = self.tick();
         self.files()?
             .insert(path.to_path_buf(), (text.to_owned(), modified));
+        Ok(())
+    }
+
+    /// `dir`'s files and the folders implied by deeper ones.
+    pub fn read_dir(&self, dir: &Path) -> io::Result<Vec<super::Entry>> {
+        self.lists.fetch_add(1, Ordering::SeqCst);
+        let files = self.files()?;
+        let mut entries: Vec<super::Entry> = Vec::new();
+        for path in files.keys() {
+            let Some(name) = path
+                .strip_prefix(dir)
+                .ok()
+                .and_then(|rest| rest.components().next())
+            else {
+                continue;
+            };
+            let path = dir.join(name);
+            if entries.iter().any(|e| e.path == path) {
+                continue;
+            }
+            entries.push(super::Entry {
+                is_dir: !files.contains_key(&path),
+                name: name.as_os_str().to_string_lossy().into_owned(),
+                path,
+            });
+        }
+        super::sort_entries(&mut entries);
+        Ok(entries)
+    }
+
+    pub fn create_file(&self, path: &Path) -> io::Result<()> {
+        let modified = self.tick();
+        let mut files = self.files()?;
+        if files.contains_key(path) {
+            return Err(io::ErrorKind::AlreadyExists.into());
+        }
+        files.insert(path.to_path_buf(), (String::new(), modified));
+        Ok(())
+    }
+
+    /// Refuses to overwrite `to`; moves everything below a folder `from`.
+    pub fn rename(&self, from: &Path, to: &Path) -> io::Result<()> {
+        let mut files = self.files()?;
+        if files.keys().any(|path| path.starts_with(to)) {
+            return Err(io::ErrorKind::AlreadyExists.into());
+        }
+        let moved: Vec<PathBuf> = files
+            .keys()
+            .filter(|path| path.starts_with(from))
+            .cloned()
+            .collect();
+        if moved.is_empty() {
+            return Err(io::ErrorKind::NotFound.into());
+        }
+        for path in moved {
+            let file = files.remove(&path).expect("listed above");
+            let rest = path.strip_prefix(from).expect("filtered above");
+            files.insert(to.join(rest), file);
+        }
+        Ok(())
+    }
+
+    /// Removes `path` and everything below it.
+    pub fn remove_all(&self, path: &Path) -> io::Result<()> {
+        let mut files = self.files()?;
+        let before = files.len();
+        files.retain(|file, _| !file.starts_with(path));
+        if files.len() == before {
+            return Err(io::ErrorKind::NotFound.into());
+        }
         Ok(())
     }
 
