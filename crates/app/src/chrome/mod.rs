@@ -796,7 +796,15 @@ impl Chrome {
             MenuCommand::Rename(target) => self.prompt_rename(target, window, cx),
             MenuCommand::Worktree(command) => self.run_worktree_command(command, window, cx),
             MenuCommand::Action(action) => window.dispatch_action(action.boxed_clone(), cx),
-            MenuCommand::Callback(callback) => callback(window, cx),
+            // Deferred out of this update: a callback may reach the chrome
+            // itself (opening a dialog does), which would re-enter it.
+            MenuCommand::Callback(callback) => {
+                let main = window.window_handle();
+                cx.defer(move |cx| {
+                    cx.update_window(main, |_, window, cx| callback(window, cx))
+                        .ok();
+                });
+            }
         }
     }
 
