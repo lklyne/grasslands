@@ -158,12 +158,17 @@ Probed with herdr 0.9.5 (dev session, PTY clients):
   `connection_local_only` to an API client; it's for herdr's own client
   shells.
 
-So grasslands takes the herdr way: attaching on its own (a new pane, every
-pane again after a reconnect), it runs plain `terminal attach`, and never
-detaches another client. A terminal someone else has stays theirs, and its
-pane shows "Detached: another client has this terminal." with Reattach.
-Reattach is the person's choice, so it alone passes `--takeover`. Local and
-remote panes follow the same rule.
+So grasslands takes over a terminal once, when it first shows it, as any
+newly launched client would: an older grasslands (an installed build next to
+a dev build, or one still quitting) may hold every terminal, and a plain
+attach then showed every pane Detached on launch (seen 2026-10-18). After
+that it never takes a terminal back on its own: re-attaching every pane
+after a reconnect runs plain `terminal attach`, so a terminal someone took
+meanwhile stays theirs, and its pane shows "Detached: another client has
+this terminal." with Reattach, the person's choice, which passes
+`--takeover`. Two instances on one session therefore don't fight: the newer
+one wins at launch, and neither steals back. Local and remote panes follow
+the same rule.
 
 The cost: after a connection drops without the machine noticing (a network
 partition rather than a restart), the old remote attach can outlive the
@@ -235,8 +240,8 @@ herdr's:
   terminal.
 - Agent forwarding to remote panes (`server.ssh_agent.register`), opted into
   by ssh_config as herdr's own remote client is.
-- Who owns a terminal: herdr's attach rule, with `--takeover` only on
-  Reattach.
+- Who owns a terminal: herdr's attach rule, with `--takeover` only on a
+  terminal's first view and on Reattach.
 
 The app's, for want of a herdr API:
 - The ssh master and socket forward: the socket API has no remote

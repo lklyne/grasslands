@@ -422,9 +422,12 @@ impl TerminalArea {
     /// How to attach `terminal_id` on `machine`: `None` while a remote
     /// machine's herdr isn't found yet.
     ///
-    /// Only the person's own Reattach passes `takeover`. Attaching on its
-    /// own, the app never detaches another client (herdr refuses, and the
-    /// pane shows Detached); see docs/decisions/0019-remote-machines.md.
+    /// A terminal's first view takes it over, like a newly launched client
+    /// should (a previous app instance may still hold it). Re-attaching on
+    /// its own after that, the app never takes a terminal back from a
+    /// client that took it (herdr refuses, and the pane shows Detached);
+    /// only the person's Reattach does. See
+    /// docs/decisions/0019-remote-machines.md.
     fn attach_command(
         &self,
         machine: &MachineId,
@@ -448,7 +451,8 @@ impl TerminalArea {
         }
     }
 
-    /// Commands for `machine`'s terminals that have no view yet.
+    /// Commands for `machine`'s terminals that have no view yet. A first
+    /// view takes the terminal over.
     fn attach_commands(
         &self,
         machine: &MachineId,
@@ -460,7 +464,7 @@ impl TerminalArea {
             .values()
             .filter(|pane| !self.terminals.has(machine, &pane.terminal_id))
             .filter_map(|pane| {
-                let command = self.attach_command(machine, &pane.terminal_id, false, cx)?;
+                let command = self.attach_command(machine, &pane.terminal_id, true, cx)?;
                 Some((pane.terminal_id.clone(), command))
             })
             .collect()
