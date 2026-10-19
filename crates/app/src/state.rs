@@ -56,6 +56,15 @@ const MACHINES_POLL: Duration = Duration::from_secs(30);
 /// How long a machine has to connect after a sign-in, setup or add exits.
 const RUN_CHECK: Duration = Duration::from_secs(30);
 
+/// What changed in the machine list or the selection, plus each session's
+/// changes relayed with their machine, for the views that list every
+/// machine. A view that shows the selected machine subscribes to its
+/// session instead (`SessionEvent`), whose events come before the relays.
+///
+/// A selection sends `MachineSelected`, then `ActiveRootChanged`. Views on
+/// the selected session follow the new one on `MachineSelected` and resync
+/// as for its `SnapshotReplaced` and `FocusedPaneChanged`, so the order they
+/// see is still: selection, cache, focused pane, root.
 #[derive(Debug, Clone)]
 pub enum AppEvent {
     /// The active worktree, as a machine and a path, changed: the focused
@@ -64,12 +73,6 @@ pub enum AppEvent {
     /// search, Changes, the editor's tab set and the sidebar's branch reads
     /// follow it, on any machine (see `AppState::fs_for`).
     ActiveRootChanged(Option<ActiveRoot>),
-    /// The selected machine's herdr cache was replaced (any change: startup,
-    /// events, reconnect, or another machine being selected). The new one is
-    /// `AppState::snapshot`.
-    SnapshotReplaced,
-    /// The selected machine's focused pane changed.
-    FocusedPaneChanged(Option<PaneId>),
     /// A known agent's status changed between two caches (chrome toasts it).
     AgentStatusChanged {
         machine: MachineId,
@@ -79,7 +82,6 @@ pub enum AppEvent {
     /// cache: see `MachineSnapshot`).
     MachinesChanged,
     /// A machine's herdr cache was replaced, whichever machine is selected.
-    /// For the selected one, `SnapshotReplaced` comes first.
     MachineSnapshot(MachineId),
     /// A machine's link (re)connected. Terminals whose attach died with the
     /// old connection attach again.
@@ -87,10 +89,9 @@ pub enum AppEvent {
     /// A machine's link was replaced (its target, session or enabled flag
     /// changed): its terminals' attaches died with the old link.
     MachineRestarted(MachineId),
-    /// Another machine was selected. Always followed, in order, by
-    /// `SnapshotReplaced`, `FocusedPaneChanged` and `ActiveRootChanged` for
-    /// the new machine, so views keyed on those need not handle this too;
-    /// it is for views that only name the selected machine.
+    /// Another machine was selected, or the selected machine's session was
+    /// replaced (a restarted link): `AppState::selected_session` is new.
+    /// Always followed by `ActiveRootChanged`.
     MachineSelected(MachineId),
     /// The file tree renamed or moved a file or folder; open editor tabs at or
     /// under `from` follow it to `to`.
@@ -251,21 +252,12 @@ impl AppState {
         }
         let selected = id == self.selected;
         match event {
-            SessionEvent::SnapshotReplaced => {
-                if selected {
-                    cx.emit(AppEvent::SnapshotReplaced);
-                }
-                cx.emit(AppEvent::MachineSnapshot(id));
-            }
+            SessionEvent::SnapshotReplaced => cx.emit(AppEvent::MachineSnapshot(id)),
             SessionEvent::AgentStatusChanged(change) => cx.emit(AppEvent::AgentStatusChanged {
                 machine: id,
                 change: change.clone(),
             }),
-            SessionEvent::FocusedPaneChanged(pane_id) => {
-                if selected {
-                    cx.emit(AppEvent::FocusedPaneChanged(pane_id.clone()));
-                }
-            }
+            SessionEvent::FocusedPaneChanged(_) => {}
             SessionEvent::WorktreeChanged => {
                 let root = self.active_root(cx);
                 if selected && root != self.announced_root {
@@ -379,9 +371,6 @@ impl AppState {
     /// The events for a new selection, in the order `AppEvent` documents.
     fn announce_selection(&mut self, cx: &mut Context<Self>) {
         cx.emit(AppEvent::MachineSelected(self.selected.clone()));
-        cx.emit(AppEvent::SnapshotReplaced);
-        let focused = self.focused_pane(cx).map(PaneId::from);
-        cx.emit(AppEvent::FocusedPaneChanged(focused));
         self.announced_root = self.active_root(cx);
         cx.emit(AppEvent::ActiveRootChanged(self.announced_root.clone()));
         cx.notify();
@@ -448,17 +437,7 @@ impl AppState {
         let gone = |id: &MachineId| {
             restarted(id) || matches!(id, MachineId::Remote(id) if diff.stop.contains(id))
         };
-        let links: Vec<MachineLink> = self
-            .machines
-            .iter()
-            .filter(|slot| gone(&slot.id))
-            .filter_map(|slot| slot.session.update(cx, |session, _| session.retire()))
-            .collect();
-        // Stopping a link waits on ssh, so it happens off the main thread.
-        cx.background_executor()
-            .spawn(async move { stop_links(links) })
-            .detach();
-        self.machines.retain(|slot| !gone(&slot.id));
+        self.remove_sessions(gone, cx);
         for (id, label) in diff.relabel {
             if let Some(session) = self.session(&MachineId::Remote(id)).cloned() {
                 session.update(cx, |session, cx| session.set_label(label, cx));
@@ -478,15 +457,29 @@ impl AppState {
             cx.emit(AppEvent::MachineRestarted(id));
         }
         let selected = machine_list::reselect(&self.selected, self.machines.iter().map(|s| &s.id));
-        if selected != self.selected {
+        if selected != self.selected || selected_restarted {
+            // A restarted machine has a new session, with an empty cache.
             self.selected = selected;
             self.announce_selection(cx);
-        } else if selected_restarted {
-            // A new link starts with an empty cache.
-            cx.emit(AppEvent::SnapshotReplaced);
         }
         cx.emit(AppEvent::MachinesChanged);
         cx.notify();
+    }
+
+    /// Takes the sessions `gone` picks out of the list, retired: a view
+    /// still holding one gets a failed task for every command.
+    fn remove_sessions(&mut self, gone: impl Fn(&MachineId) -> bool, cx: &mut Context<Self>) {
+        let links: Vec<MachineLink> = self
+            .machines
+            .iter()
+            .filter(|slot| gone(&slot.id))
+            .filter_map(|slot| slot.session.update(cx, |session, _| session.retire()))
+            .collect();
+        // Stopping a link waits on ssh, so it happens off the main thread.
+        cx.background_executor()
+            .spawn(async move { stop_links(links) })
+            .detach();
+        self.machines.retain(|slot| !gone(&slot.id));
     }
 
     /// Takes every session's link, leaving them linkless.
@@ -1366,14 +1359,14 @@ pub fn offline_config() -> herdr::Config {
 
 #[cfg(test)]
 mod tests {
-    use gpui_kit::{AppContext as _, TestAppContext};
+    use gpui_kit::{AppContext as _, Entity, Task, TestAppContext};
 
     use std::cell::RefCell;
     use std::rc::Rc;
     use std::sync::Arc;
 
     use super::Status;
-    use super::{ActiveRoot, AppEvent, AppState, MachineId, offline_config};
+    use super::{ActiveRoot, AppEvent, AppState, MachineId, Session, SessionEvent, offline_config};
     use crate::herdr::{self, Snapshot};
 
     fn agent(pane: &str) -> herdr::Agent {
@@ -1499,20 +1492,38 @@ mod tests {
         assert_eq!(roots.borrow().as_slice(), &[Some(remote())]);
     }
 
-    /// The events `AppState` emits while `f` runs, by kind.
+    /// An event's variant name, without its fields.
+    fn kind(event: &impl std::fmt::Debug) -> String {
+        let debug = format!("{event:?}");
+        let end = debug.find(['(', ' ']).unwrap_or(debug.len());
+        debug[..end].to_owned()
+    }
+
+    /// The events `AppState` (as `app:`) and `session` (as `session:`) emit
+    /// while `f` runs, by kind, in delivery order.
     fn emitted(
-        state: &gpui_kit::Entity<AppState>,
+        state: &Entity<AppState>,
+        session: Option<&Entity<Session>>,
         cx: &mut TestAppContext,
         f: impl FnOnce(&mut AppState, &mut gpui_kit::Context<AppState>),
     ) -> Vec<String> {
         let events = Rc::new(RefCell::new(Vec::new()));
-        let _subscription = cx.update(|cx| {
+        let mut subscriptions = vec![cx.update(|cx| {
             let events = events.clone();
-            cx.subscribe(state, move |_, event, _| {
-                events.borrow_mut().push(format!("{event:?}"));
+            cx.subscribe(state, move |_, event: &AppEvent, _| {
+                events.borrow_mut().push(format!("app:{}", kind(event)));
             })
-        });
+        })];
+        if let Some(session) = session {
+            subscriptions.push(cx.update(|cx| {
+                let events = events.clone();
+                cx.subscribe(session, move |_, event: &SessionEvent, _| {
+                    events.borrow_mut().push(format!("session:{}", kind(event)));
+                })
+            }));
+        }
         state.update(cx, f);
+        drop(subscriptions);
         events.take()
     }
 
@@ -1523,32 +1534,111 @@ mod tests {
         })
     }
 
-    #[gpui::test]
-    fn a_background_machines_snapshot_isnt_the_selected_ones(cx: &mut TestAppContext) {
-        let state = with_remote(cx);
-        let events = emitted(&state, cx, |state, cx| {
-            state.set_snapshot_on(&remote(), remote_snapshot(), cx);
-        });
-        assert_eq!(
-            events,
-            [format!("{:?}", AppEvent::MachineSnapshot(remote()))]
-        );
+    fn session_of(
+        state: &Entity<AppState>,
+        id: &MachineId,
+        cx: &mut TestAppContext,
+    ) -> Entity<Session> {
+        cx.read(|cx| state.read(cx).session(id).cloned())
+            .expect("listed")
     }
 
     #[gpui::test]
-    fn the_selected_machines_snapshot_is_announced_first(cx: &mut TestAppContext) {
+    fn a_background_machines_snapshot_is_relayed_only_as_its_own(cx: &mut TestAppContext) {
+        let state = with_remote(cx);
+        let events = emitted(&state, None, cx, |state, cx| {
+            state.set_snapshot_on(&remote(), remote_snapshot(), cx);
+        });
+        assert_eq!(events, ["app:MachineSnapshot"]);
+    }
+
+    #[gpui::test]
+    fn a_background_sessions_snapshot_doesnt_reach_the_selected_session(cx: &mut TestAppContext) {
+        let state = with_remote(cx);
+        let local = session_of(&state, &MachineId::Local, cx);
+        let events = emitted(&state, Some(&local), cx, |state, cx| {
+            state.set_snapshot_on(&remote(), remote_snapshot(), cx);
+        });
+        assert!(!events.iter().any(|e| e.starts_with("session:")));
+    }
+
+    #[gpui::test]
+    fn a_selection_announces_the_machine_then_its_root(cx: &mut TestAppContext) {
+        let state = with_remote(cx);
+        let events = emitted(&state, None, cx, |state, cx| {
+            state.select_machine(&remote(), cx);
+        });
+        assert_eq!(events, ["app:MachineSelected", "app:ActiveRootChanged"]);
+    }
+
+    #[gpui::test]
+    fn a_sessions_events_come_in_order_before_their_relays(cx: &mut TestAppContext) {
         let state = with_remote(cx);
         state.update(cx, |state, cx| state.select_machine(&remote(), cx));
-        let events = emitted(&state, cx, |state, cx| {
-            state.set_snapshot_on(&remote(), remote_snapshot(), cx);
+        let session = session_of(&state, &remote(), cx);
+        state.update(cx, |state, cx| {
+            let working = Snapshot {
+                agents: vec![agent("w1:p1")],
+                ..Snapshot::default()
+            };
+            state.set_snapshot_on(&remote(), Arc::new(working), cx);
+        });
+        let events = emitted(&state, Some(&session), cx, |state, cx| {
+            let mut blocked = agent("w1:p1");
+            blocked.agent_status = herdr::AgentStatus::Blocked;
+            let snapshot = Snapshot {
+                agents: vec![blocked],
+                focused_pane_id: Some("w1:p1".into()),
+                ..Snapshot::default()
+            };
+            state.set_snapshot_on(&remote(), Arc::new(snapshot), cx);
+            state.set_worktree(&remote(), Some("/home/lyle/api".into()), cx);
         });
         assert_eq!(
             events,
             [
-                format!("{:?}", AppEvent::SnapshotReplaced),
-                format!("{:?}", AppEvent::MachineSnapshot(remote())),
+                "session:SnapshotReplaced",
+                "session:AgentStatusChanged",
+                "session:FocusedPaneChanged",
+                "session:WorktreeChanged",
+                "app:MachineSnapshot",
+                "app:AgentStatusChanged",
+                "app:ActiveRootChanged",
             ]
         );
+    }
+
+    #[gpui::test]
+    fn a_background_sessions_worktree_isnt_the_active_root(cx: &mut TestAppContext) {
+        let state = with_remote(cx);
+        let events = emitted(&state, None, cx, |state, cx| {
+            state.set_worktree(&remote(), Some("/home/lyle/api".into()), cx);
+        });
+        assert!(events.is_empty());
+    }
+
+    #[gpui::test]
+    fn a_command_runs_on_the_machine_it_names(cx: &mut TestAppContext) {
+        let state = with_remote(cx);
+        let task = cx.update(|cx| {
+            state.read(cx).on(&remote(), cx, |session, _| {
+                Task::ready(Ok(session.id().clone()))
+            })
+        });
+        let ran_on = cx.foreground_executor().block_test(task).ok();
+        assert_eq!(ran_on, Some(remote()));
+    }
+
+    #[gpui::test]
+    fn a_removed_sessions_commands_fail(cx: &mut TestAppContext) {
+        let state = with_remote(cx);
+        let session = session_of(&state, &remote(), cx);
+        state.update(cx, |state, cx| {
+            state.remove_sessions(|id| id == &remote(), cx)
+        });
+        let task = cx.update(|cx| session.read(cx).close_pane(&"w1:p1".into(), cx));
+        let result = cx.foreground_executor().block_test(task);
+        assert!(matches!(result, Err(herdr::Error::Refused(m)) if m.contains("no longer saved")));
     }
 
     #[gpui::test]

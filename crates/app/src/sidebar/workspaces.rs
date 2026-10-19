@@ -183,7 +183,7 @@ impl WorkspaceList {
         let observe = cx.observe(&state, |_, _, cx| cx.notify());
         let subscribe = cx.subscribe(&state, |this, _, event, cx| match event {
             // Local's cache can change while another machine is selected.
-            AppEvent::SnapshotReplaced
+            AppEvent::MachineSelected(_)
             | AppEvent::MachinesChanged
             | AppEvent::MachineSnapshot(_) => this.sync_checkouts(cx),
             // The focused pane moved to another checkout, or another machine

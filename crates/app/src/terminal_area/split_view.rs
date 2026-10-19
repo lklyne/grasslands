@@ -281,7 +281,7 @@ impl TerminalArea {
                 cx.listener(move |this, event: &MouseDownEvent, window, cx| {
                     this.context_menu(
                         MenuTarget::Pane {
-                            machine: this.state.read(cx).selected().clone(),
+                            machine: this.machine(cx),
                             pane_id: menu_pane.clone(),
                         },
                         event.position,
@@ -394,11 +394,10 @@ impl TerminalArea {
         let Some(drop) = pane_drop((source, tab_of(source)), (target, tab_of(target))) else {
             return;
         };
-        let machine = self.machine(cx);
-        let state = self.state.read(cx);
+        let session = self.session.read(cx);
         match drop {
-            PaneDrop::Swap => state.swap_panes(&machine, source, target, cx),
-            PaneDrop::Move(destination) => state.move_pane(&machine, source, destination, cx),
+            PaneDrop::Swap => session.swap_panes(source, target, cx),
+            PaneDrop::Move(destination) => session.move_pane(source, destination, cx),
         }
         .detach_and_log_err(cx);
     }
