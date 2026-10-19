@@ -34,7 +34,7 @@ impl Run {
             .until(cx, Duration::from_secs(20), |area, _, cx| {
                 let app = area.state().read(cx);
                 match expect.as_str() {
-                    "unreachable" => app.machine(&MachineId::Local).is_some_and(|local| {
+                    "unreachable" => app.machine(&MachineId::Local, cx).is_some_and(|local| {
                         matches!(local.status(), Status::Offline { retrying: true, .. })
                     }),
                     _ => !matches!(app.setup().read(cx).stage(), Stage::Checking),
@@ -120,7 +120,7 @@ impl Run {
             .until(cx, Duration::from_secs(30), |area, _, cx| {
                 let app = area.state().read(cx);
                 app.setup().read(cx).is_ready()
-                    && app.snapshot().generation > 0
+                    && app.snapshot(cx).generation > 0
                     && area.setup_terminal().read(cx).terminal().is_none()
             })
             .await;

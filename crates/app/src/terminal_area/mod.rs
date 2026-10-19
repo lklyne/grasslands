@@ -266,7 +266,7 @@ impl TerminalArea {
     }
 
     fn snapshot(&self, cx: &App) -> std::sync::Arc<Snapshot> {
-        self.state.read(cx).snapshot().clone()
+        self.state.read(cx).snapshot(cx).clone()
     }
 
     /// The machine on screen, which the area's commands act on.
@@ -624,7 +624,7 @@ impl TerminalArea {
     /// screen, while it isn't connected. Its last snapshot is kept for when
     /// it comes back.
     fn render_machine_problem(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
-        let machine = self.state.read(cx).selected_machine();
+        let machine = self.state.read(cx).selected_machine(cx);
         if machine.id().is_local() || machine.status().is_usable() {
             return None;
         }
@@ -656,7 +656,7 @@ impl TerminalArea {
     fn render_machine_run(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let state = self.state.read(cx);
         let run = state.machine_run()?;
-        let machine = run.machine.as_ref().and_then(|id| state.machine(id));
+        let machine = run.machine.as_ref().and_then(|id| state.machine(id, cx));
         let detail = machine.and_then(|m| crate::machines::MachineState::of(m.status()).1);
         let close_state = self.state.clone();
         let retry_state = self.state.clone();
@@ -710,7 +710,7 @@ impl TerminalArea {
     /// What the area says when there is no tab to show.
     fn empty_message(&self, snapshot: &Snapshot, cx: &App) -> String {
         let state = self.state.read(cx);
-        let machine = state.selected_machine();
+        let machine = state.selected_machine(cx);
         if !machine.id().is_local() {
             match machine.status() {
                 Status::Connected if snapshot.generation != 0 => {

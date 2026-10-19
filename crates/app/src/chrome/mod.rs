@@ -205,7 +205,7 @@ impl Chrome {
                 // The badge counts the live machines' agents: their caches,
                 // and which machines are live.
                 AppEvent::MachineSnapshot(_) | AppEvent::MachinesChanged => {
-                    this.update_badge(state.read(cx).attention_count());
+                    this.update_badge(state.read(cx).attention_count(cx));
                 }
                 _ => {}
             }
@@ -321,7 +321,7 @@ impl Chrome {
                 let still = this
                     .state
                     .read(cx)
-                    .machine(&machine)
+                    .machine(&machine, cx)
                     .and_then(|m| find_agent(m.snapshot(), &change.pane_id))
                     .is_some_and(|agent| agent.agent_status == change.status);
                 if still {
@@ -350,7 +350,7 @@ impl Chrome {
             _ => return,
         };
         let state = self.state.read(cx);
-        let Some(snapshot) = state.machine(machine).map(|m| m.snapshot()) else {
+        let Some(snapshot) = state.machine(machine, cx).map(|m| m.snapshot()) else {
             return;
         };
         let agent = find_agent(snapshot, &change.pane_id);
@@ -560,7 +560,7 @@ impl Chrome {
         static EMPTY: std::sync::LazyLock<Snapshot> = std::sync::LazyLock::new(Snapshot::default);
         self.state
             .read(cx)
-            .machine(machine)
+            .machine(machine, cx)
             .map_or(&*EMPTY, |m| m.snapshot())
     }
 
@@ -762,7 +762,7 @@ impl Chrome {
         if machine != state.selected() {
             return Vec::new();
         }
-        let snapshot = state.snapshot();
+        let snapshot = state.snapshot(cx);
         let (kind, context) = invocation_context(target, snapshot);
         self.plugin_actions
             .iter()

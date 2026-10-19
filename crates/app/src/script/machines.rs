@@ -260,7 +260,7 @@ impl Run {
 pub(super) fn remote<'a>(area: &Hooks, cx: &'a App) -> Option<&'a crate::state::Machine> {
     area.state()
         .read(cx)
-        .machines()
+        .machines(cx)
         .find(|m| m.label() == LABEL)
 }
 

@@ -361,7 +361,7 @@ pub(crate) fn screen(
 /// "Can't reach herdr" while the first read hasn't arrived and the last
 /// attempt failed. Before that, the plain connecting message is enough.
 fn connection_problem(app: &AppState, cx: &App) -> Option<AnyElement> {
-    let local = app.machine(&MachineId::Local)?;
+    let local = app.machine(&MachineId::Local, cx)?;
     let Status::Offline {
         reason,
         retrying: true,

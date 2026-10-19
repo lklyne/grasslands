@@ -353,7 +353,7 @@ impl TerminalArea {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let selected = self.state.read(cx).selected_machine();
+        let selected = self.state.read(cx).selected_machine(cx);
         if !selected.id().is_local() {
             let message = format!("Can't drop files into {} terminals yet", selected.label());
             crate::sounds::play(cues::Cue::Error, crate::sounds::subtle());

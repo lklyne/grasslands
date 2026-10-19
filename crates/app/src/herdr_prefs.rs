@@ -138,7 +138,7 @@ pub fn running_agents(cx: &App) -> BTreeSet<String> {
     };
     let state = state.read(cx);
     state
-        .machine(&MachineId::Local)
+        .machine(&MachineId::Local, cx)
         .map(|local| {
             local
                 .snapshot()

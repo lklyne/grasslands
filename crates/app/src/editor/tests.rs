@@ -429,8 +429,9 @@ fn remote() -> MachineId {
 impl Fixture {
     fn fake_remote(&self, cx: &mut TestAppContext) -> Arc<FakeFs> {
         let fake = Arc::new(FakeFs::default());
-        self.state
-            .update(cx, |state, _| state.set_test_fs(remote(), fake.clone()));
+        self.state.update(cx, |state, cx| {
+            state.set_test_fs(remote(), fake.clone(), cx)
+        });
         fake
     }
 
@@ -698,7 +699,7 @@ fn remote_worktrees_get_their_own_tab_sets(cx: &mut TestAppContext) {
         cx.run_until_parked();
     };
     f.state.update(cx, |state, cx| {
-        state.add_test_machine("box", "box", Arc::default());
+        state.add_test_machine("box", "box", Arc::default(), cx);
         state.select_machine(&remote(), cx);
     });
     set_root(cx, api);

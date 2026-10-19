@@ -75,7 +75,7 @@ impl Changes {
         let mut this = Self {
             state: state.clone(),
             diff,
-            root: state.read(cx).active_root(),
+            root: state.read(cx).active_root(cx),
             patch: None,
             loaded: false,
             reading: None,
@@ -95,7 +95,7 @@ impl Changes {
         let Some(root) = self.root.clone() else {
             return;
         };
-        let Some(fs) = self.state.read(cx).fs_for(&root.machine) else {
+        let Some(fs) = self.state.read(cx).fs_for(&root.machine, cx) else {
             return;
         };
         self.reading = Some(cx.spawn(async move |this, cx| {
@@ -168,7 +168,7 @@ impl Focusable for Changes {
 impl Render for Changes {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // An offline machine's files can't be read, like the file panel's.
-        let machine = self.state.read(cx).selected_machine();
+        let machine = self.state.read(cx).selected_machine(cx);
         if !machine.id().is_local() && !machine.status().is_usable() {
             let label = machine.label().to_owned();
             return div()

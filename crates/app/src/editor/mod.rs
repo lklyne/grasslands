@@ -102,10 +102,10 @@ struct GroupKey {
 }
 
 impl GroupKey {
-    fn of(state: &AppState) -> Self {
+    fn of(state: &AppState, cx: &App) -> Self {
         Self {
             machine: state.selected().clone(),
-            root: state.active_root().map(|root| root.path),
+            root: state.active_root(cx).map(|root| root.path),
         }
     }
 }
@@ -180,7 +180,7 @@ impl Editor {
             |this, state, event, window, cx| match event {
                 // Also sent after every `MachineSelected`.
                 AppEvent::ActiveRootChanged(_) => {
-                    this.visible = GroupKey::of(state.read(cx));
+                    this.visible = GroupKey::of(state.read(cx), cx);
                     cx.notify();
                 }
                 AppEvent::MachineConnected(_) => {
@@ -230,7 +230,7 @@ impl Editor {
             })
         });
         Self {
-            visible: GroupKey::of(state.read(cx)),
+            visible: GroupKey::of(state.read(cx), cx),
             state,
             groups: HashMap::new(),
             opening: HashSet::new(),
@@ -306,7 +306,7 @@ impl Editor {
     fn label(&self, machine: &MachineId, cx: &App) -> String {
         self.state
             .read(cx)
-            .machine(machine)
+            .machine(machine, cx)
             .map_or_else(|| machine.to_string(), |m| m.label().to_owned())
     }
 
@@ -376,7 +376,7 @@ impl Editor {
             self.go_to_line(line, window, cx);
             return;
         }
-        let Some(fs) = self.state.read(cx).fs_for(machine) else {
+        let Some(fs) = self.state.read(cx).fs_for(machine, cx) else {
             let offline = format!("{} is offline", self.label(machine, cx));
             let message = cannot_open(self, &offline, cx);
             notify_error(message, window, cx);
@@ -547,7 +547,7 @@ impl Editor {
             if buffer.caps().watch {
                 continue;
             }
-            let fs = self.state.read(cx).fs_for(machine);
+            let fs = self.state.read(cx).fs_for(machine, cx);
             if !poll::wanted(window_active, fs.is_some(), buffer.is_saving()) {
                 continue;
             }
@@ -691,7 +691,7 @@ impl Editor {
             return;
         };
         let (machine, path) = (buffer.machine.clone(), buffer.path.clone());
-        let Some(fs) = self.state.read(cx).fs_for(&machine) else {
+        let Some(fs) = self.state.read(cx).fs_for(&machine, cx) else {
             let message = format!(
                 "Cannot save {}: {} is offline. Your edits are kept; save again once it reconnects.",
                 path.display(),

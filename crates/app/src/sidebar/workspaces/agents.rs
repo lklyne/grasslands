@@ -26,7 +26,7 @@ use crate::herdr::config::Edit;
 use crate::herdr::{Agent, PaneId, Snapshot};
 use crate::herdr_prefs::{self, HerdrPrefs};
 use crate::label;
-use crate::state::{AppState, Machine, MachineId, On};
+use crate::state::{AppState, MachineId, On, Session};
 use crate::status::{self, priority};
 
 /// The agents in `sort` order.
@@ -56,9 +56,13 @@ pub(super) fn ordered(snapshot: &Snapshot, sort: AgentSort) -> Vec<&Agent> {
 
 /// Every connected machine's agents in `sort` order, each with its machine.
 /// "grouped" keeps the machines' order; "priority" merges them.
-fn ordered_everywhere(state: &AppState, sort: AgentSort) -> Vec<(&Machine, &Agent)> {
-    let mut agents: Vec<(&Machine, &Agent)> = state
-        .live_machines()
+fn ordered_everywhere<'a>(
+    state: &'a AppState,
+    sort: AgentSort,
+    cx: &'a App,
+) -> Vec<(&'a Session, &'a Agent)> {
+    let mut agents: Vec<(&Session, &Agent)> = state
+        .live_machines(cx)
         .flat_map(|m| ordered(m.snapshot(), sort).into_iter().map(move |a| (m, a)))
         .collect();
     if sort == AgentSort::Priority {
@@ -140,7 +144,7 @@ impl AgentList {
     /// One agent's row; `show_machine` adds its machine's label.
     fn render_agent(
         &self,
-        machine: &Machine,
+        machine: &Session,
         agent: &Agent,
         show_machine: bool,
         cx: &Context<Self>,
@@ -299,8 +303,8 @@ impl Panel for AgentList {
 impl Render for AgentList {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let state = self.state.read(cx);
-        let show_machine = state.machines().count() > 1;
-        let rows: Vec<AnyElement> = ordered_everywhere(state, self.sort(cx))
+        let show_machine = state.machines(cx).count() > 1;
+        let rows: Vec<AnyElement> = ordered_everywhere(state, self.sort(cx), cx)
             .into_iter()
             .map(|(machine, agent)| self.render_agent(machine, agent, show_machine, cx))
             .collect();

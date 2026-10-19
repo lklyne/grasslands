@@ -179,7 +179,7 @@ impl HerdrCommand {
                 ..
             } => {
                 let state = state.read(cx);
-                let herdr_group = state.machine(&machine).is_some_and(|m| {
+                let herdr_group = state.machine(&machine, cx).is_some_and(|m| {
                     let herdr = group_members(m.snapshot(), &workspace_id, herdr_placement);
                     herdr_closes_exactly(&members, &herdr)
                 });

@@ -114,7 +114,7 @@ impl Run {
             "clicking api on dockerbox shows its attached terminal",
         );
         let remote_selected = self.read(cx, |area, cx| {
-            area.state().read(cx).active_worktree().is_none()
+            area.state().read(cx).active_worktree(cx).is_none()
                 && !area.state().read(cx).selected().is_local()
         })?;
         self.check(
@@ -359,7 +359,7 @@ impl Run {
                 .until(cx, Duration::from_secs(40), |area, _, cx| {
                     area.state()
                         .read(cx)
-                        .machine(&added)
+                        .machine(&added, cx)
                         .is_some_and(|m| m.label() == label)
                 })
                 .await;
@@ -368,7 +368,7 @@ impl Run {
             .until(cx, Duration::from_secs(60), |area, _, cx| {
                 area.state()
                     .read(cx)
-                    .machine(&added)
+                    .machine(&added, cx)
                     .is_some_and(|m| m.status().is_usable())
             })
             .await;
@@ -443,7 +443,7 @@ fn workspace_named(
 ) -> Option<WorkspaceId> {
     area.state()
         .read(cx)
-        .machine(machine)?
+        .machine(machine, cx)?
         .snapshot()
         .workspaces
         .iter()
