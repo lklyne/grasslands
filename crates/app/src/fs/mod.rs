@@ -123,10 +123,6 @@ impl Fs {
         Caps::of(&self.machine())
     }
 
-    pub fn is_local(&self) -> bool {
-        matches!(self, Self::Local)
-    }
-
     /// Each of `dirs` one level deep, respecting .gitignore inside a repo;
     /// dotfiles shown, `.git` hidden; folders first, then case-insensitive
     /// by name. A saved machine asks git about all of them in one command.

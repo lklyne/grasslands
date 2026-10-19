@@ -26,7 +26,7 @@ use crate::herdr::{
     MachineStatus, PaneId, SessionSync, Snapshot, Update, Version, machines,
 };
 use crate::setup::{FixRun, Setup, Stage};
-use crate::{sounds, worktree};
+use crate::sounds;
 use cues::{Cue, PlayOptions};
 
 mod machine_list;
@@ -1224,8 +1224,8 @@ impl AppState {
         self.follow_dir(id, dir, cx);
     }
 
-    /// Resolves `dir` to its worktree (see `Fs::resolve_root`): at once on
-    /// Local, on the background executor elsewhere. A machine whose files
+    /// Resolves `dir` to its worktree (see `Fs::resolve_root`): at once where
+    /// that's cheap (`Caps::cheap`), on the background executor elsewhere. A machine whose files
     /// can't be read yet tries again on the next snapshot, poll or connect.
     fn follow_dir(&mut self, id: &MachineId, dir: Option<PathBuf>, cx: &mut Context<Self>) {
         let Some(dir) = dir else { return };
@@ -1237,8 +1237,8 @@ impl AppState {
             return;
         }
         machine.focused_dir = Some(dir.clone());
-        if fs.is_local() {
-            if let Some(root) = worktree::resolve_root(&dir) {
+        if fs.caps().cheap {
+            if let Some(root) = fs.resolve_root(&dir) {
                 self.set_worktree(id, Some(root), cx);
             }
             return;
