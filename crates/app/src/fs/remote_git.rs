@@ -3,6 +3,7 @@
 //! command, so a poll costs one round trip.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -68,24 +69,34 @@ struct Header<'a> {
     rest: &'a [u8],
 }
 
+/// `Ok(None)` outside git; an error when the machine couldn't be asked (ssh
+/// itself failed, say as the connection drops), so callers keep what they
+/// show rather than taking it for "not a repo".
 fn run_git<'a>(
     run: &Run<'_>,
     dir: &Path,
     mode: &str,
     stdout: &'a mut Vec<u8>,
-) -> Option<Header<'a>> {
-    let out = match run(&["sh", "-c", GIT, "sh", mode], Some(dir)) {
-        Ok(out) => out,
-        Err(error) => {
-            tracing::warn!("changes: git in {}: {error}", dir.display());
-            return None;
-        }
-    };
+) -> io::Result<Option<Header<'a>>> {
+    let out = run(&["sh", "-c", GIT, "sh", mode], Some(dir))
+        .inspect_err(|error| tracing::warn!("changes: git in {}: {error}", dir.display()))?;
+    if out.status.code() == Some(3) {
+        return Ok(None);
+    }
     if !out.status.success() {
-        return None;
+        let error = io::Error::other(format!(
+            "git in {} exited {}: {}",
+            dir.display(),
+            out.status,
+            String::from_utf8_lossy(&out.stderr).trim()
+        ));
+        tracing::warn!("changes: {error}");
+        return Err(error);
     }
     *stdout = out.stdout;
     parse_header(stdout)
+        .map(Some)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "unexpected git output"))
 }
 
 fn parse_header(stdout: &[u8]) -> Option<Header<'_>> {
@@ -109,16 +120,16 @@ fn take_field(rest: &mut &[u8]) -> Option<String> {
     Some(field)
 }
 
-pub(super) fn summary(run: &Run<'_>, dir: &Path) -> Option<Summary> {
+pub(super) fn summary(run: &Run<'_>, dir: &Path) -> io::Result<Option<Summary>> {
     let mut stdout = Vec::new();
     let header = run_git(run, dir, "summary", &mut stdout)?;
-    Some(parse_summary(&header))
+    Ok(header.map(|header| parse_summary(&header)))
 }
 
-pub(super) fn patch(run: &Run<'_>, dir: &Path) -> Option<String> {
+pub(super) fn patch(run: &Run<'_>, dir: &Path) -> io::Result<Option<String>> {
     let mut stdout = Vec::new();
     let header = run_git(run, dir, "patch", &mut stdout)?;
-    Some(String::from_utf8_lossy(header.rest).into_owned())
+    Ok(header.map(|header| String::from_utf8_lossy(header.rest).into_owned()))
 }
 
 /// `--numstat -z` records, an empty record, then `--name-status -z` pairs.
@@ -208,7 +219,7 @@ mod tests {
     use super::*;
 
     fn remote(dir: &Path) -> Option<Summary> {
-        summary(&local_run, dir)
+        summary(&local_run, dir).unwrap()
     }
 
     fn feature_branch(name: &str) -> PathBuf {
@@ -301,7 +312,7 @@ mod tests {
     #[test]
     fn patch_should_hold_edits_and_new_files_since_parent() {
         let dir = feature_branch("remote-patch");
-        let patch = patch(&local_run, &dir).unwrap();
+        let patch = patch(&local_run, &dir).unwrap().unwrap();
         for line in [
             "diff --git a/a.txt b/a.txt",
             " one",
@@ -371,7 +382,7 @@ mod tests {
     fn remote_api_repo_should_read_like_local() {
         use super::super::remote::{filter_listing, search, ssh_run};
         let api = Path::new("/home/lyle/api");
-        let summary = summary(&ssh_run, api).expect("a summary");
+        let summary = summary(&ssh_run, api).unwrap().expect("a summary");
         let files: Vec<_> = summary.files.iter().map(|(p, c)| (p.clone(), *c)).collect();
         assert_eq!(
             (summary.branch.as_deref(), summary.parent.as_deref(), files),
@@ -417,6 +428,7 @@ mod tests {
         );
         assert!(
             patch(&ssh_run, api)
+                .unwrap()
                 .unwrap()
                 .contains("diff --git a/src/main.rs")
         );

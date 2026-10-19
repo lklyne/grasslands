@@ -217,6 +217,78 @@ impl FileTree {
         self.model.as_ref().map(FileModel::root)
     }
 
+    // Script hooks (`RT_SCRIPT=remote-files`).
+
+    /// The names listed in `dir`, once it's loaded.
+    pub fn listed(&self, dir: &Path) -> Option<Vec<String>> {
+        let entries = self.model.as_ref()?.listing(dir)?;
+        Some(entries.iter().map(|e| e.name.clone()).collect())
+    }
+
+    /// What the footer shows.
+    pub fn git_summary(&self) -> Option<&git::Summary> {
+        self.git.as_ref()
+    }
+
+    /// Why the root can't be listed, as shown in place of the tree.
+    pub fn root_error(&self) -> Option<&str> {
+        self.root_error.as_deref()
+    }
+
+    /// The search box's matches; `None` while it's empty.
+    pub fn search_results(&self) -> Option<&search::Results> {
+        self.results.as_ref()
+    }
+
+    /// Expands `dir`, as clicking its chevron does.
+    pub fn expand(&mut self, dir: &Path, cx: &mut Context<Self>) {
+        let Some(model) = self.model.as_mut() else {
+            return;
+        };
+        model.set_expanded(dir, true);
+        if !model.is_loaded(dir) {
+            self.load(vec![dir.to_path_buf()], cx);
+        }
+        self.rebuild(cx);
+    }
+
+    /// Types `query` into the search box.
+    pub fn set_query(&mut self, query: &str, window: &mut Window, cx: &mut Context<Self>) {
+        self.query.update(cx, |input, cx| {
+            input.set_value(query.to_owned(), window, cx)
+        });
+        self.search(cx);
+    }
+
+    /// The context menu's New File, Rename and Delete, past their prompts.
+    pub fn create_file(
+        &mut self,
+        dir: PathBuf,
+        name: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.create(dir, name, false, window, cx);
+    }
+
+    pub fn rename_to(
+        &mut self,
+        path: &Path,
+        name: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.rename(path, name, window, cx);
+    }
+
+    pub fn ask_to_remove(&mut self, path: &Path, window: &mut Window, cx: &mut Context<Self>) {
+        if self.machine.is_local() {
+            self.remove(path, window, cx);
+        } else {
+            self.confirm_remove(path, window, cx);
+        }
+    }
+
     /// The root's files; `None` while its machine is offline.
     fn fs(&self, cx: &App) -> Option<Fs> {
         self.state.read(cx).fs_for(&self.machine)
@@ -289,7 +361,9 @@ impl FileTree {
                 })
                 .await;
             let _ = this.update(cx, |this, cx| {
-                // A read for a root we have since left.
+                // A read for a root we have since left, or one that failed
+                // (the machine dropped): keep what's shown.
+                let Ok(summary) = summary else { return };
                 if this.is_root(&machine, &root) && this.git != summary {
                     this.git = summary;
                     cx.notify();

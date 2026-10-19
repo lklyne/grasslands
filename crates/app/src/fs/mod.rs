@@ -187,23 +187,24 @@ impl Fs {
     }
 
     /// The Changes summary for the checkout containing `dir`; `None`
-    /// outside git.
-    pub fn git_summary(&self, dir: &Path) -> Option<crate::changes::git::Summary> {
+    /// outside git, an error if a saved machine couldn't be asked.
+    pub fn git_summary(&self, dir: &Path) -> io::Result<Option<crate::changes::git::Summary>> {
         match self {
-            Self::Local => local_git::read(dir),
+            Self::Local => Ok(local_git::read(dir)),
             Self::Remote { files, .. } => remote_git::summary(&remote::runner(files), dir),
             #[cfg(test)]
-            Self::Fake(_) => None,
+            Self::Fake(_) => Ok(None),
         }
     }
 
-    /// The Changes tab's patch for the checkout containing `dir`.
-    pub fn git_patch(&self, dir: &Path) -> Option<String> {
+    /// The Changes tab's patch for the checkout containing `dir`; errors
+    /// like `git_summary`.
+    pub fn git_patch(&self, dir: &Path) -> io::Result<Option<String>> {
         match self {
-            Self::Local => local_git::patch(dir),
+            Self::Local => Ok(local_git::patch(dir)),
             Self::Remote { files, .. } => remote_git::patch(&remote::runner(files), dir),
             #[cfg(test)]
-            Self::Fake(_) => None,
+            Self::Fake(_) => Ok(None),
         }
     }
 

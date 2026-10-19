@@ -100,7 +100,10 @@ impl Changes {
                     async move { fs.git_patch(&path) }
                 })
                 .await;
-            let _ = this.update(cx, |this, cx| this.apply(&root, patch, cx));
+            // A failed read (the machine dropped) keeps what's shown.
+            if let Ok(patch) = patch {
+                let _ = this.update(cx, |this, cx| this.apply(&root, patch, cx));
+            }
         })
         .detach();
     }
@@ -125,6 +128,11 @@ impl Changes {
         self.diff.update(cx, |diff, cx| diff.set_files(files, cx));
         self.patch = patch;
         cx.notify();
+    }
+
+    /// The patch on screen; `None` before the first read or outside git.
+    pub fn patch(&self) -> Option<&str> {
+        self.patch.as_deref()
     }
 
     pub fn file_count(&self, cx: &App) -> usize {
