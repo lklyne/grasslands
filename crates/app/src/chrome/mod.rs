@@ -122,6 +122,22 @@ impl MenuEntry {
     }
 }
 
+/// `entries` as text, for tests: items by label, `---` for a separator and
+/// `Label › [...]` for a submenu.
+#[cfg(test)]
+pub fn labels(entries: &[MenuEntry]) -> Vec<String> {
+    entries
+        .iter()
+        .map(|entry| match entry {
+            MenuEntry::Item { label, .. } => label.to_string(),
+            MenuEntry::Separator => "---".to_owned(),
+            MenuEntry::Submenu { label, entries } => {
+                format!("{label} › {:?}", labels(entries))
+            }
+        })
+        .collect()
+}
+
 struct OpenMenu {
     position: Point<Pixels>,
     menu: Entity<PopupMenu>,
@@ -861,21 +877,54 @@ fn build_menu(
     })
 }
 
+/// Opens a menu of `entries` at `position` through the chrome of `window`
+/// (the main window), for views without a `Chrome` handle.
+pub fn open_menu(
+    entries: Vec<MenuEntry>,
+    position: Point<Pixels>,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    if entries.is_empty() {
+        return;
+    }
+    if let Some(chrome) = get(window, cx) {
+        chrome.update(cx, |chrome, cx| chrome.menu(entries, position, window, cx));
+    }
+}
+
+/// Fills a Kit popup `menu` with `entries`, run through the chrome of
+/// `window` like a context menu's. For menus Kit builds and draws itself in
+/// the main window (a dock panel's title-bar menu), so they share the
+/// floating menus' entries.
+pub fn fill_popup(
+    menu: PopupMenu,
+    entries: &[MenuEntry],
+    window: &mut Window,
+    cx: &mut App,
+) -> PopupMenu {
+    let Some(chrome) = get(window, cx) else {
+        return menu;
+    };
+    add_entries(menu, &chrome.downgrade(), entries, window, cx)
+}
+
 fn add_entries(
     mut menu: PopupMenu,
     chrome: &WeakEntity<Chrome>,
     entries: &[MenuEntry],
     window: &mut Window,
-    cx: &mut Context<PopupMenu>,
+    cx: &mut App,
 ) -> PopupMenu {
     for entry in entries {
         menu = match entry {
             MenuEntry::Separator => menu.separator(),
             MenuEntry::Submenu { label, entries } => {
-                let (chrome, entries) = (chrome.clone(), entries.clone());
-                menu.submenu(label.clone(), window, cx, move |menu, window, cx| {
-                    add_entries(menu, &chrome, &entries, window, cx).min_w(px(160.))
-                })
+                let chrome = chrome.clone();
+                let submenu = PopupMenu::build(window, cx, move |menu, window, cx| {
+                    add_entries(menu, &chrome, entries, window, cx).min_w(px(160.))
+                });
+                menu.item(PopupMenuItem::submenu(label.clone(), submenu))
             }
             MenuEntry::Item {
                 label,

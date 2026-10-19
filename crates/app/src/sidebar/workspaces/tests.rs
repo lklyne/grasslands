@@ -413,3 +413,22 @@ fn workspace_in_a_git_folder_shows_its_branch(cx: &mut TestAppContext) {
     });
     assert_eq!(branch.as_deref(), Some("topic"));
 }
+
+/// The "+" menu and the panel's title-bar menu are both built from these.
+#[gpui::test]
+fn new_menu_offers_workspace_worktree_and_machine_entries(cx: &mut TestAppContext) {
+    let (panels, cx) = fixture(cx);
+    let labels = panels.spaces.update(cx, |spaces, cx| {
+        crate::chrome::labels(&spaces.new_menu_entries(cx))
+    });
+    assert_eq!(
+        labels,
+        [
+            "New Workspace",
+            "New Worktree…",
+            "Open Worktree…",
+            "---",
+            "Add Machine…"
+        ]
+    );
+}

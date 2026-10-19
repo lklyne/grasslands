@@ -26,10 +26,10 @@ use crate::changes::Changes;
 use crate::chrome::Chrome;
 use crate::editor::{Editor, EditorEvent};
 use crate::overlay;
-use crate::window_registry;
 use crate::sidebar::SidebarPanels;
 use crate::state::AppState;
 use crate::terminal_area::TerminalArea;
+use crate::window_registry;
 
 actions!(workspace, [NextMainTab, PreviousMainTab, ShowHerdr]);
 

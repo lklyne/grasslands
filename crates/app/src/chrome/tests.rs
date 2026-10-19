@@ -2,15 +2,18 @@
 //! socket that does not exist, so nothing here can reach a real herdr; the
 //! cache is fed with `replace_snapshot` instead.
 
+use std::cell::Cell;
+use std::rc::Rc;
 use std::sync::Arc;
 
 use gpui_kit::component::WindowExt as _;
+use gpui_kit::component::menu::PopupMenu;
 use gpui_kit::{
     AnyWindowHandle, AppContext as _, Bounds, Entity, Focusable as _, Point, TestAppContext,
     WindowBounds, WindowOptions, px, size,
 };
 
-use super::{Chrome, HerdrCommand, MenuEntry, MenuTarget};
+use super::{Chrome, HerdrCommand, MenuCommand, MenuEntry, MenuTarget};
 use crate::herdr::{self, Agent, AgentStatus, Snapshot};
 use crate::state::{AppState, MachineId};
 
@@ -388,4 +391,82 @@ fn an_inferred_group_closes_exactly_its_listed_members(cx: &mut TestAppContext) 
     };
     // w3 is herdr's own linked worktree of the same repo, so it belongs too.
     assert_eq!(members, ["w1", "w2", "w3"]);
+}
+
+/// A callback entry that counts its runs, and the entries around it.
+fn counted_entries() -> (Vec<MenuEntry>, Rc<Cell<usize>>) {
+    let runs = Rc::new(Cell::new(0));
+    let count = runs.clone();
+    let callback = MenuCommand::Callback(Rc::new(move |_, _| count.set(count.get() + 1)));
+    let entries = vec![
+        MenuEntry::item("Run", callback.clone()),
+        MenuEntry::Separator,
+        MenuEntry::Submenu {
+            label: "More".into(),
+            entries: vec![MenuEntry::item("Run Too", callback)],
+        },
+    ];
+    (entries, runs)
+}
+
+#[gpui_kit::test]
+fn a_menu_with_a_submenu_opens(cx: &mut TestAppContext) {
+    let f = fixture(cx);
+    let (entries, _) = counted_entries();
+    assert_eq!(
+        super::labels(&entries),
+        ["Run", "---", "More › [\"Run Too\"]"]
+    );
+    cx.update_window(f.window, |_, window, cx| {
+        super::open_menu(entries, Point::default(), window, cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    let open = cx.update(|cx| f.chrome.read(cx).open_menu.is_some());
+    assert!(open);
+}
+
+#[gpui_kit::test]
+fn an_empty_menu_does_not_open(cx: &mut TestAppContext) {
+    let f = fixture(cx);
+    cx.update_window(f.window, |_, window, cx| {
+        super::open_menu(Vec::new(), Point::default(), window, cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    let open = cx.update(|cx| f.chrome.read(cx).open_menu.is_some());
+    assert!(!open);
+}
+
+/// A dock panel's title-bar menu gets the same entries through the chrome.
+#[gpui_kit::test]
+fn fill_popup_adds_the_entries(cx: &mut TestAppContext) {
+    let f = fixture(cx);
+    let (entries, _) = counted_entries();
+    let filled = cx
+        .update_window(f.window, |_, window, cx| {
+            let menu = PopupMenu::build(window, cx, |menu, window, cx| {
+                super::fill_popup(menu, &entries, window, cx)
+            });
+            !menu.read(cx).is_empty()
+        })
+        .unwrap();
+    assert!(filled);
+}
+
+/// A callback entry runs through the chrome like any menu command.
+#[gpui_kit::test]
+fn a_callback_entry_runs_through_the_chrome(cx: &mut TestAppContext) {
+    let f = fixture(cx);
+    let (entries, runs) = counted_entries();
+    let MenuEntry::Item { command, .. } = entries[0].clone() else {
+        panic!("first entry is an item");
+    };
+    cx.update_window(f.window, |_, window, cx| {
+        f.chrome.update(cx, |chrome, cx| {
+            chrome.run_menu_command(command, window, cx)
+        });
+    })
+    .unwrap();
+    assert_eq!(runs.get(), 1);
 }

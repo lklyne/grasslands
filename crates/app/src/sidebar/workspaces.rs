@@ -31,7 +31,7 @@ use std::time::Duration;
 
 use gpui_kit::component::button::Button;
 use gpui_kit::component::dock::{BasePanel, Panel, PanelControl, PanelEvent};
-use gpui_kit::component::menu::{PopupMenu, PopupMenuItem};
+use gpui_kit::component::menu::PopupMenu;
 use gpui_kit::component::notification::Notification;
 use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::{
@@ -1129,16 +1129,24 @@ impl WorkspaceList {
         }
     }
 
-    /// The Workspaces "+" menu once machines are saved: New Workspace (on the
-    /// selected machine), New Workspace on › (Local and each connected
-    /// machine), Add Machine…. Without saved machines "+" makes a workspace
-    /// and Add Machine… is in the panel's menu.
+    /// The Workspaces "+" menu once machines are saved, drawn in the overlay.
+    /// Without saved machines "+" makes a workspace and the same entries are
+    /// in the panel's title-bar menu.
     pub fn open_new_menu(
         &mut self,
         position: Point<Pixels>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let entries = self.new_menu_entries(cx);
+        machines::open_machine_menu(entries, position, window, cx);
+    }
+
+    /// The "+" menu's and the title-bar menu's entries: New Workspace (on the
+    /// selected machine), New Workspace on › (Local and each connected
+    /// machine, once machines are saved), New Worktree…, Open Worktree…, Add
+    /// Machine….
+    pub(super) fn new_menu_entries(&self, cx: &Context<Self>) -> Vec<MenuEntry> {
         let this = cx.entity().downgrade();
         let mut entries = vec![MenuEntry::item(
             "New Workspace",
@@ -1162,20 +1170,24 @@ impl WorkspaceList {
                 entries: targets,
             });
         }
-        entries.push(MenuEntry::item(
-            "New Worktree…",
-            list_command(&this, |this, window, cx| this.new_worktree(None, window, cx)),
-        ));
-        entries.push(MenuEntry::item(
-            "Open Worktree…",
-            list_command(&this, |this, window, cx| this.open_worktree(window, cx)),
-        ));
-        entries.push(MenuEntry::Separator);
-        entries.push(MenuEntry::item(
-            "Add Machine…",
-            list_command(&this, |this, window, cx| this.add_machine(window, cx)),
-        ));
-        machines::open_machine_menu(entries, position, window, cx);
+        entries.extend([
+            MenuEntry::item(
+                "New Worktree…",
+                list_command(&this, |this, window, cx| {
+                    this.new_worktree(None, window, cx)
+                }),
+            ),
+            MenuEntry::item(
+                "Open Worktree…",
+                list_command(&this, |this, window, cx| this.open_worktree(window, cx)),
+            ),
+            MenuEntry::Separator,
+            MenuEntry::item(
+                "Add Machine…",
+                list_command(&this, |this, window, cx| this.add_machine(window, cx)),
+            ),
+        ]);
+        entries
     }
 
     /// Asks for an SSH host (suggesting `~/.ssh/config`'s), then runs
@@ -1325,36 +1337,11 @@ impl Panel for WorkspaceList {
     fn dropdown_menu(
         &mut self,
         menu: PopupMenu,
-        _: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> PopupMenu {
-        let (a, b, c, d) = (
-            cx.entity().downgrade(),
-            cx.entity().downgrade(),
-            cx.entity().downgrade(),
-            cx.entity().downgrade(),
-        );
-        menu.item(
-            PopupMenuItem::new("New Workspace").on_click(move |_, _, cx| {
-                let _ = a.update(cx, |this, cx| this.new_workspace(cx));
-            }),
-        )
-        .item(
-            PopupMenuItem::new("New Worktree…").on_click(move |_, window, cx| {
-                let _ = b.update(cx, |this, cx| this.new_worktree(None, window, cx));
-            }),
-        )
-        .item(
-            PopupMenuItem::new("Open Worktree…").on_click(move |_, window, cx| {
-                let _ = d.update(cx, |this, cx| this.open_worktree(window, cx));
-            }),
-        )
-        .separator()
-        .item(
-            PopupMenuItem::new("Add Machine…").on_click(move |_, window, cx| {
-                let _ = c.update(cx, |this, cx| this.add_machine(window, cx));
-            }),
-        )
+        let entries = self.new_menu_entries(cx);
+        chrome::fill_popup(menu, &entries, window, cx)
     }
 
     fn zoom_control(&self, _: &App) -> Option<PanelControl> {
