@@ -36,12 +36,11 @@ impl Run {
         self.check(local_up, "Local connected");
         let created = self
             .read(cx, |area, cx| {
-                area.state().read(cx).new_workspace(
-                    &MachineId::Local,
-                    None,
-                    Some(LOCAL_WORKSPACE.into()),
-                    cx,
-                )
+                area.state()
+                    .read(cx)
+                    .on(&MachineId::Local, cx, |session, cx| {
+                        session.new_workspace(None, Some(LOCAL_WORKSPACE.into()), cx)
+                    })
             })?
             .await;
         let Ok(local_workspace) = created.map(|w| w.workspace_id) else {
@@ -228,7 +227,9 @@ impl Run {
         let close = self.read(cx, |area, cx| {
             area.state()
                 .read(cx)
-                .close_workspace(&MachineId::Local, &local_workspace, false, cx)
+                .on(&MachineId::Local, cx, |session, cx| {
+                    session.close_workspace(&local_workspace, false, cx)
+                })
         })?;
         if close.await.is_ok() {
             eprintln!("ok   closed the script's Local workspace");
@@ -257,7 +258,7 @@ impl Run {
     }
 }
 
-pub(super) fn remote<'a>(area: &Hooks, cx: &'a App) -> Option<&'a crate::state::Machine> {
+pub(super) fn remote<'a>(area: &Hooks, cx: &'a App) -> Option<&'a crate::state::Session> {
     area.state()
         .read(cx)
         .machines(cx)

@@ -54,12 +54,11 @@ impl Run {
         // A Local workspace, so both groups have rows; closed at the end.
         let created = self
             .read(cx, |area, cx| {
-                area.state().read(cx).new_workspace(
-                    &MachineId::Local,
-                    None,
-                    Some(LOCAL_WORKSPACE.into()),
-                    cx,
-                )
+                area.state()
+                    .read(cx)
+                    .on(&MachineId::Local, cx, |session, cx| {
+                        session.new_workspace(None, Some(LOCAL_WORKSPACE.into()), cx)
+                    })
             })?
             .await;
         let local_workspace = created.ok().map(|w| w.workspace_id);
@@ -301,7 +300,9 @@ impl Run {
             let close = self.read(cx, |area, cx| {
                 area.state()
                     .read(cx)
-                    .close_workspace(&MachineId::Local, &workspace, false, cx)
+                    .on(&MachineId::Local, cx, |session, cx| {
+                        session.close_workspace(&workspace, false, cx)
+                    })
             })?;
             self.check(close.await.is_ok(), "closed the Local workspace");
         }

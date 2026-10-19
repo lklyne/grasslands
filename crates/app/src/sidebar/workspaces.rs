@@ -649,7 +649,9 @@ impl WorkspaceList {
         );
         if let Some(order) = groups::reordered(&entries, dragged, target) {
             state
-                .reorder_workspaces(machine, order, cx)
+                .on(machine, cx, |session, cx| {
+                    session.reorder_workspaces(order, cx)
+                })
                 .detach_and_log_err(cx);
         }
     }
@@ -700,7 +702,9 @@ impl WorkspaceList {
             state.select_machine(machine, cx);
             let cwd = state.active_worktree(cx).cloned();
             state
-                .new_workspace(machine, cwd, label, cx)
+                .on(machine, cx, |session, cx| {
+                    session.new_workspace(cwd, label, cx)
+                })
                 .detach_and_log_err(cx);
         });
     }
@@ -779,7 +783,9 @@ impl WorkspaceList {
                 focus: true,
                 ..Default::default()
             };
-            state.create_worktree(machine, params, cx)
+            state.on(machine, cx, |session, cx| {
+                session.create_worktree(params, cx)
+            })
         });
         cx.spawn_in(window, async move |_, cx| {
             let result = task.await;

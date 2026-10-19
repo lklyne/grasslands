@@ -210,9 +210,9 @@ impl TerminalArea {
         cx: &mut Context<Self>,
     ) {
         for pane_id in self.right_clicks.sync(machine, snapshot.panes.keys()) {
-            self.state
+            self.session
                 .read(cx)
-                .set_right_click(machine, &pane_id, RightClickTarget::Pane, cx)
+                .set_right_click(&pane_id, RightClickTarget::Pane, cx)
                 .detach_and_log_err(cx);
         }
     }

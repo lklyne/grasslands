@@ -237,7 +237,9 @@ impl Chrome {
 
     fn refresh_plugin_actions(&mut self, cx: &mut Context<Self>) {
         let state = self.state.read(cx);
-        let task = state.plugin_actions(state.selected(), cx);
+        let task = state.on(state.selected(), cx, |session, cx| {
+            session.plugin_actions(cx)
+        });
         cx.spawn(async move |this, cx| match task.await {
             Ok(actions) => this
                 .update(cx, |this, cx| {
@@ -840,7 +842,9 @@ impl Chrome {
         let create = move |label: Option<String>, cx: &mut App| {
             state
                 .read(cx)
-                .new_tab_named(&machine, workspace_id.as_ref(), label, cx)
+                .on(&machine, cx, |session, cx| {
+                    session.new_tab_named(workspace_id.as_ref(), label, cx)
+                })
                 .detach_and_log_err(cx);
         };
         if !crate::herdr_prefs::get(cx).prompt_new_tab_name {

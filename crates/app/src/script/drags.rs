@@ -38,12 +38,11 @@ impl Run {
         // A workspace of our own with three tabs.
         let task = self.read(cx, |area, cx| {
             let home = std::env::var_os("HOME").map(PathBuf::from);
-            area.state().read(cx).new_workspace(
-                &area.machine(cx),
-                home,
-                Some("drags-script".to_owned()),
-                cx,
-            )
+            area.state()
+                .read(cx)
+                .on(&area.machine(cx), cx, |session, cx| {
+                    session.new_workspace(home, Some("drags-script".to_owned()), cx)
+                })
         })?;
         let workspace_id = task.await?.workspace_id;
         let task = self.on_state(cx, |state, machine, cx| {
@@ -54,7 +53,9 @@ impl Run {
             let task = self.read(cx, |area, cx| {
                 area.state()
                     .read(cx)
-                    .new_tab(&area.machine(cx), Some(&workspace_id), cx)
+                    .on(&area.machine(cx), cx, |session, cx| {
+                        session.new_tab(Some(&workspace_id), cx)
+                    })
             })?;
             task.await?;
         }
@@ -112,7 +113,9 @@ impl Run {
         let task = self.read(cx, |area, cx| {
             area.state()
                 .read(cx)
-                .close_workspace(&area.machine(cx), &workspace_id, false, cx)
+                .on(&area.machine(cx), cx, |session, cx| {
+                    session.close_workspace(&workspace_id, false, cx)
+                })
         })?;
         task.await?;
         Ok(())

@@ -41,12 +41,11 @@ impl Run {
         // A workspace of our own, focused, with one pane.
         let task = self.read(cx, |area, cx| {
             let home = std::env::var_os("HOME").map(PathBuf::from);
-            area.state().read(cx).new_workspace(
-                &area.machine(cx),
-                home,
-                Some("script".to_owned()),
-                cx,
-            )
+            area.state()
+                .read(cx)
+                .on(&area.machine(cx), cx, |session, cx| {
+                    session.new_workspace(home, Some("script".to_owned()), cx)
+                })
         })?;
         let workspace = task.await?;
         let workspace_id = workspace.workspace_id.clone();
@@ -320,17 +319,20 @@ impl Run {
             (terminal_id, view)
         })?;
         let task = self.read(cx, |area, cx| {
-            area.state().read(cx).move_pane(
-                &area.machine(cx),
-                &moving,
-                crate::herdr::PaneMoveDestination::Tab {
-                    tab_id: tab_id.clone(),
-                    split: SplitDirection::Right,
-                    target_pane_id: None,
-                    ratio: None,
-                },
-                cx,
-            )
+            area.state()
+                .read(cx)
+                .on(&area.machine(cx), cx, |session, cx| {
+                    session.move_pane(
+                        &moving,
+                        crate::herdr::PaneMoveDestination::Tab {
+                            tab_id: tab_id.clone(),
+                            split: SplitDirection::Right,
+                            target_pane_id: None,
+                            ratio: None,
+                        },
+                        cx,
+                    )
+                })
         })?;
         let moved = task.await;
         self.check(
@@ -458,12 +460,11 @@ impl Run {
 
         // Clean up: close the script's workspace.
         let task = self.read(cx, |area, cx| {
-            area.state().read(cx).close_workspace(
-                &area.machine(cx),
-                &workspace.workspace_id,
-                false,
-                cx,
-            )
+            area.state()
+                .read(cx)
+                .on(&area.machine(cx), cx, |session, cx| {
+                    session.close_workspace(&workspace.workspace_id, false, cx)
+                })
         })?;
         let closed = task.await;
         self.check(closed.is_ok(), "closed the script workspace");
