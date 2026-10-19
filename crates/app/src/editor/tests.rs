@@ -441,6 +441,58 @@ impl Fixture {
         .unwrap();
         cx.run_until_parked();
     }
+
+    /// The disk half of a poll, run now; its result is applied later by
+    /// `finish_poll`, so a test can act while the poll is in flight.
+    fn start_poll(&self, cx: &mut TestAppContext) -> Vec<super::Polled> {
+        let jobs = self
+            .editor
+            .read_with(cx, |editor, cx| editor.poll_jobs(true, cx));
+        super::run_poll(jobs)
+    }
+
+    fn finish_poll(&self, cx: &mut TestAppContext, found: Vec<super::Polled>) {
+        cx.update_window(self.window, |_, window, cx| {
+            self.editor
+                .update(cx, |editor, cx| editor.apply_poll(found, window, cx));
+        })
+        .unwrap();
+        cx.run_until_parked();
+    }
+}
+
+/// A poll reads the file's old text, then a save finishes before the poll's
+/// result lands.
+fn save_during_poll(cx: &mut TestAppContext, name: &str) -> (Fixture, Arc<FakeFs>) {
+    let f = fixture(cx, name);
+    let disk = f.fake_remote(cx);
+    let path = Path::new("/r/a.rs");
+    disk.put(path, "a\n");
+    f.open_on(cx, &remote(), path);
+    f.type_text(cx, "b");
+    // Touched elsewhere, same text: the poll's stamp check says read.
+    disk.put(path, "a\n");
+    let found = f.start_poll(cx);
+    f.press(cx, "cmd-s");
+    f.finish_poll(cx, found);
+    (f, disk)
+}
+
+#[gpui::test]
+fn a_save_finishing_during_a_poll_is_not_reverted(cx: &mut TestAppContext) {
+    let (f, _) = save_during_poll(cx, "remotepollrace");
+    assert_eq!(
+        (f.text(cx), f.dirty(cx), f.prompt(cx)),
+        ("ba\n".to_owned(), false, None)
+    );
+}
+
+#[gpui::test]
+fn a_stale_poll_keeps_the_saves_stamp(cx: &mut TestAppContext) {
+    let (f, disk) = save_during_poll(cx, "remotepollstamp");
+    let reads = disk.reads.load(Ordering::SeqCst);
+    f.poll(cx);
+    assert_eq!(disk.reads.load(Ordering::SeqCst), reads);
 }
 
 #[gpui::test]
