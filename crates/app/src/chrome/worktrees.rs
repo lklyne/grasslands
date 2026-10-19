@@ -397,7 +397,8 @@ impl Chrome {
         match (error, forced) {
             (herdr::Error::Server { code, message }, false) if code == DIRTY => {
                 sounds::play(cues::Cue::Warning, cues::PlayOptions::default());
-                let confirmation = force_confirmation(label, message.trim());
+                let refusal = message.trim().trim_start_matches("fatal: ");
+                let confirmation = force_confirmation(label, refusal);
                 let chrome = cx.entity().downgrade();
                 let main = self.main_window;
                 // Through the main window: this runs from a task, not a view.
