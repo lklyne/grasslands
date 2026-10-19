@@ -122,7 +122,8 @@ impl Fs {
         }
     }
 
-    /// Atomic replace, keeping permissions.
+    /// Local writes in place (a read-only file refuses, the inode stays);
+    /// Remote writes a temp file and renames it over, keeping permissions.
     pub fn write(&self, path: &Path, contents: &str) -> io::Result<()> {
         match self {
             Self::Local => local::write(path, contents),

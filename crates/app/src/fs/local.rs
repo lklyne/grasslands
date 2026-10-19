@@ -1,7 +1,7 @@
 //! This Mac's disk: `ignore` for listings and search, `std::fs` for the
 //! rest, the Trash for removing.
 
-use std::io::{self, Write as _};
+use std::io;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -32,26 +32,11 @@ pub(super) fn read_dir(dir: &Path) -> io::Result<Vec<Entry>> {
     Ok(entries)
 }
 
-/// Writes a sibling temp file with the old file's permissions, then renames
-/// it over `path` (over a symlink's target, so the link survives).
+/// Writes in place, as editors here always have: the file keeps its inode,
+/// owner and links, a read-only file refuses, and a writable file in a
+/// read-only folder still saves.
 pub(super) fn write(path: &Path, contents: &str) -> io::Result<()> {
-    let path = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
-    let dir = path.parent().unwrap_or(Path::new("."));
-    let name = path.file_name().unwrap_or_default().to_string_lossy();
-    let temp = dir.join(format!(".{name}.grasslands-{}", std::process::id()));
-    let written = (|| {
-        let mut file = std::fs::File::create(&temp)?;
-        file.write_all(contents.as_bytes())?;
-        file.sync_all()?;
-        if let Ok(meta) = std::fs::metadata(&path) {
-            std::fs::set_permissions(&temp, meta.permissions())?;
-        }
-        std::fs::rename(&temp, &path)
-    })();
-    if written.is_err() {
-        let _ = std::fs::remove_file(&temp);
-    }
-    written
+    std::fs::write(path, contents)
 }
 
 pub(super) fn create_file(path: &Path) -> io::Result<()> {
@@ -190,6 +175,32 @@ mod tests {
         assert_eq!(
             (std::fs::read_to_string(&path).unwrap(), mode),
             ("new".into(), 0o755)
+        );
+    }
+
+    #[test]
+    fn write_should_refuse_a_read_only_file() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = temp_dir("readonly");
+        let path = dir.join("locked.txt");
+        std::fs::write(&path, "old").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o444)).unwrap();
+        let error = write(&path, "new").unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+    }
+
+    #[test]
+    fn write_should_save_in_a_read_only_folder() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = temp_dir("readonlydir");
+        let path = dir.join("a.txt");
+        std::fs::write(&path, "old").unwrap();
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o555)).unwrap();
+        let written = write(&path, "new");
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(
+            (written.is_ok(), std::fs::read_to_string(&path).unwrap()),
+            (true, "new".into())
         );
     }
 
