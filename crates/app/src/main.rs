@@ -97,6 +97,7 @@ fn add_install_dirs_to_path() {
 
 fn open_main_window(cx: &mut App) -> anyhow::Result<()> {
     let state = cx.new(|cx| AppState::new(setup::config_from_env(), cx));
+    state.update(cx, AppState::start);
     herdr_prefs::attach(&state, cx);
     let options = WindowOptions {
         window_bounds: Some(WindowBounds::centered(size(px(1400.), px(900.)), cx)),

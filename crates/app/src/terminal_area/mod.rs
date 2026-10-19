@@ -31,7 +31,7 @@ use crate::herdr::{
     Snapshot, SplitDirection, SplitTree, Tab, TabId, TerminalId, ZoomMode,
 };
 use crate::overlay;
-use crate::setup::Stage;
+use crate::setup::{Setup, Stage};
 use crate::sidebar::files::DraggedPath;
 use crate::state::{AppEvent, AppState, MachineId, MachineTask, On, RunStage};
 use crate::{label, status};
@@ -262,7 +262,12 @@ impl TerminalArea {
             .herdr_config
             .as_ref()
             .map(Launch::from_config);
+        let setup = state.read(cx).setup().clone();
         let subscriptions = vec![
+            cx.observe_in(&setup, window, |this, _, window, cx| {
+                this.sync_setup_terminal(window, cx);
+                cx.notify();
+            }),
             cx.observe_in(&state, window, |this, _, window, cx| {
                 this.sync_setup_terminal(window, cx);
                 this.sync_machine_terminal(window, cx);
@@ -271,9 +276,10 @@ impl TerminalArea {
             // Coming back to the window after fixing herdr elsewhere (a
             // terminal, a Nix rebuild) checks again.
             cx.observe_window_activation(window, |this, window, cx| {
-                let needed = matches!(this.state.read(cx).setup.stage, Stage::Needed(_));
+                let setup = this.state.read(cx).setup().clone();
+                let needed = matches!(setup.read(cx).stage(), Stage::Needed(_));
                 if window.is_window_active() && needed {
-                    this.state.update(cx, |state, cx| state.check_herdr(cx));
+                    setup.update(cx, Setup::check_herdr);
                 }
             }),
             cx.subscribe_in(&state, window, |this, _, event, window, cx| {
@@ -314,9 +320,8 @@ impl TerminalArea {
     /// Starts a terminal for each new setup fix and drops it once setup is
     /// over.
     fn sync_setup_terminal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let setup = &self.state.read(cx).setup;
-        let run = setup.run.clone().filter(|_| !setup.is_ready());
-        let Some(run) = run else {
+        let setup = self.state.read(cx).setup().clone();
+        let Some(run) = setup.read(cx).run().cloned() else {
             if let Some(setup) = self.setup_terminal.take() {
                 setup
                     .terminal
@@ -344,8 +349,8 @@ impl TerminalArea {
             }
             Err(error) => {
                 tracing::error!("herdr setup terminal: {error:#}");
-                self.state.update(cx, |state, cx| {
-                    state.fix_failed_to_start(format!("{error:#}"), cx)
+                setup.update(cx, |setup, cx| {
+                    setup.fix_failed_to_start(format!("{error:#}"), cx)
                 });
             }
         }
@@ -411,13 +416,14 @@ impl TerminalArea {
                         this.attached = attached;
                         cx.notify();
                     }
-                    let fixing = matches!(this.state.read(cx).setup.stage, Stage::Fixing(_));
+                    let setup = this.state.read(cx).setup().clone();
+                    let fixing = matches!(setup.read(cx).stage(), Stage::Fixing(_));
                     let ended = this
                         .setup_terminal
                         .as_ref()
                         .is_some_and(|setup| !setup.terminal.read(cx).is_alive());
                     if fixing && ended {
-                        this.state.update(cx, |state, cx| state.fix_exited(cx));
+                        setup.update(cx, Setup::fix_exited);
                     }
                     let running = this
                         .state
@@ -1861,7 +1867,8 @@ impl Render for TerminalArea {
             .map(|setup| setup.terminal.clone().into_any_element());
         let setup = self.render_machine_run(cx).or_else(|| {
             if local {
-                crate::setup::render(&self.state, setup_terminal, cx)
+                let state = self.state.read(cx);
+                crate::setup::render(state.setup(), state, setup_terminal, cx)
             } else {
                 None
             }
