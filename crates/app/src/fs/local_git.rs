@@ -1,11 +1,11 @@
 //! Local's Changes summary and patch, read with git2 (see
-//! `crate::changes::git` for the rules).
+//! `crate::fs::git` for the rules).
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use crate::changes::git::{FileChange, Summary};
+use super::git::{FileChange, Summary};
 
 /// The summary for the checkout containing `dir`, or `None` outside git.
 pub(super) fn read(dir: &Path) -> Option<Summary> {
@@ -88,6 +88,14 @@ pub(super) fn patch(dir: &Path) -> Option<String> {
 
 /// The branch HEAD names, `None` when detached. Reads HEAD's target rather
 /// than `repo.head()`, which fails before the first commit.
+/// The branch HEAD names in `dir`: `Some(None)` when detached, `None`
+/// outside git.
+pub(super) fn head_branch(dir: &Path) -> Option<Option<String>> {
+    git2::Repository::discover(dir)
+        .ok()
+        .map(|repo| branch(&repo))
+}
+
 fn branch(repo: &git2::Repository) -> Option<String> {
     let head = repo.find_reference("HEAD").ok()?;
     let target = head.symbolic_target().ok().flatten()?;

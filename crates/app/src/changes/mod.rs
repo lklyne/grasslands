@@ -1,11 +1,9 @@
 //! The Changes tab: the active worktree's diff against its parent branch
-//! (see `git`) in GPUI Kit's diff viewer, on whichever machine the worktree
-//! is (through `crate::fs::Fs`). Opened from the file tree's git footer. It
+//! (see `crate::fs::git`) in GPUI Kit's diff viewer, on whichever machine
+//! the worktree is (through `crate::fs::Fs`). Opened from the file tree's git footer. It
 //! follows the active worktree and re-reads while open (a saved machine's
 //! only while the window is active) and when the window becomes active,
 //! keeping its scroll place when the patch hasn't changed.
-
-pub mod git;
 
 #[cfg(test)]
 mod tests;

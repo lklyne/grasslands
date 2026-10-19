@@ -370,10 +370,10 @@ impl Fixture {
             machine: fake_machine(),
             path: BOX_ROOT.into(),
         };
-        self.files.update(cx, |files, cx| {
-            files.fake = Some(fake.clone());
-            files.set_root(Some(root), cx)
-        });
+        self.state
+            .update(cx, |state, _| state.set_test_fs(fake_machine(), fake.clone()));
+        self.files
+            .update(cx, |files, cx| files.set_root(Some(root), cx));
         cx.run_until_parked();
         let scope = Scope {
             machine: fake_machine(),

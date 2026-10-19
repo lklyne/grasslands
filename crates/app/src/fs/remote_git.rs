@@ -1,17 +1,16 @@
 //! A saved machine's Changes summary and patch, worktree root and branch,
-//! from its own git (see `crate::changes::git` for the rules). Each is one
+//! from its own git (see `crate::fs::git` for the rules). Each is one
 //! command, so a poll costs one round trip, and a patch read brings the
 //! summary with it: the footer reuses that while the Changes tab polls.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::io;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, LazyLock, Mutex};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use super::remote::Run;
-use crate::changes::git::{FileChange, Summary};
-use crate::state::MachineId;
+use super::git::{FileChange, Summary};
 
 /// Finds the checkout's root, branch, parent and the diff's base the way
 /// `local_git` does, then prints `top\0HEAD's target\0parent\0` and diffs
@@ -151,25 +150,30 @@ pub(super) fn patch(run: &Run<'_>, dir: &Path) -> io::Result<Option<(String, Sum
 /// the poll interval, so while the Changes tab polls the footer needn't.
 const SHARE_FOR: Duration = Duration::from_secs(3);
 
-type Shared = HashMap<(MachineId, PathBuf), (Instant, Option<Summary>)>;
-
-static SHARED: LazyLock<Mutex<Shared>> = LazyLock::new(Mutex::default);
-
-/// Keeps the summary a patch read of `dir` on `machine` brought.
-pub(super) fn share(machine: &MachineId, dir: &Path, summary: Option<Summary>) {
-    let Ok(mut shared) = SHARED.lock() else {
-        return;
-    };
-    let now = Instant::now();
-    shared.retain(|_, (at, _)| now.duration_since(*at) < SHARE_FOR);
-    shared.insert((machine.clone(), dir.to_path_buf()), (now, summary));
+/// The summaries one machine's patch reads brought, by folder, kept for
+/// `SHARE_FOR`. Each saved machine owns one, handed to its `Fs`.
+#[derive(Default)]
+pub struct SummaryCache {
+    entries: Mutex<HashMap<PathBuf, (Instant, Option<Summary>)>>,
 }
 
-/// A summary of `dir` on `machine` shared within `SHARE_FOR`.
-pub(super) fn shared(machine: &MachineId, dir: &Path) -> Option<Option<Summary>> {
-    let shared = SHARED.lock().ok()?;
-    let (at, summary) = shared.get(&(machine.clone(), dir.to_path_buf()))?;
-    (at.elapsed() < SHARE_FOR).then(|| summary.clone())
+impl SummaryCache {
+    /// Keeps the summary a patch read of `dir` brought, dropping stale ones.
+    pub(super) fn put(&self, dir: &Path, summary: Option<Summary>) {
+        let Ok(mut entries) = self.entries.lock() else {
+            return;
+        };
+        let now = Instant::now();
+        entries.retain(|_, (at, _)| now.duration_since(*at) < SHARE_FOR);
+        entries.insert(dir.to_path_buf(), (now, summary));
+    }
+
+    /// A summary of `dir` kept within `SHARE_FOR`.
+    pub(super) fn get(&self, dir: &Path) -> Option<Option<Summary>> {
+        let entries = self.entries.lock().ok()?;
+        let (at, summary) = entries.get(dir)?;
+        (at.elapsed() < SHARE_FOR).then(|| summary.clone())
+    }
 }
 
 /// `--numstat -z` records, an empty record, then `--name-status -z` pairs.
@@ -373,14 +377,26 @@ mod tests {
     }
 
     #[test]
-    fn shared_summary_should_be_found_for_its_machine_and_folder_only() {
-        let (machine, dir) = (MachineId::Remote("share-test".into()), Path::new("/r"));
-        share(&machine, dir, None);
-        let other = MachineId::Remote("share-other".into());
+    fn cached_summary_should_be_found_for_its_folder_only() {
+        let cache = SummaryCache::default();
+        cache.put(Path::new("/r"), None);
         assert_eq!(
-            (shared(&machine, dir), shared(&other, dir)),
+            (cache.get(Path::new("/r")), cache.get(Path::new("/s"))),
             (Some(None), None)
         );
+    }
+
+    #[test]
+    fn cache_should_drop_stale_summaries_when_one_is_put() {
+        let cache = SummaryCache::default();
+        let stale = Instant::now().checked_sub(SHARE_FOR).unwrap();
+        cache
+            .entries
+            .lock()
+            .unwrap()
+            .insert(PathBuf::from("/old"), (stale, None));
+        cache.put(Path::new("/r"), None);
+        assert!(!cache.entries.lock().unwrap().contains_key(Path::new("/old")));
     }
 
     #[test]

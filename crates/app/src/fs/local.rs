@@ -6,8 +6,8 @@ use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use super::{Entry, sort_entries};
-use crate::sidebar::files::SearchResults;
-use crate::sidebar::files::search::{Collector, MAX_FILE_BYTES};
+use super::SearchResults;
+use super::search::{Collector, MAX_FILE_BYTES};
 
 /// Lists `dir` one level deep, respecting .gitignore (and git's other ignore
 /// files) inside a repo. Dotfiles are shown; `.git` is not.

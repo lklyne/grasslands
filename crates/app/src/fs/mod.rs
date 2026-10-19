@@ -10,10 +10,15 @@
 
 #[cfg(test)]
 pub mod fake;
+pub mod git;
 mod local;
 mod local_git;
 mod remote;
 mod remote_git;
+pub mod search;
+
+pub use remote_git::SummaryCache;
+pub use search::Results as SearchResults;
 
 use std::io;
 use std::path::{Path, PathBuf};
@@ -53,8 +58,9 @@ pub enum Fs {
     Local,
     Remote {
         machine: MachineId,
-        label: String,
         files: Arc<herdr_client::RemoteFs>,
+        /// The machine's own (see `SummaryCache`).
+        summaries: Arc<SummaryCache>,
     },
     /// An in-memory remote machine: files only (folders exist only through
     /// the files in them), no git or search.
@@ -181,24 +187,26 @@ impl Fs {
         root: &Path,
         query: &str,
         cancel: &AtomicBool,
-    ) -> crate::sidebar::files::SearchResults {
+    ) -> SearchResults {
         match self {
             Self::Local => local::search(root, query, cancel),
             Self::Remote { files, .. } => {
                 remote::search(&remote::runner(files), root, query, cancel)
             }
             #[cfg(test)]
-            Self::Fake(_) => crate::sidebar::files::SearchResults::default(),
+            Self::Fake(_) => SearchResults::default(),
         }
     }
 
     /// The Changes summary for the checkout containing `dir`; `None`
     /// outside git, an error if a saved machine couldn't be asked. A saved
     /// machine's comes from a `git_patch` of `dir` moments ago if there was one.
-    pub fn git_summary(&self, dir: &Path) -> io::Result<Option<crate::changes::git::Summary>> {
+    pub fn git_summary(&self, dir: &Path) -> io::Result<Option<git::Summary>> {
         match self {
             Self::Local => Ok(local_git::read(dir)),
-            Self::Remote { machine, files, .. } => match remote_git::shared(machine, dir) {
+            Self::Remote {
+                files, summaries, ..
+            } => match summaries.get(dir) {
                 Some(summary) => Ok(summary),
                 None => remote_git::summary(&remote::runner(files), dir),
             },
@@ -212,9 +220,11 @@ impl Fs {
     pub fn git_patch(&self, dir: &Path) -> io::Result<Option<String>> {
         match self {
             Self::Local => Ok(local_git::patch(dir)),
-            Self::Remote { machine, files, .. } => {
+            Self::Remote {
+                files, summaries, ..
+            } => {
                 let read = remote_git::patch(&remote::runner(files), dir)?;
-                remote_git::share(machine, dir, read.as_ref().map(|(_, s)| s.clone()));
+                summaries.put(dir, read.as_ref().map(|(_, s)| s.clone()));
                 Ok(read.map(|(patch, _)| patch))
             }
             #[cfg(test)]
@@ -238,9 +248,7 @@ impl Fs {
     /// outside git.
     pub fn head_branch(&self, dir: &Path) -> Option<Option<String>> {
         match self {
-            Self::Local => {
-                crate::sidebar::workspaces::git::read(dir).map(|checkout| checkout.branch)
-            }
+            Self::Local => local_git::head_branch(dir),
             Self::Remote { files, .. } => remote_git::head_branch(&remote::runner(files), dir),
             #[cfg(test)]
             Self::Fake(_) => None,
