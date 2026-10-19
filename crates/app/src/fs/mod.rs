@@ -76,17 +76,21 @@ impl Fs {
         matches!(self, Self::Local)
     }
 
-    /// One level deep, respecting .gitignore inside a repo; dotfiles shown,
-    /// `.git` hidden; folders first, then case-insensitive by name.
-    pub fn read_dir(&self, dir: &Path) -> io::Result<Vec<Entry>> {
+    /// Each of `dirs` one level deep, respecting .gitignore inside a repo;
+    /// dotfiles shown, `.git` hidden; folders first, then case-insensitive
+    /// by name. A saved machine asks git about all of them in one command.
+    pub fn read_dirs(&self, dirs: &[PathBuf]) -> Vec<io::Result<Vec<Entry>>> {
         match self {
-            Self::Local => local::read_dir(dir),
+            Self::Local => dirs.iter().map(|dir| local::read_dir(dir)).collect(),
             Self::Remote { files, .. } => {
-                let listing = files.read_dir(dir)?;
-                Ok(remote::filter_listing(&remote::runner(files), dir, listing))
+                let listings = dirs
+                    .iter()
+                    .map(|dir| (dir.as_path(), files.read_dir(dir)))
+                    .collect();
+                remote::filter_listings(&remote::runner(files), listings)
             }
             #[cfg(test)]
-            Self::Fake(_) => Err(io::ErrorKind::Unsupported.into()),
+            Self::Fake(fake) => dirs.iter().map(|dir| fake.read_dir(dir)).collect(),
         }
     }
 

@@ -13,6 +13,8 @@ pub struct FakeFs {
     clock: AtomicU64,
     pub offline: AtomicBool,
     pub reads: AtomicU64,
+    /// Folder listings asked for.
+    pub lists: AtomicU64,
 }
 
 impl FakeFs {
@@ -61,6 +63,33 @@ impl FakeFs {
         self.files()?
             .insert(path.to_path_buf(), (text.to_owned(), modified));
         Ok(())
+    }
+
+    /// `dir`'s files and the folders implied by deeper ones.
+    pub fn read_dir(&self, dir: &Path) -> io::Result<Vec<super::Entry>> {
+        self.lists.fetch_add(1, Ordering::SeqCst);
+        let files = self.files()?;
+        let mut entries: Vec<super::Entry> = Vec::new();
+        for path in files.keys() {
+            let Some(name) = path
+                .strip_prefix(dir)
+                .ok()
+                .and_then(|rest| rest.components().next())
+            else {
+                continue;
+            };
+            let path = dir.join(name);
+            if entries.iter().any(|e| e.path == path) {
+                continue;
+            }
+            entries.push(super::Entry {
+                is_dir: !files.contains_key(&path),
+                name: name.as_os_str().to_string_lossy().into_owned(),
+                path,
+            });
+        }
+        super::sort_entries(&mut entries);
+        Ok(entries)
     }
 
     pub fn create_file(&self, path: &Path) -> io::Result<()> {

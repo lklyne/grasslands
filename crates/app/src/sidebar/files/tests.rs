@@ -370,8 +370,10 @@ impl Fixture {
             machine: fake_machine(),
             path: BOX_ROOT.into(),
         };
-        self.files
-            .update(cx, |files, cx| files.set_root(Some(root), cx));
+        self.files.update(cx, |files, cx| {
+            files.fake = Some(fake.clone());
+            files.set_root(Some(root), cx)
+        });
         cx.run_until_parked();
         let scope = Scope {
             machine: fake_machine(),
@@ -461,4 +463,27 @@ fn remove_should_report_captured_machine_when_root_moves_mid_operation(cx: &mut 
     .unwrap();
     f.root_on_local(cx);
     assert_eq!(*removed.borrow(), vec![fake_machine()]);
+}
+
+#[gpui::test]
+fn fake_machine_root_should_list_its_files(cx: &mut TestAppContext) {
+    let f = fixture(cx, "fake-list");
+    f.root_on_fake(cx);
+    assert_eq!(f.rows(cx), vec!["x.txt"]);
+}
+
+#[gpui::test]
+fn poll_should_wait_for_the_one_still_out(cx: &mut TestAppContext) {
+    let f = fixture(cx, "poll-guard");
+    let (fake, _) = f.root_on_fake(cx);
+    let before = fake.lists.load(std::sync::atomic::Ordering::SeqCst);
+    f.files.update(cx, |files, cx| {
+        files.poll(cx);
+        files.poll(cx);
+    });
+    cx.run_until_parked();
+    f.files.update(cx, |files, cx| files.poll(cx));
+    cx.run_until_parked();
+    let lists = fake.lists.load(std::sync::atomic::Ordering::SeqCst) - before;
+    assert_eq!(lists, 2);
 }

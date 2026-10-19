@@ -380,7 +380,7 @@ mod tests {
     #[test]
     #[ignore = "needs GRASSLANDS_SSH_TEST_TARGET and the dockerbox container"]
     fn remote_api_repo_should_read_like_local() {
-        use super::super::remote::{filter_listing, search, ssh_run};
+        use super::super::remote::{filter_listings, search, ssh_run};
         let api = Path::new("/home/lyle/api");
         let summary = summary(&ssh_run, api).unwrap().expect("a summary");
         let files: Vec<_> = summary.files.iter().map(|(p, c)| (p.clone(), *c)).collect();
@@ -411,7 +411,9 @@ mod tests {
                 modified: None,
             },
         ];
-        let shown: Vec<_> = filter_listing(&ssh_run, api, listing)
+        let shown: Vec<_> = filter_listings(&ssh_run, vec![(api, Ok(listing))])
+            .remove(0)
+            .unwrap()
             .into_iter()
             .map(|e| e.name)
             .collect();

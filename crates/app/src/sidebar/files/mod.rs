@@ -93,6 +93,12 @@ pub struct FileTree {
     git_reading: Option<Task<()>>,
     /// Something changed while `git_reading`; read again after it.
     git_stale: bool,
+    /// A saved machine's poll of the shown folders still out; the next
+    /// waits for it, so a stalled link doesn't pile them up.
+    polling: Option<Task<()>>,
+    /// Stands in for every saved machine's files in tests.
+    #[cfg(test)]
+    fake: Option<Arc<crate::fs::fake::FakeFs>>,
     _subscriptions: [Subscription; 4],
     _fs_task: Task<()>,
     _git_timer: Task<()>,
@@ -217,6 +223,9 @@ impl FileTree {
             git: None,
             git_reading: None,
             git_stale: false,
+            polling: None,
+            #[cfg(test)]
+            fake: None,
             _subscriptions: subscriptions,
             _fs_task: fs_task,
             _git_timer: git_timer,
@@ -309,6 +318,12 @@ impl FileTree {
 
     /// The root's files; `None` while its machine is offline.
     fn fs(&self, cx: &App) -> Option<Fs> {
+        #[cfg(test)]
+        if let Some(fake) = &self.fake
+            && !self.machine.is_local()
+        {
+            return Some(Fs::Fake(fake.clone()));
+        }
         self.state.read(cx).fs_for(&self.machine)
     }
 
@@ -345,6 +360,7 @@ impl FileTree {
         });
         self.model = root.map(FileModel::new);
         self.root_error = None;
+        self.polling = None;
         if let Some(root) = self.root().map(Path::to_path_buf) {
             // GPUI's test scheduler rejects wakeups from the watcher's thread;
             // tests call `on_fs_changes` directly and test the watcher alone.
@@ -371,7 +387,14 @@ impl FileTree {
             return;
         }
         let Some(model) = &self.model else { return };
-        self.load(model.shown_dirs(), cx);
+        if self.polling.is_none()
+            && let Some(listing) = self.list(model.shown_dirs(), cx)
+        {
+            self.polling = Some(cx.spawn(async move |this, cx| {
+                listing.await;
+                let _ = this.update(cx, |this, _| this.polling = None);
+            }));
+        }
         self.refresh_git(cx);
     }
 
@@ -461,23 +484,27 @@ impl FileTree {
 
     /// Lists `dirs` on the background executor, then updates the tree.
     fn load(&self, dirs: Vec<PathBuf>, cx: &mut Context<Self>) {
+        if let Some(task) = self.list(dirs, cx) {
+            task.detach();
+        }
+    }
+
+    /// `load`, as a task that ends once the tree is updated; `None` if
+    /// there's nothing to list.
+    fn list(&self, dirs: Vec<PathBuf>, cx: &mut Context<Self>) -> Option<Task<()>> {
         let (Some(root), Some(fs)) = (self.root().map(Path::to_path_buf), self.fs(cx)) else {
-            return;
+            return None;
         };
         if dirs.is_empty() {
-            return;
+            return None;
         }
         let machine = self.machine.clone();
-        cx.spawn(async move |this, cx| {
+        Some(cx.spawn(async move |this, cx| {
             let listings = cx
                 .background_executor()
                 .spawn(async move {
-                    dirs.into_iter()
-                        .map(|dir| {
-                            let listing = fs.read_dir(&dir);
-                            (dir, listing)
-                        })
-                        .collect::<Vec<_>>()
+                    let listings = fs.read_dirs(&dirs);
+                    dirs.into_iter().zip(listings).collect::<Vec<_>>()
                 })
                 .await;
             let _ = this.update(cx, |this, cx| {
@@ -486,8 +513,7 @@ impl FileTree {
                     this.apply_listings(&root, listings, cx);
                 }
             });
-        })
-        .detach();
+        }))
     }
 
     fn apply_listings(
