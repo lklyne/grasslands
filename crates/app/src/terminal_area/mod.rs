@@ -1158,143 +1158,167 @@ impl TerminalArea {
             .border_b_1()
             .border_color(border)
             .text_sm()
-            .children(tabs.into_iter().enumerate().map(|(index, tab)| {
-                let is_active = herdr_selected && active_id.as_deref() == Some(tab.tab_id.as_str());
-                let (focus_id, close_id, drop_id, menu_id) = (
-                    tab.tab_id.clone(),
-                    tab.tab_id.clone(),
-                    tab.tab_id.clone(),
-                    tab.tab_id.clone(),
-                );
-                // herdr's TUI numbers tabs by place; `number` stays put
-                // when a tab moves.
-                let label = if tab.label.is_empty() {
-                    (index + 1).to_string()
-                } else {
-                    tab.label.clone()
-                };
-                let dragged = DraggedTab {
-                    tab_id: tab.tab_id.clone(),
-                    index,
-                    label: label.clone().into(),
-                };
-                let accept_id = tab.tab_id.clone();
-                let (area, order) = (area.clone(), order.clone());
+            // Tabs past the strip's width scroll sideways (a vertical wheel
+            // scrolls it too); + stays pinned at the end.
+            .child(
                 h_flex()
-                    .id(SharedString::from(format!("tab-{}", tab.tab_id)))
-                    .relative()
-                    .child(record_bounds(&self.drawn, tab.tab_id.clone(), |d| {
-                        &mut d.tabs
-                    }))
-                    .group("tab")
+                    .id("tab-strip")
                     .h_full()
-                    .px_3()
-                    .gap_2()
-                    .items_center()
-                    .border_r_1()
-                    .border_color(border)
-                    .map(|el| {
-                        if is_active {
-                            el.bg(active_bg)
+                    .min_w_0()
+                    .overflow_x_scroll()
+                    .children(tabs.into_iter().enumerate().map(|(index, tab)| {
+                        let is_active =
+                            herdr_selected && active_id.as_deref() == Some(tab.tab_id.as_str());
+                        let (focus_id, close_id, drop_id, menu_id) = (
+                            tab.tab_id.clone(),
+                            tab.tab_id.clone(),
+                            tab.tab_id.clone(),
+                            tab.tab_id.clone(),
+                        );
+                        // herdr's TUI numbers tabs by place; `number` stays put
+                        // when a tab moves.
+                        let label = if tab.label.is_empty() {
+                            (index + 1).to_string()
                         } else {
-                            el.text_color(muted)
-                        }
-                    })
-                    // An idle tab shows no dot; its muted label says enough.
-                    .when(
-                        !matches!(tab.agent_status, AgentStatus::Idle | AgentStatus::Unknown),
-                        |el| el.child(status::indicator(tab.agent_status, cx)),
-                    )
-                    .child(label)
-                    .child(
-                        div()
-                            .id(SharedString::from(format!("tab-close-{}", tab.tab_id)))
-                            .invisible()
-                            .group_hover("tab", |s| s.visible())
-                            .text_color(muted)
-                            .child("×")
+                            tab.label.clone()
+                        };
+                        let dragged = DraggedTab {
+                            tab_id: tab.tab_id.clone(),
+                            index,
+                            label: label.clone().into(),
+                        };
+                        let accept_id = tab.tab_id.clone();
+                        let (area, order) = (area.clone(), order.clone());
+                        h_flex()
+                            .id(SharedString::from(format!("tab-{}", tab.tab_id)))
+                            .relative()
+                            .flex_shrink_0()
+                            .child(record_bounds(&self.drawn, tab.tab_id.clone(), |d| {
+                                &mut d.tabs
+                            }))
+                            .group("tab")
+                            .h_full()
+                            .px_3()
+                            .gap_2()
+                            .items_center()
+                            .border_r_1()
+                            .border_color(border)
+                            .map(|el| {
+                                if is_active {
+                                    el.bg(active_bg)
+                                } else {
+                                    el.text_color(muted)
+                                }
+                            })
+                            // An idle tab shows no dot; its muted label says enough.
+                            .when(
+                                !matches!(
+                                    tab.agent_status,
+                                    AgentStatus::Idle | AgentStatus::Unknown
+                                ),
+                                |el| el.child(status::indicator(tab.agent_status, cx)),
+                            )
+                            .child(label)
+                            .child(
+                                div()
+                                    .id(SharedString::from(format!("tab-close-{}", tab.tab_id)))
+                                    .invisible()
+                                    .group_hover("tab", |s| s.visible())
+                                    .text_color(muted)
+                                    .child("×")
+                                    .on_click(cx.listener(move |this, _, window, cx| {
+                                        cx.stop_propagation();
+                                        this.close_tab_confirmed(close_id.clone(), window, cx);
+                                    })),
+                            )
                             .on_click(cx.listener(move |this, _, window, cx| {
-                                cx.stop_propagation();
-                                this.close_tab_confirmed(close_id.clone(), window, cx);
-                            })),
-                    )
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        window.dispatch_action(Box::new(crate::workspace::ShowHerdr), cx);
-                        this.pick_tab(&focus_id, window, cx);
-                    }))
-                    .on_mouse_down(
-                        MouseButton::Right,
-                        cx.listener(move |this, event: &MouseDownEvent, window, cx| {
-                            this.context_menu(
-                                MenuTarget::Tab {
-                                    machine: this.state.read(cx).selected().clone(),
-                                    tab_id: menu_id.clone(),
+                                window.dispatch_action(Box::new(crate::workspace::ShowHerdr), cx);
+                                this.pick_tab(&focus_id, window, cx);
+                            }))
+                            .on_mouse_down(
+                                MouseButton::Right,
+                                cx.listener(move |this, event: &MouseDownEvent, window, cx| {
+                                    this.context_menu(
+                                        MenuTarget::Tab {
+                                            machine: this.state.read(cx).selected().clone(),
+                                            tab_id: menu_id.clone(),
+                                        },
+                                        event.position,
+                                        window,
+                                        cx,
+                                    );
+                                }),
+                            )
+                            .on_drag(dragged, move |dragged, _, _, cx| {
+                                area.update(cx, |this, _| this.tab_drag_tick = None).ok();
+                                crate::sounds::play(
+                                    cues::Cue::Select,
+                                    cues::PlayOptions::default(),
+                                );
+                                crate::workspace::keep_terminals_during_drag(cx);
+                                cx.new(|_| dragged.clone())
+                            })
+                            .can_drop(move |dragged, _, _| {
+                                dragged
+                                    .downcast_ref::<DraggedTab>()
+                                    .is_none_or(|d| d.tab_id != accept_id)
+                            })
+                            // The line marks the side the tab will land on.
+                            .drag_over::<DraggedTab>(move |style, dragged, _, _| {
+                                let style = style.border_color(drag_border);
+                                if dragged.index < index {
+                                    style.border_r_2()
+                                } else {
+                                    style.border_l_2()
+                                }
+                            })
+                            .on_drag_move(cx.listener(
+                                move |this, event: &DragMoveEvent<DraggedTab>, _, cx| {
+                                    if event.bounds.contains(&event.event.position) {
+                                        this.tab_drag_tick_over(event.drag(cx).index, index);
+                                    }
                                 },
-                                event.position,
-                                window,
-                                cx,
-                            );
-                        }),
-                    )
-                    .on_drag(dragged, move |dragged, _, _, cx| {
-                        area.update(cx, |this, _| this.tab_drag_tick = None).ok();
-                        crate::sounds::play(cues::Cue::Select, cues::PlayOptions::default());
-                        crate::workspace::keep_terminals_during_drag(cx);
-                        cx.new(|_| dragged.clone())
-                    })
-                    .can_drop(move |dragged, _, _| {
-                        dragged
-                            .downcast_ref::<DraggedTab>()
-                            .is_none_or(|d| d.tab_id != accept_id)
-                    })
-                    // The line marks the side the tab will land on.
-                    .drag_over::<DraggedTab>(move |style, dragged, _, _| {
-                        let style = style.border_color(drag_border);
-                        if dragged.index < index {
-                            style.border_r_2()
-                        } else {
-                            style.border_l_2()
-                        }
-                    })
-                    .on_drag_move(cx.listener(
-                        move |this, event: &DragMoveEvent<DraggedTab>, _, cx| {
-                            if event.bounds.contains(&event.event.position) {
-                                this.tab_drag_tick_over(event.drag(cx).index, index);
-                            }
-                        },
-                    ))
-                    .on_drop(cx.listener(move |this, dragged: &DraggedTab, _, cx| {
-                        this.tab_drag_tick = None;
-                        // Where the tab is now: tabs may have come or gone,
-                        // or the bar shows another workspace, since the drag began.
-                        let Some(from) = order.iter().position(|id| *id == dragged.tab_id) else {
-                            return;
-                        };
-                        let machine = this.machine(cx);
-                        this.state
-                            .read(cx)
-                            .move_tab(&machine, &dragged.tab_id, tab_insert_index(from, index), cx)
-                            .detach_and_log_err(cx);
+                            ))
+                            .on_drop(cx.listener(move |this, dragged: &DraggedTab, _, cx| {
+                                this.tab_drag_tick = None;
+                                // Where the tab is now: tabs may have come or gone,
+                                // or the bar shows another workspace, since the drag began.
+                                let Some(from) = order.iter().position(|id| *id == dragged.tab_id)
+                                else {
+                                    return;
+                                };
+                                let machine = this.machine(cx);
+                                this.state
+                                    .read(cx)
+                                    .move_tab(
+                                        &machine,
+                                        &dragged.tab_id,
+                                        tab_insert_index(from, index),
+                                        cx,
+                                    )
+                                    .detach_and_log_err(cx);
+                            }))
+                            .drag_over::<DraggedPane>(move |style, _, _, _| style.bg(drop))
+                            .on_drop(cx.listener(move |this, dragged: &DraggedPane, _, cx| {
+                                let destination = PaneMoveDestination::Tab {
+                                    tab_id: drop_id.clone(),
+                                    split: SplitDirection::Right,
+                                    target_pane_id: None,
+                                    ratio: None,
+                                };
+                                let machine = this.machine(cx);
+                                this.state
+                                    .read(cx)
+                                    .move_pane(&machine, &dragged.pane_id, destination, cx)
+                                    .detach_and_log_err(cx);
+                            }))
                     }))
-                    .drag_over::<DraggedPane>(move |style, _, _, _| style.bg(drop))
-                    .on_drop(cx.listener(move |this, dragged: &DraggedPane, _, cx| {
-                        let destination = PaneMoveDestination::Tab {
-                            tab_id: drop_id.clone(),
-                            split: SplitDirection::Right,
-                            target_pane_id: None,
-                            ratio: None,
-                        };
-                        let machine = this.machine(cx);
-                        this.state
-                            .read(cx)
-                            .move_pane(&machine, &dragged.pane_id, destination, cx)
-                            .detach_and_log_err(cx);
-                    }))
-            }))
-            .children(files)
+                    .children(files),
+            )
             .child(
                 div()
                     .id("new-tab")
+                    .flex_shrink_0()
                     .px_3()
                     .h_full()
                     .flex()
@@ -1927,8 +1951,6 @@ impl Render for TerminalArea {
             .key_context(CONTEXT)
             .track_focus(&self.focus)
             .size_full()
-            .border_l_1()
-            .border_color(cx.theme().border)
             .on_action(
                 cx.listener(|this, _: &SplitRight, _, cx| this.split(SplitDirection::Right, cx)),
             )

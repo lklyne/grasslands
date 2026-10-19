@@ -33,14 +33,12 @@ use gpui_kit::component::button::Button;
 use gpui_kit::component::dock::{BasePanel, Panel, PanelControl, PanelEvent};
 use gpui_kit::component::menu::PopupMenu;
 use gpui_kit::component::notification::Notification;
-use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::{
     ActiveTheme as _, Icon, IconName, Sizable as _, WindowExt as _, h_flex, v_flex,
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
-use crate::actions::OpenContextMenu;
 use crate::chrome::{
     self, Callback, Chrome, HerdrCommand, MenuCommand, MenuEntry, MenuTarget, WorktreeCommand,
 };
@@ -59,8 +57,6 @@ pub fn init(_cx: &mut App) {}
 
 /// Row height: every row is one line of `text_sm`.
 const ROW: Pixels = px(20.);
-/// One hover action (+, …, ×) on a workspace row.
-const ACTION: Pixels = px(14.);
 /// The fold chevron's column; rows without one leave it empty.
 const CHEVRON: Pixels = px(12.);
 /// How often every cached checkout is re-read, for what the `HEAD` watcher
@@ -837,7 +833,6 @@ impl WorkspaceList {
             .flatten()
             .map(|branch| (branch, checkout.and_then(|c| c.ahead_behind)));
         let theme = cx.theme();
-        let row_group = SharedString::from(format!("ws-row-{key}"));
 
         let lead = match (&entry.kind, &entry.repo) {
             (Kind::Parent, Some(repo)) => {
@@ -879,22 +874,29 @@ impl WorkspaceList {
             .when(focused, |this| this.text_color(theme.foreground))
             .when(!focused, |this| this.text_color(dim_text(cx)))
             .child(info.label.clone());
-        let branch = branch_line.map(|(branch, ahead_behind)| {
-            let (ahead, behind) = ahead_behind.unwrap_or_default();
-            h_flex()
+        let (branch, ahead, behind) = match branch_line {
+            Some((branch, ahead_behind)) => {
+                let (ahead, behind) = ahead_behind.unwrap_or_default();
+                (Some(branch), ahead, behind)
+            }
+            None => (None, 0, 0),
+        };
+        let branch = branch.map(|branch| {
+            div()
                 .min_w_0()
+                .truncate()
+                .text_color(if focused {
+                    theme.magenta
+                } else {
+                    theme.muted_foreground
+                })
+                .child(branch)
+        });
+        let counts = (ahead > 0 || behind > 0).then(|| {
+            h_flex()
+                .ml_auto()
+                .flex_shrink_0()
                 .gap_1()
-                .child(
-                    div()
-                        .min_w_0()
-                        .truncate()
-                        .text_color(if focused {
-                            theme.magenta
-                        } else {
-                            theme.muted_foreground
-                        })
-                        .child(branch),
-                )
                 .when(ahead > 0, |this| {
                     this.child(text(format!("↑{ahead}")).text_color(theme.success))
                 })
@@ -903,68 +905,20 @@ impl WorkspaceList {
                 })
         });
 
-        // Hover actions sit over the row's right end; while hovered the row
-        // pads its text clear of them, so labels truncate instead of running
-        // underneath.
+        // A parent or standalone row in a repo offers a new worktree there.
         let new_in = entry
             .repo
             .as_ref()
             .filter(|_| entry.kind != Kind::Child)
             .map(|r| r.root.clone());
-        let actions_width = ACTION * if new_in.is_some() { 3. } else { 2. } + px(4.);
-        let (more_id, close_id) = (id.clone(), id.clone());
-        let (more_machine, close_machine, new_machine) =
-            (machine_id.clone(), machine_id.clone(), machine_id.clone());
-        let action = |label: &'static str, name: String| {
-            div()
-                .id(SharedString::from(name))
-                .w(ACTION)
-                .flex()
-                .justify_center()
-                .text_color(theme.muted_foreground)
-                .hover(|this| this.text_color(theme.foreground))
-                .cursor_pointer()
-                .child(label)
-        };
-        let actions = h_flex()
-            .absolute()
-            .top_0()
-            .right_0()
-            .h(ROW)
-            .pr_1()
-            .invisible()
-            .group_hover(row_group.clone(), |this| this.visible())
-            .when_some(new_in, |this, root| {
-                this.child(
-                    action("+", format!("ws-new-{key}"))
-                        .tooltip(|window, cx| Tooltip::new("New worktree").build(window, cx))
-                        .on_click(cx.listener(move |this, _, window, cx| {
-                            cx.stop_propagation();
-                            this.new_worktree_on(
-                                new_machine.clone(),
-                                Some(root.clone()),
-                                window,
-                                cx,
-                            );
-                        })),
-                )
-            })
-            .child(
-                action("…", format!("ws-more-{key}")).on_click(move |event, window, cx| {
-                    cx.stop_propagation();
-                    open_workspace_menu(&more_machine, &more_id, event.position(), window, cx);
-                }),
-            )
-            .child(
-                action("×", format!("ws-close-{key}")).on_click(move |_, window, cx| {
-                    cx.stop_propagation();
-                    close_workspace(&close_machine, &close_id, window, cx);
-                }),
-            );
-
+        let list = cx.entity().downgrade();
         let (row_id, menu_id) = (id.clone(), id.clone());
-        let (row_machine, menu_machine, drop_machine) =
-            (machine_id.clone(), machine_id.clone(), machine_id.clone());
+        let (row_machine, menu_machine, drop_machine, new_machine) = (
+            machine_id.clone(),
+            machine_id.clone(),
+            machine_id.clone(),
+            machine_id.clone(),
+        );
         let slot = Slot::of(entry);
         let dragged = DraggedWorkspace {
             machine: machine_id.clone(),
@@ -979,7 +933,6 @@ impl WorkspaceList {
         h_flex()
             .id(SharedString::from(format!("ws-{key}")))
             .debug_selector(move || selector)
-            .group(row_group)
             .relative()
             .flex_shrink_0()
             .h(ROW)
@@ -991,14 +944,32 @@ impl WorkspaceList {
             .when(focused, |this| this.bg(theme.sidebar_accent))
             .when(!inert, |this| {
                 this.cursor_pointer()
-                    .hover(|this| this.bg(theme.sidebar_accent.opacity(0.6)).pr(actions_width))
+                    .hover(|this| this.bg(theme.sidebar_accent.opacity(0.6)))
             })
             .when(!inert, |this| {
                 this.on_click(cx.listener(move |this, _, _, cx| {
                     this.activate_workspace_on(&row_machine, &row_id, cx)
                 }))
                 .on_mouse_down(MouseButton::Right, move |event, window, cx| {
-                    open_workspace_menu(&menu_machine, &menu_id, event.position, window, cx);
+                    let extra = new_in
+                        .clone()
+                        .map(|root| {
+                            let machine = new_machine.clone();
+                            MenuEntry::item(
+                                "New Worktree…",
+                                list_command(&list, move |this, window, cx| {
+                                    this.new_worktree_on(
+                                        machine.clone(),
+                                        Some(root.clone()),
+                                        window,
+                                        cx,
+                                    )
+                                }),
+                            )
+                        })
+                        .into_iter()
+                        .collect();
+                    open_workspace_menu(&menu_machine, &menu_id, event.position, extra, window, cx);
                 })
                 .on_drag(dragged, |dragged, _, _, cx| {
                     crate::sounds::play(cues::Cue::Select, cues::PlayOptions::default());
@@ -1035,7 +1006,7 @@ impl WorkspaceList {
             .child(status::indicator(status, cx))
             .child(label)
             .children(branch)
-            .when(!inert, |this| this.child(actions))
+            .children(counts)
             .child({
                 let drawn = self.drawn_rows.clone();
                 canvas(
@@ -1305,19 +1276,20 @@ fn open_workspace_menu(
     machine: &MachineId,
     workspace_id: &WorkspaceId,
     position: Point<Pixels>,
+    extra: Vec<MenuEntry>,
     window: &mut Window,
     cx: &mut App,
 ) {
-    window.dispatch_action(
-        Box::new(OpenContextMenu {
-            target: MenuTarget::Workspace {
-                machine: machine.clone(),
-                workspace_id: workspace_id.to_owned(),
-            },
-            position,
-        }),
-        cx,
-    );
+    let Some(chrome) = chrome::get(window, cx) else {
+        return;
+    };
+    let target = MenuTarget::Workspace {
+        machine: machine.clone(),
+        workspace_id: workspace_id.to_owned(),
+    };
+    chrome.update(cx, |chrome, cx| {
+        chrome.context_menu(target, position, extra, window, cx)
+    });
 }
 
 /// Closes through the chrome, which asks first when agents are running there.

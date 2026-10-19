@@ -136,6 +136,7 @@ impl Workspace {
         h_flex()
             .id(("file-tab", index))
             .relative()
+            .flex_shrink_0()
             .child(record(move |bounds| tabs.borrow_mut().tabs.push(bounds)))
             .h_full()
             .pl_3()
