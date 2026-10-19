@@ -133,7 +133,7 @@ impl HerdrCommand {
                     .spawn(async move { task.await.map(drop) })
             }
             Self::ZoomPane { machine, pane_id } => state.read(cx).call(&machine, cx, move |c| {
-                c.pane_zoom(&pane_id, "toggle").map(drop)
+                c.pane_zoom(&pane_id, herdr::ZoomMode::Toggle)
             }),
             Self::RenamePane {
                 machine,

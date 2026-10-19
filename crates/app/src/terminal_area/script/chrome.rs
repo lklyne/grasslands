@@ -21,12 +21,11 @@ use std::time::{Duration, Instant};
 
 use gpui_kit::component::WindowExt as _;
 use gpui_kit::*;
-use serde_json::json;
 
 use super::{Cx, Run};
 use crate::actions::CommandPalette;
 use crate::chrome::{MenuCommand, MenuTarget};
-use crate::herdr::{PaneId, SplitDirection, SplitTree, WorkspaceId};
+use crate::herdr::{PaneId, SplitDirection, SplitTree, WorkspaceId, method, protocol};
 use crate::overlay;
 use crate::terminal_area::{HEADER_HEIGHT, TerminalArea};
 
@@ -96,7 +95,8 @@ impl Run {
         let (first, second) = (first.clone(), second.clone());
 
         // An agent on the first pane, so closing it needs a confirmation.
-        self.report_agent(cx, &first, "working").await?;
+        self.report_agent(cx, &first, protocol::ReportedState::Working)
+            .await?;
         let agent = self
             .until(cx, Duration::from_secs(5), |area, _, cx| {
                 area.snapshot(cx).agents.iter().any(|a| a.pane_id == first)
@@ -247,14 +247,16 @@ impl Run {
         self.focus_in_terminals(cx, "the confirmation").await;
 
         // An agent turning blocked raises a toast in the overlay.
-        self.report_agent(cx, &second, "working").await?;
+        self.report_agent(cx, &second, protocol::ReportedState::Working)
+            .await?;
         let working = self
             .until(cx, Duration::from_secs(5), |area, _, cx| {
                 area.snapshot(cx).agents.iter().any(|a| a.pane_id == second)
             })
             .await;
         self.check(working, "agent reported on the second pane");
-        self.report_agent(cx, &second, "blocked").await?;
+        self.report_agent(cx, &second, protocol::ReportedState::Blocked)
+            .await?;
         let toast = self
             .until_overlay(cx, |window, cx| !window.notifications(cx).is_empty())
             .await;
@@ -279,19 +281,19 @@ impl Run {
         &self,
         cx: &mut Cx,
         pane_id: &PaneId,
-        status: &str,
+        state: protocol::ReportedState,
     ) -> anyhow::Result<()> {
-        let params = json!({
-            "pane_id": pane_id,
-            "source": "chrome-script",
-            "agent": "claude",
-            "state": status,
-        });
+        let params = protocol::PaneReportAgentParams {
+            pane_id: pane_id.clone(),
+            source: "chrome-script".into(),
+            agent: "claude".into(),
+            state,
+        };
         let task = self.read(cx, |area, cx| {
             area.state
                 .read(cx)
                 .call(&area.machine(cx), cx, move |client| {
-                    client.call("pane.report_agent", &params)
+                    client.send::<method::PaneReportAgent>(&params)
                 })
         })?;
         task.await?;

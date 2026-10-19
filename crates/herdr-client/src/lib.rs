@@ -17,6 +17,7 @@ mod error;
 pub mod events;
 mod ids;
 mod machines;
+pub mod protocol;
 mod remote_fs;
 mod setup;
 mod state;
@@ -31,6 +32,7 @@ pub use machines::{
     DEV_MACHINES_ENV, FORWARD_AGENT_ENV, MachineLink, MachineProfile, MachineStatus, dev_allowed,
     list_machines, socket_dir,
 };
+pub use protocol::{Method, method};
 pub use remote_fs::{ExecOutput, RemoteEntry, RemoteFs, RemoteMetadata};
 pub use setup::{Check, Fix, FixCommand, InstallMethod, Installed, MIN_VERSION, Version};
 pub use state::{SplitRef, SplitTree, State, Tab, Workspace};

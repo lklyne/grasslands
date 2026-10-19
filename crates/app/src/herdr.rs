@@ -31,4 +31,7 @@ pub use herdr_client::{
 /// `~/.local/share/grasslands-herdr` unless `RT_ALLOW_LIVE_HERDR=1`.
 pub type Config = herdr_client::Endpoint;
 
+/// herdr's methods typed both ways, for `Client::send`.
+pub use herdr_client::protocol::{self, ZoomMode, method};
+
 pub type Result<T> = herdr_client::Result<T>;

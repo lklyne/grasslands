@@ -28,7 +28,7 @@ use crate::actions::OpenContextMenu;
 use crate::chrome::{Confirmation, MenuTarget};
 use crate::herdr::{
     AgentStatus, MachineStatus, PaneDirection, PaneId, PaneMoveDestination, RightClickTarget,
-    Snapshot, SplitDirection, SplitTree, Tab, TabId, TerminalId,
+    Snapshot, SplitDirection, SplitTree, Tab, TabId, TerminalId, ZoomMode,
 };
 use crate::overlay;
 use crate::setup::Stage;
@@ -1007,7 +1007,7 @@ impl TerminalArea {
         self.state
             .read(cx)
             .call(&machine, cx, move |client| {
-                client.pane_zoom(&pane_id, "toggle").map(drop)
+                client.pane_zoom(&pane_id, ZoomMode::Toggle)
             })
             .detach_and_log_err(cx);
     }

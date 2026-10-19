@@ -3,7 +3,6 @@
 mod common;
 
 use herdr_client::*;
-use serde_json::json;
 
 use common::{Watch, dev_endpoint};
 
@@ -117,10 +116,12 @@ fn cache_should_follow_layout_commands() {
 
     // Agent status arrives through the per-pane subscription alone.
     client
-        .call(
-            "pane.report_agent",
-            &json!({ "pane_id": p1, "source": "it", "agent": "claude", "state": "blocked" }),
-        )
+        .send::<method::PaneReportAgent>(&protocol::PaneReportAgentParams {
+            pane_id: p1.clone(),
+            source: "it".into(),
+            agent: "claude".into(),
+            state: protocol::ReportedState::Blocked,
+        })
         .unwrap();
     watch.wait_for("agent status", |s| {
         s.pane(&p1)

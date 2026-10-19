@@ -22,7 +22,6 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use gpui_kit::*;
-use serde_json::json;
 
 mod chrome;
 mod drags;
@@ -36,7 +35,7 @@ mod setup;
 mod titlebar;
 
 use super::{ClosePane, NewTab, SplitDown, SplitRight, TerminalArea};
-use crate::herdr::{PaneId, SplitDirection, SplitTree, TabId, TerminalId};
+use crate::herdr::{PaneId, SplitDirection, SplitTree, TabId, TerminalId, method, protocol};
 use crate::overlay::{self, Capture};
 use crate::state::{AppState, MachineId};
 
@@ -354,20 +353,17 @@ impl Run {
             area.state
                 .read(cx)
                 .call(&area.machine(cx), cx, move |client| {
-                    client.call(
-                        "pane.read",
-                        &json!({ "pane_id": pane_id, "source": "recent", "lines": 40 }),
-                    )
+                    client.send::<method::PaneRead>(&protocol::PaneReadParams {
+                        pane_id,
+                        source: protocol::ReadSource::Recent,
+                        lines: Some(40),
+                    })
                 })
         }) else {
             return String::new();
         };
         match task.await {
-            Ok(value) => value
-                .pointer("/read/text")
-                .and_then(|text| text.as_str())
-                .unwrap_or_default()
-                .to_owned(),
+            Ok(read) => read.text,
             Err(error) => format!("<{error}>"),
         }
     }

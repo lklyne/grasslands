@@ -20,12 +20,12 @@ use std::sync::mpsc::{self, RecvTimeoutError};
 use std::thread;
 use std::time::Duration;
 
-use serde_json::json;
-
 use crate::client::Client;
 use crate::endpoint::{self, Endpoint};
 use crate::error::{Error, Result};
 use crate::events;
+use crate::protocol::method::EventsSubscribe;
+use crate::protocol::{Method as _, Subscribe};
 use crate::state::State;
 use crate::types::{LayoutDescription, PaneId, TabId};
 
@@ -264,8 +264,10 @@ impl Engine {
         stream.set_read_timeout(Some(HANDSHAKE_TIMEOUT))?;
         stream.set_write_timeout(Some(HANDSHAKE_TIMEOUT))?;
         let request_id = endpoint::next_id();
-        let params = json!({ "subscriptions": events::subscriptions(&panes) });
-        endpoint::write_request(&stream, &request_id, "events.subscribe", &params)?;
+        let params = Subscribe {
+            subscriptions: events::subscriptions(&panes),
+        };
+        endpoint::write_request(&stream, &request_id, EventsSubscribe::NAME, &params)?;
 
         let mut reader = BufReader::new(stream.try_clone()?);
         let mut line = String::new();

@@ -17,7 +17,7 @@ use gpui_kit::*;
 use super::{Cx, Run};
 use crate::actions::{OpenFile, ToggleTheme};
 use crate::editor::Answer;
-use crate::herdr::{PaneId, SplitDirection, SplitTree};
+use crate::herdr::{PaneId, SplitDirection, SplitTree, protocol};
 use crate::overlay;
 use crate::terminal_area::TerminalArea;
 use crate::workspace::{self, MainTab, Workspace};
@@ -178,9 +178,11 @@ impl Run {
             SplitTree::Pane(pane) => pane.clone(),
             SplitTree::Split { .. } => PaneId::from(tree.pane_ids()[0]),
         };
-        self.report_agent(cx, &pane, "working").await?;
+        self.report_agent(cx, &pane, protocol::ReportedState::Working)
+            .await?;
         Self::sleep(cx, 500).await;
-        self.report_agent(cx, &pane, "blocked").await?;
+        self.report_agent(cx, &pane, protocol::ReportedState::Blocked)
+            .await?;
         let toast = self
             .until_overlay(cx, |window, cx| !window.notifications(cx).is_empty())
             .await;
