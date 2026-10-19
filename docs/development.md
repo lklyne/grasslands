@@ -119,6 +119,26 @@ RT_SCRIPT=terminals scripts/dev-run cargo run -p app
 RT_CHROME_SCRIPT='menu pane w1:p1; wait 1500; key escape; log after' scripts/dev-run cargo run -p app
 ```
 
+### Remote machines
+
+The remote checks run against `dockerbox`, the `herdr-remote-test` container (`ssh://lyle@127.0.0.1:2222`), saved as a machine in herdr. Each driver's header under `crates/app/src/terminal_area/script/` says what it does. `machines`, `remote` and `remote-files` stop and start the container, which ends whatever else is connected to it; `machine-ui` uses fixtures only.
+
+```sh
+GRASSLANDS_DEV_MACHINES=dockerbox RT_SCRIPT=machines scripts/dev-run cargo run -p app
+GRASSLANDS_DEV_MACHINES=dockerbox RT_SCRIPT=remote scripts/dev-run cargo run -p app
+GRASSLANDS_DEV_MACHINES=dockerbox RT_SCRIPT=remote-files scripts/dev-run cargo run -p app
+RT_SCRIPT=machine-ui scripts/dev-run cargo run -p app
+```
+
+The link itself has ignored tests in `crates/herdr-client/tests/machine_link.rs`. The agent tests also need `GRASSLANDS_TEST_AGENT`, the socket of a throwaway `ssh-agent` holding a throwaway key (never your own agent). They force forwarding with `RT_FORWARD_AGENT=1`, which debug builds of the app take too:
+
+```sh
+GRASSLANDS_SSH_TEST_TARGET=ssh://lyle@127.0.0.1:2222 GRASSLANDS_TEST_AGENT=/path/to/agent.sock \
+  scripts/dev-run cargo test -p herdr-client --test machine_link -- --ignored --nocapture
+```
+
+A worktree whose directory name is long gets a dev session socket path past macOS's 104-byte `sun_path`, and its dev server can't start; set `RT_SESSION` to something short.
+
 ## Known gaps
 
 - herdr itself has two gaps: plugin panes opened as popups have no pane id or events, so the app can't show them, and toasts sent with `herdr notification show` have no event the app can listen to. See [0005](decisions/0005-herdr-0.9.5-api-gaps.md).
