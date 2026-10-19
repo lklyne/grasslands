@@ -2,8 +2,9 @@
 //! (`client/shell/agent_sidebar.rs`): every agent on one line, its status
 //! glyph with its workspace (and tab, when the workspace has more than one),
 //! then its name. "grouped" keeps herdr's workspace order, blocked first
-//! within each workspace; "priority" is herdr's attention queue. The sort
-//! toggle sits in the panel's title bar.
+//! within each workspace; "priority" is herdr's attention queue. The order
+//! is herdr's `ui.agent_panel_sort`; the sort toggle in the panel's title
+//! bar writes it back to herdr's config.
 //!
 //! Agents on every connected machine share the list (Local's first in
 //! "grouped"); with more than one machine each row ends in its machine's
@@ -21,7 +22,9 @@ use gpui_kit::*;
 use super::{AgentSort, ROW, dim_text, priority, status_icon, text};
 use crate::actions::OpenContextMenu;
 use crate::chrome::MenuTarget;
+use crate::herdr::config::Edit;
 use crate::herdr::{Agent, AgentStatus, Snapshot};
+use crate::herdr_prefs::{self, HerdrPrefs};
 use crate::state::{AppState, Machine, MachineId};
 
 /// What herdr calls an agent in its panel.
@@ -80,17 +83,17 @@ fn ordered_everywhere(state: &AppState, sort: AgentSort) -> Vec<(&Machine, &Agen
 
 pub struct AgentList {
     state: Entity<AppState>,
-    pub(super) sort: AgentSort,
     focus: FocusHandle,
     _observe: Subscription,
+    _observe_prefs: Subscription,
 }
 
 impl AgentList {
     pub fn new(state: Entity<AppState>, cx: &mut Context<Self>) -> Self {
         Self {
             _observe: cx.observe(&state, |_, _, cx| cx.notify()),
+            _observe_prefs: cx.observe_global::<HerdrPrefs>(|_, cx| cx.notify()),
             state,
-            sort: AgentSort::Grouped,
             focus: cx.focus_handle(),
         }
     }
@@ -121,11 +124,23 @@ impl AgentList {
         );
     }
 
+    /// The order: herdr's `ui.agent_panel_sort`.
+    pub(super) fn sort(&self, cx: &App) -> AgentSort {
+        herdr_prefs::get(cx).agent_panel_sort.into()
+    }
+
     pub fn toggle_sort(&mut self, cx: &mut Context<Self>) {
-        self.sort = match self.sort {
+        let sort = match self.sort(cx) {
             AgentSort::Grouped => AgentSort::Priority,
             AgentSort::Priority => AgentSort::Grouped,
         };
+        self.set_sort(sort, cx);
+    }
+
+    /// Sets the order, writing it to herdr's config so herdr's own agent
+    /// panel follows.
+    fn set_sort(&mut self, sort: AgentSort, cx: &mut Context<Self>) {
+        herdr_prefs::set(Edit::AgentPanelSort(sort.into()), cx);
         cx.notify();
     }
 
@@ -251,7 +266,7 @@ impl Panel for AgentList {
     }
 
     fn toolbar_buttons(&mut self, _: &mut Window, cx: &mut Context<Self>) -> Option<Vec<Button>> {
-        let label = match self.sort {
+        let label = match self.sort(cx) {
             AgentSort::Grouped => "Grouped",
             AgentSort::Priority => "Priority",
         };
@@ -276,15 +291,13 @@ impl Panel for AgentList {
         ]
         .into_iter()
         .fold(menu.label("Sort"), |menu, (label, sort)| {
+            let current = self.sort(cx);
             let this = cx.entity().downgrade();
             menu.item(
                 PopupMenuItem::new(label)
-                    .checked(self.sort == sort)
+                    .checked(current == sort)
                     .on_click(move |_, _, cx| {
-                        let _ = this.update(cx, |this, cx| {
-                            this.sort = sort;
-                            cx.notify();
-                        });
+                        let _ = this.update(cx, |this, cx| this.set_sort(sort, cx));
                     }),
             )
         })
@@ -303,7 +316,7 @@ impl Render for AgentList {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let state = self.state.read(cx);
         let show_machine = state.machines().count() > 1;
-        let rows: Vec<AnyElement> = ordered_everywhere(state, self.sort)
+        let rows: Vec<AnyElement> = ordered_everywhere(state, self.sort(cx))
             .into_iter()
             .map(|(machine, agent)| self.render_agent(machine, agent, show_machine, cx))
             .collect();

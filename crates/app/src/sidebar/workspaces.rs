@@ -42,6 +42,7 @@ use gpui_kit::*;
 
 use crate::actions::OpenContextMenu;
 use crate::chrome::{self, Callback, Chrome, HerdrCommand, MenuCommand, MenuEntry, MenuTarget};
+use crate::herdr::config::AgentPanelSort;
 use crate::herdr::{Agent, AgentStatus, Snapshot, WorkspaceInfo, WorktreeParams};
 use crate::machines::{self, MachineActions, MachineState, machine_header, ssh_config};
 use crate::state::{AppEvent, AppState, Machine, MachineId, MachineTask};
@@ -69,6 +70,24 @@ pub enum AgentSort {
     Grouped,
     /// The attention queue: blocked, done, working, idle, newest change first.
     Priority,
+}
+
+impl From<AgentPanelSort> for AgentSort {
+    fn from(sort: AgentPanelSort) -> Self {
+        match sort {
+            AgentPanelSort::Spaces => Self::Grouped,
+            AgentPanelSort::Priority => Self::Priority,
+        }
+    }
+}
+
+impl From<AgentSort> for AgentPanelSort {
+    fn from(sort: AgentSort) -> Self {
+        match sort {
+            AgentSort::Grouped => Self::Spaces,
+            AgentSort::Priority => Self::Priority,
+        }
+    }
 }
 
 pub struct WorkspaceList {

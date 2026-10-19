@@ -119,7 +119,7 @@ pub(super) fn start(
                             let _ = agents.update(cx, |this, cx| this.toggle_sort(cx));
                         }
                         _ => {
-                            let sort = agents.read_with(cx, |this, _| this.sort).ok();
+                            let sort = agents.read_with(cx, |this, cx| this.sort(cx)).ok();
                             let _ = spaces
                                 .update(cx, |this, cx| run_step(this, &step, sort, window, cx));
                         }
