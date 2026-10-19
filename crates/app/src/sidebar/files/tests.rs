@@ -487,3 +487,32 @@ fn poll_should_wait_for_the_one_still_out(cx: &mut TestAppContext) {
     let lists = fake.lists.load(std::sync::atomic::Ordering::SeqCst) - before;
     assert_eq!(lists, 2);
 }
+
+#[gpui::test]
+fn search_should_wait_for_the_one_running_then_run_the_latest(cx: &mut TestAppContext) {
+    let f = fixture(cx, "search-one");
+    f.root_on_fake(cx);
+    // A search's command is still out.
+    f.files.update(cx, |files, _| files.search_running = true);
+    for query in ["a", "ab"] {
+        f.with_window(cx, |files, window, cx| files.set_query(query, window, cx));
+        cx.executor().advance_clock(super::SEARCH_DEBOUNCE);
+        cx.run_until_parked();
+    }
+    let waiting = cx.read(|cx| {
+        let files = f.files.read(cx);
+        files.search_pending.as_ref().map(|job| job.query.clone())
+    });
+    assert_eq!(waiting.as_deref(), Some("ab"));
+    // It ends (cancelled, superseded): the latest runs.
+    f.files.update(cx, |files, cx| {
+        let cancel = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        files.search_done(&cancel, None, cx)
+    });
+    cx.run_until_parked();
+    let shown = cx.read(|cx| {
+        let files = f.files.read(cx);
+        (files.results.is_some(), files.search_pending.is_some())
+    });
+    assert_eq!(shown, (true, false));
+}

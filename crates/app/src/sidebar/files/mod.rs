@@ -88,6 +88,10 @@ pub struct FileTree {
     /// Matches for the query; `None` while it is empty, which shows the tree.
     results: Option<search::Results>,
     searching: Option<(Arc<AtomicBool>, Task<()>)>,
+    /// A search's command is running (see `run_search`).
+    search_running: bool,
+    /// The latest query, waiting for the running search to end.
+    search_pending: Option<SearchJob>,
     git: Option<git::Summary>,
     /// A read in flight, then the throttle pause after it.
     git_reading: Option<Task<()>>,
@@ -114,6 +118,14 @@ struct Scope {
     machine: MachineId,
     root: PathBuf,
     fs: Fs,
+}
+
+/// One query to run against a root.
+struct SearchJob {
+    root: PathBuf,
+    fs: Fs,
+    query: String,
+    cancel: Arc<AtomicBool>,
 }
 
 /// A file or folder being dragged to another folder.
@@ -220,6 +232,8 @@ impl FileTree {
             query,
             results: None,
             searching: None,
+            search_running: false,
+            search_pending: None,
             git: None,
             git_reading: None,
             git_stale: false,
@@ -447,6 +461,7 @@ impl FileTree {
         if let Some((cancel, _)) = self.searching.take() {
             cancel.store(true, Ordering::Relaxed);
         }
+        self.search_pending = None;
         let query = self.query.read(cx).value().trim().to_owned();
         let (Some(root), Some(fs)) = (
             self.root()
@@ -459,27 +474,64 @@ impl FileTree {
             return;
         };
         let cancel = Arc::new(AtomicBool::new(false));
-        let task = cx.spawn({
-            let cancel = cancel.clone();
-            async move |this, cx| {
-                cx.background_executor().timer(SEARCH_DEBOUNCE).await;
-                let results = cx
-                    .background_executor()
-                    .spawn(async move {
-                        let results = fs.search(&root, &query, &cancel);
-                        (!cancel.load(Ordering::Relaxed)).then_some(results)
-                    })
-                    .await;
-                if let Some(results) = results {
-                    let _ = this.update(cx, |this, cx| {
-                        this.results = Some(results);
-                        this.searching = None;
-                        cx.notify();
-                    });
-                }
-            }
+        let job = SearchJob {
+            root,
+            fs,
+            query,
+            cancel: cancel.clone(),
+        };
+        let task = cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(SEARCH_DEBOUNCE).await;
+            let _ = this.update(cx, |this, cx| this.run_search(job, cx));
         });
         self.searching = Some((cancel, task));
+    }
+
+    /// Runs `job` off the main thread, or keeps it for when the search
+    /// still running ends: a saved machine's search can't be stopped
+    /// part way, so one runs at a time and only the latest query waits.
+    fn run_search(&mut self, job: SearchJob, cx: &mut Context<Self>) {
+        if self.search_running {
+            self.search_pending = Some(job);
+            return;
+        }
+        self.search_running = true;
+        let cancel = job.cancel.clone();
+        let results = cx.background_executor().spawn(async move {
+            let results = job.fs.search(&job.root, &job.query, &job.cancel);
+            (!job.cancel.load(Ordering::Relaxed)).then_some(results)
+        });
+        // Detached, so `search_running` is cleared even when a newer query
+        // replaces `searching`.
+        cx.spawn(async move |this, cx| {
+            let results = results.await;
+            let _ = this.update(cx, |this, cx| this.search_done(&cancel, results, cx));
+        })
+        .detach();
+    }
+
+    /// The search for `cancel`'s query ended; `None` if it was cancelled.
+    fn search_done(
+        &mut self,
+        cancel: &Arc<AtomicBool>,
+        results: Option<search::Results>,
+        cx: &mut Context<Self>,
+    ) {
+        self.search_running = false;
+        if let Some(results) = results {
+            self.results = Some(results);
+            if self
+                .searching
+                .as_ref()
+                .is_some_and(|(current, _)| Arc::ptr_eq(current, cancel))
+            {
+                self.searching = None;
+            }
+            cx.notify();
+        }
+        if let Some(job) = self.search_pending.take() {
+            self.run_search(job, cx);
+        }
     }
 
     /// Lists `dirs` on the background executor, then updates the tree.
