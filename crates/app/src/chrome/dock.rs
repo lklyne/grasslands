@@ -1,6 +1,8 @@
 //! The dock icon, badge and alert sounds. GPUI has no dock, so this calls
 //! AppKit; the sounds are cues, with AppKit's system sounds as a fallback.
 
+use std::path::Path;
+
 use crate::herdr::AgentStatus;
 use crate::sounds;
 
@@ -58,13 +60,21 @@ pub fn set_badge(count: usize) {
 
 /// Plays the sound for an agent that just reached `status`: `Attention` when
 /// it's blocked, `Ready` when it's done (strong while the app is in the
-/// background, since it finished while you were away).
-pub fn play_for(status: AgentStatus, background: bool) {
+/// background, since it finished while you were away). herdr's custom mp3
+/// (`[ui.sound] path`, `done_path`, `request_path`) plays instead when set
+/// and readable. Sounds off in Settings → Sounds silences both.
+pub fn play_for(status: AgentStatus, background: bool, custom: Option<&Path>) {
     let cue = match status {
         AgentStatus::Blocked => cues::Cue::Attention,
         AgentStatus::Done => cues::Cue::Ready,
         _ => return,
     };
+    if let Some(path) = custom
+        && sounds::enabled()
+        && play_file(path)
+    {
+        return;
+    }
     let options = if background && cue == cues::Cue::Ready {
         sounds::strong()
     } else {
@@ -75,6 +85,52 @@ pub fn play_for(status: AgentStatus, background: bool) {
         None if sounds::enabled() => play_system(status),
         None => {}
     }
+}
+
+/// Plays an audio file (herdr's custom mp3s) through AppKit. Returns
+/// whether it started; a missing or unplayable file falls back to the cue,
+/// as herdr falls back to its default sound. Silent in tests and script
+/// runs, which pretend it played.
+fn play_file(path: &Path) -> bool {
+    if cfg!(test) || std::env::var_os("RT_SCRIPT").is_some() {
+        return path.is_file();
+    }
+    play_file_now(path)
+}
+
+#[cfg(target_os = "macos")]
+fn play_file_now(path: &Path) -> bool {
+    {
+        use std::cell::RefCell;
+
+        use objc2::rc::Retained;
+        use objc2::{AllocAnyThread as _, MainThreadMarker};
+        use objc2_app_kit::NSSound;
+        use objc2_foundation::NSString;
+
+        thread_local! {
+            /// The playing file, kept alive until the next one replaces it.
+            static PLAYING: RefCell<Option<Retained<NSSound>>> = const { RefCell::new(None) };
+        }
+
+        if MainThreadMarker::new().is_none() || !path.is_file() {
+            return false;
+        }
+        let file = NSString::from_str(&path.to_string_lossy());
+        let Some(sound) = NSSound::initWithContentsOfFile_byReference(NSSound::alloc(), &file, true)
+        else {
+            tracing::warn!("herdr custom sound {}: AppKit can't play it", path.display());
+            return false;
+        };
+        let started = sound.play();
+        PLAYING.with(|playing| *playing.borrow_mut() = Some(sound));
+        started
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn play_file_now(_: &Path) -> bool {
+    false
 }
 
 /// The system sound for `status`, for when cues couldn't start.

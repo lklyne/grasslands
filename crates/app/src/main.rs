@@ -15,6 +15,7 @@ mod chrome;
 mod editor;
 mod fs;
 mod herdr;
+mod herdr_prefs;
 mod logging;
 mod machines;
 mod overlay;
@@ -49,6 +50,7 @@ fn main() {
             actions::init(cx);
             theme::init(cx);
             sounds::init(cx);
+            herdr_prefs::init(cx);
             settings::init(cx);
             editor::init(cx);
             terminal_area::init(cx);
@@ -92,6 +94,7 @@ fn add_install_dirs_to_path() {
 
 fn open_main_window(cx: &mut App) -> anyhow::Result<()> {
     let state = cx.new(|cx| AppState::new(setup::config_from_env(), cx));
+    herdr_prefs::attach(&state, cx);
     let options = WindowOptions {
         window_bounds: Some(WindowBounds::centered(size(px(1400.), px(900.)), cx)),
         ..workspace::window_options()
@@ -101,6 +104,14 @@ fn open_main_window(cx: &mut App) -> anyhow::Result<()> {
         cx.new(|cx| {
             cx.observe_window_appearance(window, |_, window, cx| {
                 theme::sync_with_system(window, cx);
+            })
+            .detach();
+            // The watcher follows herdr's config; coming back to the window
+            // rereads it too, in case a change slipped past.
+            cx.observe_window_activation(window, |_, window, cx| {
+                if window.is_window_active() {
+                    herdr_prefs::reload(cx);
+                }
             })
             .detach();
             Workspace::new(state, window, cx)

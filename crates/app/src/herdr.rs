@@ -5,6 +5,12 @@
 pub mod machines {
     pub use herdr_client::{dev_allowed, list_machines, socket_dir};
 }
+
+/// herdr's `config.toml` (read, edit, watch, check).
+pub mod config {
+    pub use herdr_client::config::*;
+    pub use herdr_client::{ALLOW_LIVE_ENV, ConfigReloadStatus, DEV_ROOT};
+}
 #[allow(
     unused_imports,
     reason = "the views pick these up as they are filled in"
