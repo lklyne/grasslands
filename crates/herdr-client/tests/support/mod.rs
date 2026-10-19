@@ -19,11 +19,16 @@ pub fn herdr_bin() -> PathBuf {
 /// `profiles`, so `herdr machine status` can check them, without touching
 /// the saved machines the dev sessions share with the user's herdr: herdr
 /// keeps them under `$XDG_STATE_HOME/herdr/client/endpoints.json`, and this
-/// points `XDG_STATE_HOME` at a private directory. Once per process, so
-/// pass every profile the test binary uses.
+/// points `XDG_STATE_HOME` at a private directory, one per test binary
+/// (reused by its later runs and by the child processes it starts). Once
+/// per process, so pass every profile the test binary uses.
 pub fn herdr_knows(profiles: &[MachineProfile]) {
     SAVED.call_once(|| {
-        let dir = env::temp_dir().join(format!("grasslands-it-state-{}", std::process::id()));
+        let binary = env::current_exe()
+            .ok()
+            .and_then(|exe| Some(exe.file_stem()?.to_string_lossy().into_owned()))
+            .unwrap_or_else(|| "tests".to_owned());
+        let dir = env::temp_dir().join(format!("grasslands-it-state-{binary}"));
         let client = dir.join("herdr/client");
         std::fs::create_dir_all(&client).unwrap();
         let ssh: Vec<_> = profiles
