@@ -29,6 +29,9 @@ pub struct Changes {
     /// The patch on screen; `None` before the first read or outside git.
     patch: Option<String>,
     loaded: bool,
+    /// A read still out; reloads wait for it, so a stalled link doesn't
+    /// pile them up. Dropped when the worktree changes.
+    reading: Option<Task<()>>,
     _subscriptions: [Subscription; 3],
     _refresh: Task<()>,
 }
@@ -40,6 +43,7 @@ impl Changes {
                 this.root.clone_from(root);
                 this.patch = None;
                 this.loaded = false;
+                this.reading = None;
                 this.reload(cx);
                 cx.notify();
             }
@@ -77,6 +81,7 @@ impl Changes {
             root: state.read(cx).active_root(),
             patch: None,
             loaded: false,
+            reading: None,
             _subscriptions: [subscription, redraw, activation],
             _refresh: refresh,
         };
@@ -84,15 +89,19 @@ impl Changes {
         this
     }
 
-    /// Re-reads the patch on the background executor.
+    /// Re-reads the patch on the background executor, unless a read is
+    /// still out.
     pub fn reload(&mut self, cx: &mut Context<Self>) {
+        if self.reading.is_some() {
+            return;
+        }
         let Some(root) = self.root.clone() else {
             return;
         };
         let Some(fs) = self.state.read(cx).fs_for(&root.machine) else {
             return;
         };
-        cx.spawn(async move |this, cx| {
+        self.reading = Some(cx.spawn(async move |this, cx| {
             let patch = cx
                 .background_executor()
                 .spawn({
@@ -100,12 +109,14 @@ impl Changes {
                     async move { fs.git_patch(&path) }
                 })
                 .await;
-            // A failed read (the machine dropped) keeps what's shown.
-            if let Ok(patch) = patch {
-                let _ = this.update(cx, |this, cx| this.apply(&root, patch, cx));
-            }
-        })
-        .detach();
+            let _ = this.update(cx, |this, cx| {
+                this.reading = None;
+                // A failed read (the machine dropped) keeps what's shown.
+                if let Ok(patch) = patch {
+                    this.apply(&root, patch, cx);
+                }
+            });
+        }));
     }
 
     fn apply(&mut self, root: &ActiveRoot, patch: Option<String>, cx: &mut Context<Self>) {
