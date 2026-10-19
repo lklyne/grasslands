@@ -8,7 +8,7 @@
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use gpui_kit::component::notification::NotificationDelivery;
 use gpui_kit::*;
@@ -42,6 +42,8 @@ pub struct HerdrPrefs {
     /// Edits a script run keeps applied over whatever the file says, so a
     /// dialog herdr's config asks for doesn't stall it (never written).
     script_overrides: Vec<Edit>,
+    /// The file's modification time and length when it was last checked.
+    checked: Option<(SystemTime, u64)>,
     _watcher: Option<ConfigWatcher>,
     _watch: Option<Task<()>>,
 }
@@ -99,6 +101,11 @@ pub fn init(cx: &mut App) {
 pub fn attach(state: &Entity<AppState>, cx: &mut App) {
     cx.default_global::<HerdrPrefs>().state = Some(state.downgrade());
     run_check(cx);
+}
+
+fn file_stamp(path: &Path) -> Option<(SystemTime, u64)> {
+    let metadata = std::fs::metadata(path).ok()?;
+    Some((metadata.modified().ok()?, metadata.len()))
 }
 
 fn log_problems(path: &Path, problems: &[String]) {
@@ -168,6 +175,11 @@ pub fn reload(cx: &mut App) {
     let parsed = config::load(&path);
     let global = cx.default_global::<HerdrPrefs>();
     let mut prefs = parsed.prefs;
+    // herdr already said it ignores this very file: keep its defaults.
+    let rejected = global.check.as_ref().is_some_and(|c| c.using_defaults);
+    if rejected && global.checked.is_some() && global.checked == file_stamp(&path) {
+        prefs = Prefs::default();
+    }
     global.apply_overrides(&mut prefs);
     if global.prefs != prefs || global.problems != parsed.problems {
         log_problems(&path, &parsed.problems);
@@ -189,6 +201,14 @@ fn run_check(cx: &mut App) {
         .and_then(|p| p.state.as_ref()?.upgrade())
         .and_then(|state| Some(state.read(cx).herdr_config.as_ref()?.bin.clone()));
     let Some(bin) = bin else { return };
+    // Window activations reread often; ask herdr again only when the file
+    // changed (or a write or reload since may have).
+    let stamp = file_stamp(&path);
+    let global = cx.default_global::<HerdrPrefs>();
+    if global.check.is_some() && global.checked == stamp {
+        return;
+    }
+    global.checked = stamp;
     let task = cx
         .background_executor()
         .spawn(async move { config::check(&bin, &path) });
