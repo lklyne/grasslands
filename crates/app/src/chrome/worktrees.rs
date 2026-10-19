@@ -209,7 +209,7 @@ impl Chrome {
         .detach();
     }
 
-    fn show_worktree_picker(
+    pub(super) fn show_worktree_picker(
         &mut self,
         machine: MachineId,
         workspace_id: WorkspaceId,
