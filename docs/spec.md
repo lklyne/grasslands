@@ -83,7 +83,9 @@ The window mirrors herdr's model: **workspaces** (one per repo or worktree) in t
 | Close a pane or tab | `pane.close` / `tab.close` |
 | Click to focus | `pane.focus` / `tab.focus` |
 | Create, rename or close a workspace or tab | `workspace.*` / `tab.*` |
-| New worktree | `worktree.create` |
+| New worktree (branch, optional base ref and label) | `worktree.create` |
+| Open an existing worktree | `worktree.list` → `worktree.open` |
+| Remove a linked worktree | `worktree.remove` (again with `force` when dirty) |
 
 After each drag or command, we re-render from the next `layout.updated` event, so herdr and the app can never disagree for long. Divider drags update locally during the drag, then send the final ratio on release.
 
@@ -131,7 +133,9 @@ The upper sidebar panel lists every herdr workspace and agent, laid out like her
 - Footer: "new" makes a workspace in the active worktree's folder; "menu" opens the focused workspace's menu plus New Workspace, New Worktree… and the command palette.
 - **agents:** every agent as two lines (glyph, workspace and tab; then the agent's name), with "blocked" and "done" badges. "grouped" keeps herdr's workspace order with blocked first in each workspace; "priority" is herdr's attention queue (blocked, done, working, idle, newest change first). The section folds from its label.
 - Click a workspace to focus it (`workspace.focus`); the terminal area follows. Click an agent to focus its pane and mark its result seen.
-- Hovering a row shows + (a worktree of that repo, `worktree.create`, asks for a branch name), … (the workspace menu: rename, new tab, close, close group) and ×. Closing asks first when agents are running there.
+- Hovering a row shows + (a worktree of that repo, `worktree.create`, asks for a branch and optionally a base ref and label), … (the workspace menu: rename, new tab, open worktree, remove worktree, close, close group) and ×. Closing asks first when agents are running there.
+- **Open Worktree…** (workspace menu, the panel's menu and "+" menu, the palette) lists the repo's worktrees from `worktree.list` with their branch and folder; picking one focuses its workspace if it has one, otherwise `worktree.open` opens it. **Remove Worktree…** on a linked worktree asks first (naming any running agents), and asks again before forcing when the checkout has uncommitted or untracked files.
+- "Close Worktree Group" closes exactly the group the list shows, including groups found with git2 that herdr doesn't know about, and the confirmation lists every workspace it closes.
 - Built from `session.snapshot` (workspaces and agents) and kept current by re-reading on every event, including `pane.agent_status_changed`.
 
 ## Replacing herdr's UI

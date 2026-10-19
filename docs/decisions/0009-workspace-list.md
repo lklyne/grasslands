@@ -1,6 +1,6 @@
 # 0009 Workspace list
 
-Date: 2026-10-15. Status: accepted; the agents section, header, footer and colors changed in 0011 (sidebar dock).
+Date: 2026-10-15. Status: accepted; the agents section, header, footer and colors changed in 0011 (sidebar dock); open, remove and group close of worktrees in 0021.
 
 The terminal area shows only herdr's focused workspace (`focused_workspace_id`), so without a list the other workspaces were invisible and unreachable. The upper sidebar panel is now `sidebar::workspaces::WorkspaceList`, modeled on herdr's TUI sidebar. It replaces `sidebar::agents::AgentList`: agents are listed under their workspace instead of in a flat panel.
 
@@ -52,7 +52,7 @@ Under `cargo test` the watcher is off (GPUI's test scheduler, as for `SessionSyn
 - Click a row: `AppState::focus_workspace` → `workspace.focus`. The terminal area, file tree and editor follow from the next snapshot. Nothing local changes first.
 - Footer "new": New Workspace (`workspace.create` in the active worktree's folder, focused; herdr picks the label), like herdr's `NewWorkspace`.
 - Footer "menu": herdr's global menu (settings, keybinds, reload config, what's new, detach) has no counterpart in this app, so "menu" opens the chrome's workspace menu for the focused workspace with New Workspace, New Worktree… and Command Palette… appended (`Chrome::context_menu` with extra entries; it draws in the overlay), or the command palette when nothing is focused. herdr's "● " before "menu" flags an available update; the app has none, so there's no dot.
-- Hover a row: + (rows in a repo, not linked worktrees) asks for a branch and runs `worktree.create` with `cwd` = that repo's root and `focus: true`; … opens the chrome's workspace menu; × is `Chrome::run(CloseWorkspace)`, which asks first when agents are running. The hover buttons are overlaid on the row's right end so the row never moves. Right-click opens the workspace menu too.
+- Hover a row: + (rows in a repo, not linked worktrees) asks for a branch (plus an optional base ref and label, 0021) and runs `worktree.create` with `cwd` = that repo's root and `focus: true`; … opens the chrome's workspace menu; × is `Chrome::run(CloseWorkspace)`, which asks first when agents are running. The hover buttons are overlaid on the row's right end so the row never moves. Right-click opens the workspace menu too.
 - The chrome is reached only through its public API (`OpenContextMenu`, `chrome::get` → `run`, `run_menu_command`, `context_menu`, `open_command_palette`), because the chrome agent owns `chrome/`.
 - The one-field name dialog lives in `crate::prompt`; it opens through `Chrome::floating`, so it draws in the overlay above the terminals.
 
@@ -63,7 +63,7 @@ Under `cargo test` the watcher is off (GPUI's test scheduler, as for `SessionSyn
 
 ## Known gaps
 
-- herdr 0.9.5 puts worktrees it creates under `~/.herdr/worktrees/<repo>/<branch>` even for a dev session with its own config dir. That folder is shared with the default herdr. Remove test worktrees with `scripts/herdr-dev worktree remove --workspace <id>`.
+- herdr 0.9.5 puts worktrees it creates under `[worktrees] directory` (default `~/.herdr/worktrees/<repo>/<branch>`). `scripts/herdr-dev` now sets it in the dev config (`$XDG_CONFIG_HOME/herdr/config.toml`, the dev dir, never the user's) to `~/.local/share/grasslands-herdr/worktrees`, so dev worktrees no longer land in the default herdr's folder (2026-10-18; see 0021). Remove test worktrees with `scripts/herdr-dev worktree remove --workspace <id>`.
 - When herdr has no `worktree` info for a workspace, its group and branch follow the focused pane's folder, so it moves to another group if that pane `cd`s into another repo.
 - The panel is 560px tall by default (drag the split to change it); spaces and agents split it evenly and each scrolls. herdr remembers its split ratio; this app doesn't yet.
 - herdr labels an uncustomized linked worktree by its branch (`worktree/` stripped). The socket API doesn't say whether a label is custom, so the app always shows herdr's label.
