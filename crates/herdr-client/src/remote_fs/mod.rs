@@ -11,9 +11,9 @@
 //! [`MachineLink`]: crate::MachineLink
 
 use std::collections::{BTreeMap, HashMap, VecDeque};
-use std::ffi::OsStr;
+use std::ffi::{OsStr, OsString};
 use std::io::{self, Read, Write};
-use std::os::unix::ffi::OsStrExt;
+use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ExitStatus, Stdio};
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -31,7 +31,11 @@ use codec::*;
 /// One entry of a remote folder listing.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RemoteEntry {
+    /// For display: [`file_name`](Self::file_name) with invalid UTF-8
+    /// replaced. Join paths with `file_name`, not this.
     pub name: String,
+    /// The name's exact bytes.
+    pub file_name: OsString,
     pub is_dir: bool,
     /// Follows symlinks: a link to a folder is a folder.
     pub is_symlink: bool,
@@ -104,13 +108,7 @@ impl RemoteFs {
                     } else {
                         attrs
                     };
-                    Ok(RemoteEntry {
-                        name: String::from_utf8_lossy(&name).into_owned(),
-                        is_dir: attrs.is_dir(),
-                        is_symlink,
-                        len: attrs.size.unwrap_or(0),
-                        modified: attrs.modified(),
-                    })
+                    Ok(entry(name, is_symlink, attrs))
                 })
                 .collect()
         })
@@ -238,8 +236,8 @@ impl RemoteFs {
             return Ok(());
         }
         // One `rm -rf` instead of a request per file.
-        let path = path.to_string_lossy();
-        let out = self.exec(&["rm", "-rf", "--", &path], None, REMOVE_TIMEOUT)?;
+        let path = utf8(path)?;
+        let out = self.exec(&["rm", "-rf", "--", path], None, REMOVE_TIMEOUT)?;
         if out.status.success() {
             Ok(())
         } else {
@@ -251,15 +249,18 @@ impl RemoteFs {
     }
 
     /// Runs `argv` on the machine (each word shell-quoted for the remote
-    /// shell), in `cwd` if given, killed after `timeout`.
+    /// shell), in `cwd` if given, killed after `timeout`. Fails with
+    /// `InvalidInput` if `cwd` isn't UTF-8, rather than run in a different
+    /// folder.
     pub fn exec(
         &self,
         argv: &[&str],
         cwd: Option<&Path>,
         timeout: Duration,
     ) -> io::Result<ExecOutput> {
+        let command = exec_command(argv, cwd)?;
         self.link.connection().ok_or_else(not_connected)?;
-        let out = self.link.run(&exec_command(argv, cwd), timeout)?;
+        let out = self.link.run(&command, timeout)?;
         // 255 is ssh's own failure; if the link went down, say so.
         if out.status.code() == Some(255) && self.link.connection().is_none() {
             return Err(not_connected());
@@ -296,16 +297,38 @@ impl RemoteFs {
 }
 
 /// `[cd <cwd> && ]<argv…>`, every word quoted for the remote shell.
-fn exec_command(argv: &[&str], cwd: Option<&Path>) -> String {
+fn exec_command(argv: &[&str], cwd: Option<&Path>) -> io::Result<String> {
     let command = argv
         .iter()
         .map(|word| shell_quote(word))
         .collect::<Vec<_>>()
         .join(" ");
-    match cwd {
-        Some(cwd) => format!("cd {} && {command}", shell_quote(&cwd.to_string_lossy())),
+    Ok(match cwd {
+        Some(cwd) => format!("cd {} && {command}", shell_quote(utf8(cwd)?)),
         None => command,
+    })
+}
+
+/// A listing entry from a READDIR name and its (followed) attributes.
+fn entry(name: Vec<u8>, is_symlink: bool, attrs: Attrs) -> RemoteEntry {
+    RemoteEntry {
+        name: String::from_utf8_lossy(&name).into_owned(),
+        file_name: OsString::from_vec(name),
+        is_dir: attrs.is_dir(),
+        is_symlink,
+        len: attrs.size.unwrap_or(0),
+        modified: attrs.modified(),
     }
+}
+
+/// `path` as a shell word; a lossy one would name a different file.
+fn utf8(path: &Path) -> io::Result<&str> {
+    path.to_str().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("{} isn't valid UTF-8", path.display()),
+        )
+    })
 }
 
 /// `<dir>/.<name>.grasslands-<pid>-<n>.tmp`, next to `path`.
@@ -704,13 +727,27 @@ mod tests {
         let cmd = exec_command(
             &["git", "log", "--format=%s", "it's"],
             Some(Path::new("/a b")),
-        );
+        )
+        .unwrap();
         assert_eq!(cmd, r"cd '/a b' && git log '--format=%s' 'it'\''s'");
     }
 
     #[test]
     fn exec_command_should_quote_empty_words() {
-        assert_eq!(exec_command(&["printf", ""], None), "printf ''");
+        assert_eq!(exec_command(&["printf", ""], None).unwrap(), "printf ''");
+    }
+
+    #[test]
+    fn exec_command_should_refuse_a_cwd_that_isnt_utf8() {
+        let cwd = Path::new(OsStr::from_bytes(b"/srv/caf\xe9"));
+        let err = exec_command(&["true"], Some(cwd)).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+    }
+
+    #[test]
+    fn entry_should_keep_the_exact_bytes_of_a_name_that_isnt_utf8() {
+        let entry = entry(b"caf\xe9".to_vec(), false, Attrs::default());
+        assert_eq!(entry.file_name.as_bytes(), b"caf\xe9");
     }
 
     #[test]
