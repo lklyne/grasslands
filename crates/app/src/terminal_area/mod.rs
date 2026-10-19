@@ -28,13 +28,13 @@ use gpui_kit::*;
 use crate::actions::OpenContextMenu;
 use crate::chrome::{Confirmation, MenuTarget};
 use crate::herdr::{
-    AgentStatus, MachineStatus, PaneDirection, PaneId, PaneMoveDestination, RightClickTarget,
-    Snapshot, SplitDirection, SplitTree, Tab, TabId, TerminalId, ZoomMode,
+    AgentStatus, PaneDirection, PaneId, PaneMoveDestination, RightClickTarget, Snapshot,
+    SplitDirection, SplitTree, Tab, TabId, TerminalId, ZoomMode,
 };
 use crate::overlay;
 use crate::setup::{Setup, Stage};
 use crate::sidebar::files::DraggedPath;
-use crate::state::{AppEvent, AppState, MachineId, MachineTask, On};
+use crate::state::{AppEvent, AppState, MachineId, MachineTask, On, Status};
 use crate::{label, status};
 
 use self::command_terminal::CommandTerminal;
@@ -1691,7 +1691,7 @@ impl TerminalArea {
     /// it comes back.
     fn render_machine_problem(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let machine = self.state.read(cx).selected_machine();
-        if machine.id().is_local() || *machine.status() == MachineStatus::Connected {
+        if machine.id().is_local() || machine.status().is_usable() {
             return None;
         }
         let (status, detail) = crate::machines::MachineState::of(machine.status());
@@ -1809,10 +1809,10 @@ impl Render for TerminalArea {
                 let machine = state.selected_machine();
                 let message = if !machine.id().is_local() {
                     match machine.status() {
-                        MachineStatus::Connected if snapshot.generation != 0 => {
+                        Status::Connected if snapshot.generation != 0 => {
                             format!("No workspaces on {}.", machine.label())
                         }
-                        MachineStatus::Connected | MachineStatus::Connecting => {
+                        Status::Connected | Status::Connecting => {
                             format!("Connecting to {}…", machine.label())
                         }
                         _ => format!("{} is offline", machine.label()),
@@ -1825,7 +1825,8 @@ impl Render for TerminalArea {
                         config.session.as_deref().unwrap_or("default session")
                     )
                 } else if state.herdr_config.is_none() {
-                    format!("herdr is disconnected: {:?}", state.connection())
+                    let reason = machine.status().reason().unwrap_or("not connected");
+                    format!("herdr is disconnected: {reason}")
                 } else {
                     "No workspaces. Create one from the sidebar.".to_owned()
                 };

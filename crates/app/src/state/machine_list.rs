@@ -3,7 +3,7 @@
 
 use std::fmt;
 
-use crate::herdr::{ConnectionStatus, MachineProfile, MachineStatus, ProfileId, machines};
+use crate::herdr::{MachineProfile, MachineStatus, ProfileId, machines};
 use cues::Cue;
 
 /// Which herdr server: the local one, or a saved machine by profile id.
@@ -108,20 +108,6 @@ pub fn reselect<'a>(
         selected.clone()
     } else {
         MachineId::Local
-    }
-}
-
-/// Local's machine status, from its connection and the setup check.
-pub fn local_status(connection: &ConnectionStatus, setup_needed: Option<String>) -> MachineStatus {
-    if let Some(reason) = setup_needed {
-        return MachineStatus::NeedsSetup(reason);
-    }
-    match connection {
-        ConnectionStatus::Connecting => MachineStatus::Connecting,
-        ConnectionStatus::Connected => MachineStatus::Connected,
-        ConnectionStatus::Reconnecting { reason } | ConnectionStatus::Disconnected { reason } => {
-            MachineStatus::Offline(reason.clone())
-        }
     }
 }
 

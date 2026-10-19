@@ -14,10 +14,10 @@ use gpui_kit::component::spinner::Spinner;
 use gpui_kit::component::{ActiveTheme as _, Icon, IconName, h_flex, v_flex};
 use gpui_kit::*;
 
-use crate::herdr::{self, Check, ConnectionStatus, Fix, InstallMethod, MIN_VERSION, Version};
+use crate::herdr::{self, Check, Fix, InstallMethod, MIN_VERSION, Version};
 use std::rc::Rc;
 
-use crate::state::AppState;
+use crate::state::{AppState, MachineId, Status};
 use crate::terminal_area::command_terminal::{CommandRun, CommandTerminal, Ended, OnEnded};
 use crate::{logging, sounds};
 use cues::{Cue, PlayOptions};
@@ -361,10 +361,15 @@ pub(crate) fn screen(
 /// "Can't reach herdr" while the first read hasn't arrived and the last
 /// attempt failed. Before that, the plain connecting message is enough.
 fn connection_problem(app: &AppState, cx: &App) -> Option<AnyElement> {
-    let ConnectionStatus::Reconnecting { reason } = app.connection() else {
+    let local = app.machine(&MachineId::Local)?;
+    let Status::Offline {
+        reason,
+        retrying: true,
+    } = local.status()
+    else {
         return None;
     };
-    if app.snapshot().generation != 0 {
+    if local.snapshot().generation != 0 {
         return None;
     }
     Some(

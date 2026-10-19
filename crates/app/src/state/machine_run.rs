@@ -6,8 +6,9 @@
 use std::ffi::OsString;
 use std::path::Path;
 
+use super::Status;
 use super::{Machine, MachineId};
-use crate::herdr::{FixCommand, MachineProfile, MachineStatus, ProfileId};
+use crate::herdr::{FixCommand, MachineProfile, ProfileId};
 
 /// What a run is for.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -28,11 +29,9 @@ impl MachineTask {
         let id = machine.id().clone();
         match machine.status() {
             _ if id.is_local() => None,
-            MachineStatus::NeedsSignIn(_) | MachineStatus::Offline(_) => Some(Self::SignIn(id)),
-            MachineStatus::NeedsSetup(_) => Some(Self::SetUp(id)),
-            MachineStatus::Connecting | MachineStatus::Connected | MachineStatus::Disabled(_) => {
-                None
-            }
+            Status::NeedsSignIn(_) | Status::Offline { .. } => Some(Self::SignIn(id)),
+            Status::NeedsSetup(_) => Some(Self::SetUp(id)),
+            Status::Connecting | Status::Connected | Status::Disabled(_) => None,
         }
     }
 }

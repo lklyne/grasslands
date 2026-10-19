@@ -21,8 +21,9 @@
 use std::time::Duration;
 
 use super::{Cx, Run};
-use crate::herdr::{Check, ConnectionStatus};
+use crate::herdr::Check;
 use crate::setup::Stage;
+use crate::state::{MachineId, Status};
 
 impl Run {
     pub(super) async fn setup(&mut self, cx: &mut Cx) -> anyhow::Result<()> {
@@ -33,9 +34,9 @@ impl Run {
             .until(cx, Duration::from_secs(20), |area, _, cx| {
                 let app = area.state.read(cx);
                 match expect.as_str() {
-                    "unreachable" => {
-                        matches!(app.connection(), ConnectionStatus::Reconnecting { .. })
-                    }
+                    "unreachable" => app.machine(&MachineId::Local).is_some_and(|local| {
+                        matches!(local.status(), Status::Offline { retrying: true, .. })
+                    }),
                     _ => !matches!(app.setup().read(cx).stage(), Stage::Checking),
                 }
             })

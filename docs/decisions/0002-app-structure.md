@@ -44,10 +44,12 @@ else in the module is yours.
   the terminal area observes it for the setup screen.
 - `crate::herdr` re-exports `herdr-client` types under the names views use
   (`Snapshot` = `herdr_client::State`, `Agent`, `AgentStatus`, `SplitTree`,
-  `ConnectionStatus`, `Config` = `Endpoint`, ...). `AppState::new` starts
-  `SessionSync` and applies its updates on the foreground: `snapshot:
-  Arc<Snapshot>` is replaced whole (`SnapshotReplaced`), `focused_pane` follows
-  (`FocusedPaneChanged`) and `connection` tracks the status. Under `cargo test` it stays offline.
+  `ConnectionStatus`, `Config` = `Endpoint`, ...). `AppState::start` starts
+  `SessionSync` (once setup passes) and applies its updates on the
+  foreground: `snapshot: Arc<Snapshot>` is replaced whole
+  (`SnapshotReplaced`), `focused_pane` follows (`FocusedPaneChanged`) and
+  each machine's `status()` (`state::Status`, decision 0019) says whether
+  it can be used. Tests never call `start`, so they stay offline.
 - Commands to herdr go through methods on `AppState` (`focus_pane`, `split_pane`,
   `set_split_ratio`, `new_tab`, ..., or `call` for anything else; each returns a
   `Task<herdr::Result<T>>` to await or `.detach_and_log_err(cx)`), never straight from a view, so there is one place that talks

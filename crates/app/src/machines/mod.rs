@@ -38,17 +38,18 @@ pub enum MachineState {
 }
 
 impl MachineState {
-    /// herdr-client's status, plus its reason for the screens' detail line.
-    pub fn of(status: &crate::herdr::MachineStatus) -> (Self, Option<&str>) {
-        use crate::herdr::MachineStatus as Status;
-        match status {
-            Status::Connecting => (Self::Connecting, None),
-            Status::Connected => (Self::Connected, None),
-            Status::NeedsSignIn(reason) => (Self::NeedsSignIn, Some(reason)),
-            Status::NeedsSetup(reason) => (Self::NeedsSetup, Some(reason)),
-            Status::Offline(reason) => (Self::Offline, Some(reason)),
-            Status::Disabled(reason) => (Self::Disabled, Some(reason)),
-        }
+    /// The machine's status, plus its reason for the screens' detail line.
+    pub fn of(status: &crate::state::Status) -> (Self, Option<&str>) {
+        use crate::state::Status;
+        let state = match status {
+            Status::Connecting => Self::Connecting,
+            Status::Connected => Self::Connected,
+            Status::NeedsSignIn(_) => Self::NeedsSignIn,
+            Status::NeedsSetup(_) => Self::NeedsSetup,
+            Status::Offline { .. } => Self::Offline,
+            Status::Disabled(_) => Self::Disabled,
+        };
+        (state, status.reason())
     }
 
     /// The status dot: green connected, yellow connecting, orange when it
