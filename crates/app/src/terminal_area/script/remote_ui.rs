@@ -204,7 +204,6 @@ impl Run {
                 HerdrCommand::CloseWorkspace {
                     machine: id.clone(),
                     workspace_id: scratch.clone(),
-                    close_group: false,
                 },
             )?;
             let closed = self

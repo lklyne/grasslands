@@ -8,10 +8,12 @@ use gpui_kit::component::WindowExt as _;
 use gpui_kit::component::command::{Command, CommandGroup, CommandItem, CommandState};
 use gpui_kit::*;
 
+use super::worktrees::{self, WorktreeCommand};
 use super::{Chrome, HerdrCommand, MenuCommand, MenuTarget, pane_context, update_later};
 use crate::actions::{FocusPane, OpenChanges, OpenSettings, Quit, ToggleTheme};
-use crate::herdr::{PluginActionInfo, PluginInvocationContext, SplitDirection};
+use crate::herdr::{PluginActionInfo, PluginInvocationContext, SplitDirection, WorkspaceInfo};
 use crate::state::AppState;
+use crate::worktree::Placement;
 use crate::{label, status};
 
 struct Group {
@@ -33,7 +35,10 @@ pub(super) fn open(
             command_state.update(cx, |palette, cx| palette.focus(window, cx));
         }
         let plugin_actions = chrome.read(cx).plugin_actions.clone();
-        let groups: Vec<Group> = groups(state.read(cx), &plugin_actions)
+        let state = state.read(cx);
+        let machine = state.selected().clone();
+        let place = |info: &WorkspaceInfo| worktrees::placement(&machine, info, cx);
+        let groups: Vec<Group> = groups(state, &plugin_actions, place)
             .into_iter()
             .filter(|g| !g.entries.is_empty())
             .collect();
@@ -74,7 +79,11 @@ pub(super) fn open(
     palette_state
 }
 
-fn groups(state: &AppState, plugin_actions: &[PluginActionInfo]) -> Vec<Group> {
+fn groups(
+    state: &AppState,
+    plugin_actions: &[PluginActionInfo],
+    place: impl Fn(&WorkspaceInfo) -> Option<Placement>,
+) -> Vec<Group> {
     let snapshot = state.snapshot();
     let machine = || state.selected().clone();
     let focused = snapshot.focused_pane();
@@ -155,10 +164,34 @@ fn groups(state: &AppState, plugin_actions: &[PluginActionInfo]) -> Vec<Group> {
                 C::CloseWorkspace {
                     machine: machine(),
                     workspace_id: pane.workspace_id.clone(),
-                    close_group: false,
                 },
             ),
         ]);
+        let placed = snapshot
+            .workspace(&pane.workspace_id)
+            .and_then(|w| place(&w.info));
+        let worktree = |label: &'static str, command: fn(_, _) -> WorktreeCommand| {
+            (
+                label.into(),
+                MenuCommand::Worktree(command(machine(), pane.workspace_id.clone())),
+            )
+        };
+        if placed.is_some() {
+            app.push(worktree("Worktree: Open…", |machine, workspace_id| {
+                WorktreeCommand::Open {
+                    machine,
+                    workspace_id,
+                }
+            }));
+        }
+        if placed.is_some_and(|p| p.linked) {
+            app.push(worktree("Worktree: Remove…", |machine, workspace_id| {
+                WorktreeCommand::Remove {
+                    machine,
+                    workspace_id,
+                }
+            }));
+        }
     }
     app.push((
         "View: Show Changes".into(),

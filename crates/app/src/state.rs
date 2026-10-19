@@ -1643,13 +1643,92 @@ impl AppState {
         self.call_on(machine, cx, move |c| c.workspace_close(&id, close_group))
     }
 
+    /// Closes each of `workspace_ids` on `machine` with its own
+    /// `workspace.close`, all of them even when one fails (the first error
+    /// is returned). For a group herdr's `close_group` doesn't define.
     #[track_caller]
-    pub fn create_worktree(
+    pub fn close_workspaces_on(
         &self,
+        machine: &MachineId,
+        workspace_ids: Vec<String>,
+        cx: &App,
+    ) -> Task<herdr::Result<()>> {
+        sounds::play(Cue::Close, sounds::strong());
+        self.call_on(machine, cx, move |c| {
+            let mut outcome = Ok(());
+            for id in &workspace_ids {
+                let closed = c.workspace_close(id, false);
+                if outcome.is_ok() {
+                    outcome = closed;
+                }
+            }
+            outcome
+        })
+    }
+
+    #[track_caller]
+    pub fn create_worktree_on(
+        &self,
+        machine: &MachineId,
         params: herdr::WorktreeParams,
         cx: &App,
     ) -> Task<herdr::Result<herdr::WorkspaceInfo>> {
-        self.call(cx, move |c| c.worktree_create(&params).map(|w| w.workspace))
+        self.call_on(machine, cx, move |c| {
+            c.worktree_create(&params).map(|w| w.workspace)
+        })
+    }
+
+    /// The worktrees of `workspace_id`'s repo (`worktree.list`).
+    #[track_caller]
+    pub fn list_worktrees_on(
+        &self,
+        machine: &MachineId,
+        workspace_id: &str,
+        cx: &App,
+    ) -> Task<herdr::Result<herdr::WorktreeList>> {
+        let id = workspace_id.to_owned();
+        self.call_on(machine, cx, move |c| c.worktree_list(Some(&id), None))
+    }
+
+    /// Opens an existing worktree as a workspace (`worktree.open`); herdr
+    /// focuses the open one if there is one.
+    #[track_caller]
+    pub fn open_worktree_on(
+        &self,
+        machine: &MachineId,
+        params: herdr::WorktreeParams,
+        cx: &App,
+    ) -> Task<herdr::Result<herdr::WorkspaceCreated>> {
+        self.call_on(machine, cx, move |c| c.worktree_open(&params))
+    }
+
+    /// `worktree.remove`: deletes the linked worktree's checkout and closes
+    /// its workspace. Without `force` herdr refuses a dirty checkout.
+    ///
+    /// herdr removes only workspaces it knows as worktrees. One made with a
+    /// plain `workspace.create` in a linked checkout has no worktree info
+    /// (the spaces list found it with git2), so herdr first adopts it:
+    /// `worktree.list` names the checkout that workspace has open, and
+    /// `worktree.open` on that path answers `already_open` and records it.
+    #[track_caller]
+    pub fn remove_worktree_on(
+        &self,
+        machine: &MachineId,
+        workspace_id: &str,
+        force: bool,
+        cx: &App,
+    ) -> Task<herdr::Result<herdr::WorktreeRemoved>> {
+        let adopt = self
+            .machine(machine)
+            .and_then(|m| m.snapshot().workspace(workspace_id))
+            .is_some_and(|w| w.info.worktree.is_none());
+        let id = workspace_id.to_owned();
+        self.call_on(machine, cx, move |c| {
+            if adopt {
+                adopt_worktree(c, &id)?;
+            }
+            c.worktree_remove(&id, force)
+        })
     }
 
     // Agents and plugins
@@ -1699,6 +1778,27 @@ fn stop_links(links: Vec<MachineLink>) {
 /// The error for a command aimed at a machine no longer in the list.
 fn gone(machine: &MachineId) -> herdr::Error {
     herdr::Error::Refused(format!("machine {machine} is no longer saved"))
+}
+
+/// Has herdr record `workspace_id`'s linked checkout as its worktree, so
+/// `worktree.remove` accepts it. Does nothing when herdr lists no linked
+/// checkout open in that workspace; the remove then says why.
+fn adopt_worktree(client: &herdr::Client, workspace_id: &str) -> herdr::Result<()> {
+    let list = client.worktree_list(Some(workspace_id), None)?;
+    let Some(checkout) = list
+        .worktrees
+        .into_iter()
+        .find(|w| w.is_linked_worktree && w.open_workspace_id.as_deref() == Some(workspace_id))
+    else {
+        return Ok(());
+    };
+    let params = herdr::WorktreeParams {
+        workspace_id: Some(workspace_id.to_owned()),
+        path: Some(checkout.path),
+        focus: false,
+        ..herdr::WorktreeParams::default()
+    };
+    client.worktree_open(&params).map(drop)
 }
 
 /// A config that can never reach a herdr: no server start, a socket nobody

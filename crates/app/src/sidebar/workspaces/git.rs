@@ -19,38 +19,8 @@ use std::path::{Path, PathBuf};
 use notify::{EventKind, RecommendedWatcher, RecursiveMode, Watcher as _};
 
 use crate::fs::Fs;
-use crate::herdr::WorkspaceWorktreeInfo;
 use crate::state::MachineId;
-
-/// The repo a workspace belongs to, the key its group is built on.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Repo {
-    /// The repo's common git dir, like herdr's `repo_key`.
-    pub key: String,
-    pub name: String,
-    /// The main checkout's folder.
-    pub root: String,
-}
-
-/// A workspace's place in its repo: the main checkout or a linked worktree.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Placement {
-    pub repo: Repo,
-    pub linked: bool,
-}
-
-impl Placement {
-    pub fn from_herdr(worktree: &WorkspaceWorktreeInfo) -> Self {
-        Self {
-            repo: Repo {
-                key: worktree.repo_key.trim_end_matches('/').to_owned(),
-                name: worktree.repo_name.clone(),
-                root: worktree.repo_root.trim_end_matches('/').to_owned(),
-            },
-            linked: worktree.is_linked_worktree,
-        }
-    }
-}
+pub use crate::worktree::{Placement, Repo};
 
 /// What git2 found for one folder.
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -1,9 +1,21 @@
 #!/bin/sh
 # herdr CLI against the isolated dev session. Starts the dev server if needed.
 . "$(dirname "$0")/dev-env.sh"
+# Dev sessions put the worktrees herdr makes under the dev config dir, not the
+# default herdr's ~/.herdr/worktrees. This only edits the dev config
+# ($XDG_CONFIG_HOME is the dev dir here), and only once.
+_rt_config="$XDG_CONFIG_HOME/herdr/config.toml"
+_rt_reload=
+if ! grep -qs '^\[worktrees\]' "$_rt_config"; then
+  mkdir -p "$XDG_CONFIG_HOME/herdr"
+  printf '\n[worktrees]\ndirectory = "%s"\n' "$XDG_CONFIG_HOME/worktrees" >>"$_rt_config"
+  _rt_reload=1
+fi
 if [ ! -S "$HERDR_SOCKET_PATH" ] || ! "$HERDR_BIN" --session "$HERDR_SESSION" workspace list >/dev/null 2>&1; then
   mkdir -p "$XDG_CONFIG_HOME"
   nohup "$HERDR_BIN" --session "$HERDR_SESSION" server >"$XDG_CONFIG_HOME/server.log" 2>&1 &
   i=0; while [ ! -S "$HERDR_SOCKET_PATH" ] && [ $i -lt 50 ]; do sleep 0.1; i=$((i+1)); done
+elif [ -n "$_rt_reload" ]; then
+  "$HERDR_BIN" --session "$HERDR_SESSION" server reload-config >/dev/null 2>&1
 fi
 exec "$HERDR_BIN" --session "$HERDR_SESSION" "$@"

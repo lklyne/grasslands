@@ -10,7 +10,8 @@
 //! - `sort`: click the agents panel's "Grouped" / "Priority"
 //! - `new-workspace`: the spaces panel's +
 //! - `new-worktree`: the spaces panel's menu → New Worktree… (opens the prompt)
-//! - `worktree <branch>`: submit the New Worktree prompt with `branch`
+//! - `worktree <branch> [base=<ref>] [label=<text>]`: submit the New
+//!   Worktree prompt with `branch` and, if given, its base ref and label
 //! - `new-worktree-in <repo name>`: a repo row's + (opens the prompt)
 //! - `repo-worktree <repo name> <branch>`: submit that prompt with `branch`
 //! - `rename <workspace>`: the menu's Rename Workspace… (chrome's prompt)
@@ -41,6 +42,7 @@ use super::git::Repo;
 use super::groups::{Kind, Slot};
 use super::{AgentList, WorkspaceList, agents, close_workspace, rename_workspace};
 use crate::overlay;
+use crate::prompt::NewWorktree;
 use crate::state::MachineId;
 use crate::{label, status};
 
@@ -150,7 +152,7 @@ fn run_step(
         },
         "new-workspace" => this.new_workspace(cx),
         "new-worktree" => this.new_worktree(None, window, cx),
-        "worktree" => this.create_worktree(arg, None, window, cx),
+        "worktree" => this.create_worktree(new_worktree(arg), None, window, cx),
         "new-worktree-in" => match repo_named(this, arg, cx) {
             Some(repo) => this.new_worktree(Some(repo.root), window, cx),
             None => eprintln!("[sidebar-script] no repo {arg}"),
@@ -158,7 +160,9 @@ fn run_step(
         "repo-worktree" => {
             let (name, branch) = arg.split_once(' ').unwrap_or((arg, ""));
             match repo_named(this, name, cx) {
-                Some(repo) => this.create_worktree(branch, Some(&repo.root), window, cx),
+                Some(repo) => {
+                    this.create_worktree(new_worktree(branch), Some(&repo.root), window, cx)
+                }
                 None => eprintln!("[sidebar-script] no repo {name}"),
             }
         }
@@ -176,6 +180,21 @@ fn run_step(
         "log" => log(this, arg, sort, cx),
         other => eprintln!("[sidebar-script] unknown step {other}"),
     }
+}
+
+/// `<branch> [base=<ref>] [label=<text>]` as the New Worktree prompt's fields.
+fn new_worktree(arg: &str) -> NewWorktree {
+    let mut words = arg.split_whitespace();
+    let branch = words.next().unwrap_or_default();
+    let (mut base, mut label) = ("", "");
+    for word in words {
+        if let Some(value) = word.strip_prefix("base=") {
+            base = value;
+        } else if let Some(value) = word.strip_prefix("label=") {
+            label = value;
+        }
+    }
+    NewWorktree::from_fields(branch, base, label)
 }
 
 /// The machine the script works on: the selected one.

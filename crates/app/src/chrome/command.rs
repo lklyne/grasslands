@@ -5,6 +5,8 @@
 
 use gpui_kit::*;
 
+use super::confirm::{group_members, herdr_closes_exactly};
+use super::worktrees::herdr_placement;
 use crate::herdr::{self, PluginActionInfo, PluginInvocationContext, SplitDirection};
 use crate::state::{AppState, MachineId};
 
@@ -61,11 +63,18 @@ pub enum HerdrCommand {
         workspace_id: String,
         label: String,
     },
-    /// `close_group` closes every workspace of the worktree group.
     CloseWorkspace {
         machine: MachineId,
         workspace_id: String,
-        close_group: bool,
+    },
+    /// Closes the worktree group `workspace_id` heads: exactly `members`
+    /// (the ones the confirmation lists), with herdr's `close_group` when
+    /// herdr's own worktree info makes the same group, else one by one.
+    CloseGroup {
+        machine: MachineId,
+        workspace_id: String,
+        repo_name: String,
+        members: Vec<String>,
     },
     InvokePluginAction {
         machine: MachineId,
@@ -90,6 +99,7 @@ impl HerdrCommand {
             | Self::FocusWorkspace { machine, .. }
             | Self::RenameWorkspace { machine, .. }
             | Self::CloseWorkspace { machine, .. }
+            | Self::CloseGroup { machine, .. }
             | Self::InvokePluginAction { machine, .. } => machine,
         }
     }
@@ -159,10 +169,29 @@ impl HerdrCommand {
             Self::CloseWorkspace {
                 machine,
                 workspace_id,
-                close_group,
             } => state
                 .read(cx)
-                .close_workspace_on(&machine, &workspace_id, close_group, cx),
+                .close_workspace_on(&machine, &workspace_id, false, cx),
+            Self::CloseGroup {
+                machine,
+                workspace_id,
+                mut members,
+                ..
+            } => {
+                let state = state.read(cx);
+                let herdr_group = state.machine(&machine).is_some_and(|m| {
+                    let herdr = group_members(m.snapshot(), &workspace_id, herdr_placement);
+                    herdr_closes_exactly(&members, &herdr)
+                });
+                if herdr_group {
+                    state.close_workspace_on(&machine, &workspace_id, true, cx)
+                } else {
+                    // The head last, as herdr closes a group.
+                    members.retain(|id| id != &workspace_id);
+                    members.push(workspace_id);
+                    state.close_workspaces_on(&machine, members, cx)
+                }
+            }
             Self::InvokePluginAction {
                 machine,
                 action,

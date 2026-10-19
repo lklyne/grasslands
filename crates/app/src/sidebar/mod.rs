@@ -5,6 +5,8 @@
 pub mod files;
 pub mod workspaces;
 
+use std::rc::Rc;
+
 use gpui_kit::*;
 
 use crate::state::AppState;
@@ -47,6 +49,11 @@ impl SidebarPanels {
         let agents = cx.new(|cx| workspaces::AgentList::new(state.clone(), cx));
         let files = cx.new(|cx| files::FileTree::new(state, window, cx));
         workspaces::start_script(spaces.downgrade(), agents.downgrade(), window, cx);
+        let list = spaces.downgrade();
+        crate::chrome::set_placements(
+            cx,
+            Rc::new(move |machine, info, cx| list.upgrade()?.read(cx).placement_on(machine, info, cx)),
+        );
         cx.set_global(Spaces(spaces.downgrade()));
         cx.set_global(Files(files.downgrade()));
         Self {

@@ -41,9 +41,12 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use crate::actions::OpenContextMenu;
-use crate::chrome::{self, Callback, Chrome, HerdrCommand, MenuCommand, MenuEntry, MenuTarget};
+use crate::chrome::{
+    self, Callback, Chrome, HerdrCommand, MenuCommand, MenuEntry, MenuTarget, WorktreeCommand,
+};
 use crate::herdr::{Snapshot, WorkspaceInfo, WorktreeParams};
 use crate::machines::{self, MachineActions, MachineState, machine_header, ssh_config};
+use crate::prompt::NewWorktree;
 use crate::state::{AppEvent, AppState, Machine, MachineId, MachineTask};
 use crate::status;
 use git::{Checkout, HeadWatcher, Placement, RemoteCheckouts, Repo};
@@ -418,6 +421,36 @@ impl WorkspaceList {
             })
     }
 
+    /// [`Self::placement`] for any machine's workspace, for the chrome's
+    /// worktree menus and group closes (`chrome::set_placements`).
+    pub fn placement_on(
+        &self,
+        machine: &MachineId,
+        info: &WorkspaceInfo,
+        cx: &App,
+    ) -> Option<Placement> {
+        let snapshot = self.state.read(cx).machine(machine)?.snapshot();
+        self.placement(machine, snapshot, info)
+    }
+
+    /// Open Worktree… for the selected machine's focused workspace: a
+    /// picker of its repo's worktrees (the chrome's).
+    pub fn open_worktree(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let state = self.state.read(cx);
+        let machine = state.selected().clone();
+        let Some(workspace_id) = state.snapshot().focused_workspace_id.clone() else {
+            return;
+        };
+        let Some(chrome) = chrome::get(window, cx) else {
+            return;
+        };
+        let command = MenuCommand::Worktree(WorktreeCommand::Open {
+            machine,
+            workspace_id,
+        });
+        chrome.update(cx, |chrome, cx| chrome.run_menu_command(command, window, cx));
+    }
+
     fn is_folded(&self, machine: &MachineId, repo_key: &str) -> bool {
         self.folded
             .get(machine)
@@ -611,9 +644,10 @@ impl WorkspaceList {
         });
     }
 
-    /// Asks for a branch name, then `worktree.create` in the repo at
-    /// `repo_root` (the focused workspace's repo when `None`). herdr opens the
-    /// worktree as a new, focused workspace.
+    /// Asks for a branch (and optionally a base ref and label), then
+    /// `worktree.create` in the repo at `repo_root` (the focused workspace's
+    /// repo when `None`). herdr opens the worktree as a new, focused
+    /// workspace.
     pub fn new_worktree(
         &mut self,
         repo_root: Option<String>,
@@ -633,13 +667,10 @@ impl WorkspaceList {
         cx: &mut Context<Self>,
     ) {
         let this = cx.entity().downgrade();
-        crate::prompt::ask_name(
-            "New Worktree",
-            "Create",
-            "",
-            move |branch, window, cx| {
+        crate::prompt::ask_new_worktree(
+            move |worktree, window, cx| {
                 let _ = this.update(cx, |this, cx| {
-                    this.create_worktree_on(&machine, branch, repo_root.as_deref(), window, cx);
+                    this.create_worktree_on(&machine, worktree, repo_root.as_deref(), window, cx);
                 });
             },
             window,
@@ -647,17 +678,17 @@ impl WorkspaceList {
         );
     }
 
-    /// `worktree.create` on a new `branch` in the repo at `repo_root`, or the
+    /// `worktree.create` of `worktree` in the repo at `repo_root`, or the
     /// focused workspace's repo; a failure becomes an error toast.
     pub fn create_worktree(
         &mut self,
-        branch: &str,
+        worktree: NewWorktree,
         repo_root: Option<&str>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         let machine = self.state.read(cx).selected().clone();
-        self.create_worktree_on(&machine, branch, repo_root, window, cx);
+        self.create_worktree_on(&machine, worktree, repo_root, window, cx);
     }
 
     /// [`Self::create_worktree`] on `machine`, which herdr then shows the
@@ -665,13 +696,12 @@ impl WorkspaceList {
     fn create_worktree_on(
         &mut self,
         machine: &MachineId,
-        branch: &str,
+        worktree: NewWorktree,
         repo_root: Option<&str>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let branch = branch.trim();
-        if branch.is_empty() {
+        if worktree.branch.is_empty() {
             return;
         }
         let task = self.state.update(cx, |state, cx| {
@@ -682,11 +712,13 @@ impl WorkspaceList {
                     None => state.snapshot().focused_workspace_id.clone(),
                 },
                 cwd: repo_root.map(str::to_owned),
-                branch: Some(branch.to_owned()),
+                branch: Some(worktree.branch),
+                base: worktree.base,
+                label: worktree.label,
                 focus: true,
                 ..Default::default()
             };
-            state.create_worktree(params, cx)
+            state.create_worktree_on(machine, params, cx)
         });
         cx.spawn_in(window, async move |_, cx| {
             let result = task.await;
@@ -1129,6 +1161,14 @@ impl WorkspaceList {
                 entries: targets,
             });
         }
+        entries.push(MenuEntry::item(
+            "New Worktree…",
+            list_command(&this, |this, window, cx| this.new_worktree(None, window, cx)),
+        ));
+        entries.push(MenuEntry::item(
+            "Open Worktree…",
+            list_command(&this, |this, window, cx| this.open_worktree(window, cx)),
+        ));
         entries.push(MenuEntry::Separator);
         entries.push(MenuEntry::item(
             "Add Machine…",
@@ -1218,7 +1258,6 @@ pub(super) fn close_workspace(
     let command = HerdrCommand::CloseWorkspace {
         machine: machine.clone(),
         workspace_id: workspace_id.to_owned(),
-        close_group: false,
     };
     chrome.update(cx, |chrome, cx| chrome.run(command, window, cx));
 }
@@ -1288,7 +1327,8 @@ impl Panel for WorkspaceList {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) -> PopupMenu {
-        let (a, b, c) = (
+        let (a, b, c, d) = (
+            cx.entity().downgrade(),
             cx.entity().downgrade(),
             cx.entity().downgrade(),
             cx.entity().downgrade(),
@@ -1301,6 +1341,11 @@ impl Panel for WorkspaceList {
         .item(
             PopupMenuItem::new("New Worktree…").on_click(move |_, window, cx| {
                 let _ = b.update(cx, |this, cx| this.new_worktree(None, window, cx));
+            }),
+        )
+        .item(
+            PopupMenuItem::new("Open Worktree…").on_click(move |_, window, cx| {
+                let _ = d.update(cx, |this, cx| this.open_worktree(window, cx));
             }),
         )
         .separator()

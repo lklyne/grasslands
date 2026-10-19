@@ -4,6 +4,11 @@
 //! - `wait <ms>`
 //! - `menu pane|tab|workspace <id>`: open that context menu
 //! - `run close-pane|close-tab|close-workspace|close-group <id>`: `Chrome::run`
+//!   (`close-group` closes the group the spaces list shows, as its menu does)
+//! - `open-worktree <workspace>`: the workspace menu's Open Worktree… (the
+//!   picker; `query` filters it, `key enter` picks)
+//! - `remove-worktree <workspace>`: the menu's Remove Worktree… (asks first;
+//!   `key enter` confirms)
 //! - `palette`, `query <text>`: open the palette, type into it
 //! - `type <text>`: replace the rename dialog's text
 //! - `key <keystroke>`: one key press (`down`, `enter`, `escape`, `cmd-a`, …)
@@ -24,7 +29,7 @@ use std::time::Duration;
 use gpui_kit::component::WindowExt as _;
 use gpui_kit::*;
 
-use super::{Chrome, HerdrCommand, MenuTarget};
+use super::{Chrome, HerdrCommand, MenuCommand, MenuTarget, WorktreeCommand};
 use crate::overlay;
 use crate::state::MachineId;
 use crate::{label, status};
@@ -189,16 +194,28 @@ fn run_step(
                 "close-workspace" => HerdrCommand::CloseWorkspace {
                     machine: MachineId::Local,
                     workspace_id: id,
-                    close_group: false,
                 },
-                "close-group" => HerdrCommand::CloseWorkspace {
-                    machine: MachineId::Local,
-                    workspace_id: id,
-                    close_group: true,
-                },
+                "close-group" => chrome
+                    .group_close(&MachineId::Local, &id, cx)
+                    .ok_or_else(|| format!("{id} heads no worktree group"))?,
                 other => return Err(format!("unknown command {other:?}")),
             };
             chrome.run(command, window, cx);
+        }
+        "open-worktree" | "remove-worktree" => {
+            let (machine, workspace_id) = (MachineId::Local, first.to_owned());
+            let command = if verb == "open-worktree" {
+                WorktreeCommand::Open {
+                    machine,
+                    workspace_id,
+                }
+            } else {
+                WorktreeCommand::Remove {
+                    machine,
+                    workspace_id,
+                }
+            };
+            chrome.run_menu_command(MenuCommand::Worktree(command), window, cx);
         }
         "palette" => chrome.open_command_palette(window, cx),
         "query" => {
