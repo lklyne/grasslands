@@ -21,13 +21,12 @@ use std::time::Duration;
 
 use gpui_kit::component::WindowExt as _;
 use gpui_kit::*;
-use serde_json::json;
 
 use super::remote::{all_attached, docker, focus, remote, shows};
 use super::titlebar::tab_titles;
 use super::{Cx, Run};
 use crate::actions::{OpenChanges, OpenFile};
-use crate::herdr::MachineStatus;
+use crate::herdr::{MachineStatus, PaneId, method, protocol};
 use crate::sidebar::{self, files::FileTree};
 use crate::state::{AppState, MachineId};
 
@@ -502,14 +501,19 @@ impl Run {
 
     /// Types `cd <dir>` into the selected machine's focused pane.
     async fn cd_focused_pane(&self, cx: &mut Cx, state: &Entity<AppState>, dir: &str) {
-        let Ok(Some(pane)) = cx.update(|_, cx| state.read(cx).focused_pane().map(str::to_owned))
+        let Ok(Some(pane)) = cx.update(|_, cx| state.read(cx).focused_pane().map(PaneId::from))
         else {
             return;
         };
         let text = format!("cd {dir}\r");
         let Ok(task) = cx.update(|_, cx| {
-            state.read(cx).call(cx, move |client| {
-                client.call("pane.send_input", &json!({ "pane_id": pane, "text": text }))
+            let state = state.read(cx);
+            state.call(state.selected(), cx, move |client| {
+                client.send::<method::PaneSendInput>(&protocol::PaneSendInputParams {
+                    pane_id: pane,
+                    text,
+                    keys: Vec::new(),
+                })
             })
         }) else {
             return;

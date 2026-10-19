@@ -84,7 +84,7 @@ Zoom: a zoomed tab renders only its focused pane.
 | --- | --- |
 | Drag a divider (release) | `layout.set_split_ratio` (tab, path, ratio) |
 | cmd-ctrl-arrows | the same, on the innermost split along that axis, ±0.05 |
-| cmd-d / cmd-shift-d | `pane.split` right/down of herdr's focused pane (AppState sets `right_click: pane`) |
+| cmd-d / cmd-shift-d | `pane.split` right/down of herdr's focused pane (the reconciler then sets `right_click: pane`, as for every pane) |
 | Drop a pane header on another pane | `pane.swap` (same tab) or `pane.move` next to it (other tab) |
 | Drop a pane header on a tab / on `+` | `pane.move` to that tab / to a new tab |
 | × on a pane, cmd-w | `pane.close`, after a native confirmation if its agent is working or blocked |

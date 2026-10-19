@@ -38,7 +38,7 @@ fn offline() -> herdr::Config {
 fn agent(pane: &str, status: AgentStatus) -> Agent {
     Agent {
         pane_id: pane.into(),
-        terminal_id: String::new(),
+        terminal_id: "".into(),
         workspace_id: "w1".into(),
         tab_id: "w1:t1".into(),
         focused: false,
@@ -285,8 +285,8 @@ fn unconfirmed_command_is_sent_and_failure_toasts(cx: &mut TestAppContext) {
 
 #[test]
 fn agent_toasts_for_the_same_pane_on_two_machines_differ() {
-    let local = super::toast_key(&MachineId::Local, "w1:p1");
-    let remote = super::toast_key(&MachineId::Remote("b87d".into()), "w1:p1");
+    let local = super::toast_key(&MachineId::Local, &"w1:p1".into());
+    let remote = super::toast_key(&MachineId::Remote("b87d".into()), &"w1:p1".into());
     assert_ne!(local, remote);
 }
 
@@ -324,7 +324,7 @@ fn workspace(id: &str, linked: Option<bool>) -> herdr::Workspace {
             focused: false,
             pane_count: 1,
             tab_count: 1,
-            active_tab_id: format!("{id}:t1"),
+            active_tab_id: format!("{id}:t1").into(),
             agent_status: AgentStatus::Idle,
             worktree: linked.map(|linked| herdr::WorkspaceWorktreeInfo {
                 repo_key: "/r/.git".into(),
@@ -432,7 +432,11 @@ fn an_inferred_linked_worktree_offers_remove(cx: &mut TestAppContext) {
 fn an_inferred_group_closes_exactly_its_listed_members(cx: &mut TestAppContext) {
     let f = worktree_fixture(cx);
     infer_w1_w2(cx);
-    let close = cx.update(|cx| f.chrome.read(cx).group_close(&MachineId::Local, "w1", cx));
+    let close = cx.update(|cx| {
+        f.chrome
+            .read(cx)
+            .group_close(&MachineId::Local, &"w1".into(), cx)
+    });
     let members = match close {
         Some(HerdrCommand::CloseGroup { members, .. }) => members,
         _ => Vec::new(),

@@ -91,6 +91,7 @@ fn drop_on(infos: &[WorkspaceInfo], dragged: &str, target: &str) -> Option<Vec<S
             .unwrap()
     };
     reordered(&rows, &slot(dragged), &slot(target))
+        .map(|ids| ids.iter().map(ToString::to_string).collect())
 }
 
 /// w1 plain, then alpha's group (w2 main, w3 and w4 linked), then w5 plain.
@@ -272,7 +273,7 @@ impl Render for Fixture {
         div()
             .size_full()
             .on_action(move |action: &FocusPane, _, _| {
-                focused.borrow_mut().push(action.pane_id.clone());
+                focused.borrow_mut().push(action.pane_id.to_string());
             })
             .child(self.dock.clone())
     }

@@ -133,7 +133,7 @@ fn link_should_forward_remote_herdr_and_survive_a_restart() {
     wait_status(&link, "connected", |s| *s == MachineStatus::Connected);
     let endpoint = link.endpoint();
     assert!(endpoint.socket_path.exists());
-    let attach = link.attach_command("term_x", false).unwrap();
+    let attach = link.attach_command(&"term_x".into(), false).unwrap();
     eprintln!("attach: {attach}");
 
     let sync = SessionSync::start(endpoint.clone()).unwrap();
@@ -253,16 +253,17 @@ fn agent_keys(agent: &str) -> String {
 }
 
 /// Waits for `pane_id`'s recent output to contain `needle`.
-fn wait_output(client: &Client, pane_id: &str, needle: &str) -> String {
+fn wait_output(client: &Client, pane_id: &PaneId, needle: &str) -> String {
     let deadline = Instant::now() + Duration::from_secs(15);
     loop {
         let read = client
-            .call(
-                "pane.read",
-                &serde_json::json!({ "pane_id": pane_id, "source": "recent", "lines": 40 }),
-            )
+            .send::<method::PaneRead>(&protocol::PaneReadParams {
+                pane_id: pane_id.clone(),
+                source: protocol::ReadSource::Recent,
+                lines: Some(40),
+            })
             .unwrap()
-            .to_string();
+            .text;
         if read.contains(needle) || Instant::now() >= deadline {
             return read;
         }
@@ -282,12 +283,11 @@ fn pane_sees_agent(client: &Client, fingerprint: &str) -> (bool, String) {
         .unwrap();
     let pane = &created.root_pane.pane_id;
     client
-        .call(
-            "pane.send_input",
-            &serde_json::json!({
-                "pane_id": pane, "text": "ssh-add -l; echo AGENT_RC=$?", "keys": ["Enter"],
-            }),
-        )
+        .send::<method::PaneSendInput>(&protocol::PaneSendInputParams {
+            pane_id: pane.clone(),
+            text: "ssh-add -l; echo AGENT_RC=$?".into(),
+            keys: vec!["Enter".into()],
+        })
         .unwrap();
     let read = wait_output(client, pane, "AGENT_RC=");
     let _ = client.workspace_close(&created.workspace.workspace_id, false);

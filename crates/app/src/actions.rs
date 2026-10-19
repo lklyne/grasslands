@@ -9,6 +9,7 @@ use std::path::PathBuf;
 use gpui_kit::*;
 
 use crate::chrome::MenuTarget;
+use crate::herdr::PaneId;
 
 actions!(
     app,
@@ -44,11 +45,14 @@ pub struct OpenFileAt {
 }
 
 /// Focus a herdr pane: the app sends `pane.focus` and herdr's `pane.focused`
-/// event moves the focus ring. Sent by the agent list and the terminal area.
+/// event moves the focus ring. Sent by the agent list and the palette;
+/// selects `machine` first.
 #[derive(Clone, Debug, PartialEq, Action)]
 #[action(namespace = app, no_json)]
 pub struct FocusPane {
-    pub pane_id: String,
+    /// The machine `pane_id` is on (herdr ids are per machine).
+    pub machine: crate::state::MachineId,
+    pub pane_id: PaneId,
 }
 
 /// Open the chrome's context menu for a pane, tab or workspace at a window

@@ -3,7 +3,7 @@
 
 use std::fmt;
 
-use crate::herdr::{ConnectionStatus, MachineProfile, MachineStatus, machines};
+use crate::herdr::{ConnectionStatus, MachineProfile, MachineStatus, ProfileId, machines};
 use cues::Cue;
 
 /// Which herdr server: the local one, or a saved machine by profile id.
@@ -12,7 +12,7 @@ use cues::Cue;
 pub enum MachineId {
     #[default]
     Local,
-    Remote(String),
+    Remote(ProfileId),
 }
 
 impl MachineId {
@@ -30,6 +30,31 @@ impl fmt::Display for MachineId {
     }
 }
 
+/// A herdr id with the machine it belongs to, for keys that span machines:
+/// two servers can both have a `w1`.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct On<T> {
+    pub machine: MachineId,
+    pub id: T,
+}
+
+impl<T> On<T> {
+    pub fn new(machine: MachineId, id: T) -> Self {
+        Self { machine, id }
+    }
+}
+
+/// The bare id on Local, `<machine>/<id>` elsewhere: for element ids and
+/// debug selectors, which want text.
+impl<T: fmt::Display> fmt::Display for On<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match &self.machine {
+            MachineId::Local => self.id.fmt(f),
+            MachineId::Remote(_) => write!(f, "{}/{}", self.machine, self.id),
+        }
+    }
+}
+
 /// What a refreshed machine list asks of the running links.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct ProfilesDiff {
@@ -37,9 +62,9 @@ pub struct ProfilesDiff {
     /// (after stopping the old one, if any).
     pub start: Vec<MachineProfile>,
     /// Profile ids no longer saved.
-    pub stop: Vec<String>,
+    pub stop: Vec<ProfileId>,
     /// Only the label changed: `(id, new label)`.
-    pub relabel: Vec<(String, String)>,
+    pub relabel: Vec<(ProfileId, String)>,
 }
 
 /// Compares the running links' profiles with herdr's current list.
@@ -113,7 +138,7 @@ pub fn status_cue(previous: &MachineStatus, next: &MachineStatus, lost: bool) ->
 #[cfg(test)]
 mod tests {
     use super::{MachineId, ProfilesDiff, diff_profiles, reselect, status_cue};
-    use crate::herdr::{MachineProfile, MachineStatus};
+    use crate::herdr::{MachineProfile, MachineStatus, ProfileId};
     use cues::Cue;
 
     fn profile(id: &str, label: &str) -> MachineProfile {
@@ -137,7 +162,7 @@ mod tests {
     fn diff_stops_removed_profiles() {
         let old = profile("a", "box");
         let diff = diff_profiles(&[&old], &[]);
-        assert_eq!(diff.stop, vec!["a".to_owned()]);
+        assert_eq!(diff.stop, vec![ProfileId::from("a")]);
     }
 
     #[test]

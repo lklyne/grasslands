@@ -7,7 +7,9 @@ use gpui_kit::*;
 
 use super::confirm::{group_members, herdr_closes_exactly};
 use super::worktrees::herdr_placement;
-use crate::herdr::{self, PluginActionInfo, PluginInvocationContext, SplitDirection};
+use crate::herdr::{
+    self, PaneId, PluginActionInfo, PluginInvocationContext, SplitDirection, TabId, WorkspaceId,
+};
 use crate::state::{AppState, MachineId};
 
 #[derive(Debug, Clone)]
@@ -15,66 +17,66 @@ pub enum HerdrCommand {
     /// Selects the machine first when it isn't selected.
     FocusPane {
         machine: MachineId,
-        pane_id: String,
+        pane_id: PaneId,
     },
     SplitPane {
         machine: MachineId,
-        pane_id: String,
+        pane_id: PaneId,
         direction: SplitDirection,
     },
     ZoomPane {
         machine: MachineId,
-        pane_id: String,
+        pane_id: PaneId,
     },
     RenamePane {
         machine: MachineId,
-        pane_id: String,
+        pane_id: PaneId,
         label: String,
     },
     ClosePane {
         machine: MachineId,
-        pane_id: String,
+        pane_id: PaneId,
     },
     NewTab {
         machine: MachineId,
-        workspace_id: String,
+        workspace_id: WorkspaceId,
     },
     /// Selects the machine first when it isn't selected.
     FocusTab {
         machine: MachineId,
-        tab_id: String,
+        tab_id: TabId,
     },
     RenameTab {
         machine: MachineId,
-        tab_id: String,
+        tab_id: TabId,
         label: String,
     },
     CloseTab {
         machine: MachineId,
-        tab_id: String,
+        tab_id: TabId,
     },
     /// Selects the machine first when it isn't selected.
     FocusWorkspace {
         machine: MachineId,
-        workspace_id: String,
+        workspace_id: WorkspaceId,
     },
     RenameWorkspace {
         machine: MachineId,
-        workspace_id: String,
+        workspace_id: WorkspaceId,
         label: String,
     },
     CloseWorkspace {
         machine: MachineId,
-        workspace_id: String,
+        workspace_id: WorkspaceId,
     },
     /// Closes the worktree group `workspace_id` heads: exactly `members`
     /// (the ones the confirmation lists), with herdr's `close_group` when
     /// herdr's own worktree info makes the same group, else one by one.
     CloseGroup {
         machine: MachineId,
-        workspace_id: String,
+        workspace_id: WorkspaceId,
         repo_name: String,
-        members: Vec<String>,
+        members: Vec<WorkspaceId>,
     },
     InvokePluginAction {
         machine: MachineId,
@@ -108,16 +110,16 @@ impl HerdrCommand {
     pub fn send(self, state: &Entity<AppState>, cx: &mut App) -> Task<herdr::Result<()>> {
         match self {
             Self::FocusPane { machine, pane_id } => {
-                state.update(cx, |state, cx| state.focus_pane_on(&machine, &pane_id, cx))
+                state.update(cx, |state, cx| state.focus_pane(&machine, &pane_id, cx))
             }
             Self::FocusTab { machine, tab_id } => {
-                state.update(cx, |state, cx| state.focus_tab_on(&machine, &tab_id, cx))
+                state.update(cx, |state, cx| state.focus_tab(&machine, &tab_id, cx))
             }
             Self::FocusWorkspace {
                 machine,
                 workspace_id,
             } => state.update(cx, |state, cx| {
-                state.focus_workspace_on(&machine, &workspace_id, cx)
+                state.focus_workspace(&machine, &workspace_id, cx)
             }),
             Self::SplitPane {
                 machine,
@@ -126,12 +128,12 @@ impl HerdrCommand {
             } => {
                 let task = state
                     .read(cx)
-                    .split_pane_on(&machine, Some(&pane_id), direction, cx);
+                    .split_pane(&machine, Some(&pane_id), direction, cx);
                 cx.background_executor()
                     .spawn(async move { task.await.map(drop) })
             }
-            Self::ZoomPane { machine, pane_id } => state.read(cx).call_on(&machine, cx, move |c| {
-                c.pane_zoom(&pane_id, "toggle").map(drop)
+            Self::ZoomPane { machine, pane_id } => state.read(cx).call(&machine, cx, move |c| {
+                c.pane_zoom(&pane_id, herdr::ZoomMode::Toggle)
             }),
             Self::RenamePane {
                 machine,
@@ -139,15 +141,15 @@ impl HerdrCommand {
                 label,
             } => state
                 .read(cx)
-                .call_on(&machine, cx, move |c| c.pane_rename(&pane_id, Some(&label))),
+                .call(&machine, cx, move |c| c.pane_rename(&pane_id, Some(&label))),
             Self::ClosePane { machine, pane_id } => {
-                state.read(cx).close_pane_on(&machine, &pane_id, cx)
+                state.read(cx).close_pane(&machine, &pane_id, cx)
             }
             Self::NewTab {
                 machine,
                 workspace_id,
             } => {
-                let task = state.read(cx).new_tab_on(&machine, Some(&workspace_id), cx);
+                let task = state.read(cx).new_tab(&machine, Some(&workspace_id), cx);
                 cx.background_executor()
                     .spawn(async move { task.await.map(drop) })
             }
@@ -155,23 +157,21 @@ impl HerdrCommand {
                 machine,
                 tab_id,
                 label,
-            } => state.read(cx).rename_tab_on(&machine, &tab_id, &label, cx),
-            Self::CloseTab { machine, tab_id } => {
-                state.read(cx).close_tab_on(&machine, &tab_id, cx)
-            }
+            } => state.read(cx).rename_tab(&machine, &tab_id, &label, cx),
+            Self::CloseTab { machine, tab_id } => state.read(cx).close_tab(&machine, &tab_id, cx),
             Self::RenameWorkspace {
                 machine,
                 workspace_id,
                 label,
             } => state
                 .read(cx)
-                .rename_workspace_on(&machine, &workspace_id, &label, cx),
+                .rename_workspace(&machine, &workspace_id, &label, cx),
             Self::CloseWorkspace {
                 machine,
                 workspace_id,
             } => state
                 .read(cx)
-                .close_workspace_on(&machine, &workspace_id, false, cx),
+                .close_workspace(&machine, &workspace_id, false, cx),
             Self::CloseGroup {
                 machine,
                 workspace_id,
@@ -184,12 +184,12 @@ impl HerdrCommand {
                     herdr_closes_exactly(&members, &herdr)
                 });
                 if herdr_group {
-                    state.close_workspace_on(&machine, &workspace_id, true, cx)
+                    state.close_workspace(&machine, &workspace_id, true, cx)
                 } else {
                     // The head last, as herdr closes a group.
                     members.retain(|id| id != &workspace_id);
                     members.push(workspace_id);
-                    state.close_workspaces_on(&machine, members, cx)
+                    state.close_workspaces(&machine, members, cx)
                 }
             }
             Self::InvokePluginAction {
@@ -198,7 +198,7 @@ impl HerdrCommand {
                 context,
             } => state
                 .read(cx)
-                .invoke_plugin_action_on(&machine, &action, *context, cx),
+                .invoke_plugin_action(&machine, &action, *context, cx),
         }
     }
 }

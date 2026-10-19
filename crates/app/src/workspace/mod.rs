@@ -265,8 +265,9 @@ impl Workspace {
 
     fn focus_pane(&mut self, action: &FocusPane, window: &mut Window, cx: &mut Context<Self>) {
         self.select(MainTab::Herdr, window, cx);
-        self.terminal_area
-            .update(cx, |area, cx| area.focus_pane(&action.pane_id, window, cx));
+        self.terminal_area.update(cx, |area, cx| {
+            area.focus_pane(&action.machine, &action.pane_id, window, cx)
+        });
     }
 
     fn command_palette(&mut self, _: &CommandPalette, window: &mut Window, cx: &mut Context<Self>) {

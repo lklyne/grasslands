@@ -19,10 +19,10 @@ pub use herdr_client::{
     AgentInfo as Agent, AgentStatus, Check, Client, ConnectionStatus, Error, Fix, FixCommand,
     InstallMethod, LayoutDescription, MIN_VERSION, MachineLink, MachineProfile, MachineStatus,
     NewTab, NewWorkspace, PaneDirection, PaneId, PaneInfo, PaneMoveDestination, PaneSplit,
-    PluginActionContext, PluginActionInfo, PluginInvocationContext, RightClickTarget, SessionSync,
-    SplitDirection, SplitRef, SplitTree, State as Snapshot, Tab, TabId, TabInfo, Update, Version,
-    Workspace, WorkspaceCreated, WorkspaceId, WorkspaceInfo, WorkspaceWorktreeInfo, WorktreeInfo,
-    WorktreeList, WorktreeParams, WorktreeRemoved,
+    PluginActionContext, PluginActionInfo, PluginInvocationContext, ProfileId, RightClickTarget,
+    SessionSync, SplitDirection, SplitRef, SplitTree, State as Snapshot, Tab, TabId, TabInfo,
+    TerminalId, Update, Version, Workspace, WorkspaceCreated, WorkspaceId, WorkspaceInfo,
+    WorkspaceWorktreeInfo, WorktreeInfo, WorktreeList, WorktreeParams, WorktreeRemoved,
 };
 
 /// Where to find herdr: `HERDR_BIN`, `HERDR_SESSION`, `HERDR_SOCKET_PATH`
@@ -30,5 +30,8 @@ pub use herdr_client::{
 /// In debug and test builds `from_env` refuses any socket outside
 /// `~/.local/share/grasslands-herdr` unless `RT_ALLOW_LIVE_HERDR=1`.
 pub type Config = herdr_client::Endpoint;
+
+/// herdr's methods typed both ways, for `Client::send`.
+pub use herdr_client::protocol::{self, ZoomMode, method};
 
 pub type Result<T> = herdr_client::Result<T>;

@@ -16,6 +16,7 @@ use std::time::Duration;
 use gpui_kit::*;
 
 use super::{Cx, Run, center};
+use crate::herdr::{TabId, WorkspaceId};
 use crate::overlay;
 use crate::terminal_area::TerminalArea;
 
@@ -37,18 +38,23 @@ impl Run {
         // A workspace of our own with three tabs.
         let task = self.read(cx, |area, cx| {
             let home = std::env::var_os("HOME").map(PathBuf::from);
-            area.state
-                .read(cx)
-                .new_workspace(home, Some("drags-script".to_owned()), cx)
+            area.state.read(cx).new_workspace(
+                &area.machine(cx),
+                home,
+                Some("drags-script".to_owned()),
+                cx,
+            )
         })?;
         let workspace_id = task.await?.workspace_id;
-        let task = self.read(cx, |area, cx| {
-            area.state.read(cx).focus_workspace(&workspace_id, cx)
+        let task = self.on_state(cx, |state, machine, cx| {
+            state.focus_workspace(machine, &workspace_id, cx)
         })?;
         task.await?;
         for _ in 0..2 {
             let task = self.read(cx, |area, cx| {
-                area.state.read(cx).new_tab(Some(&workspace_id), cx)
+                area.state
+                    .read(cx)
+                    .new_tab(&area.machine(cx), Some(&workspace_id), cx)
             })?;
             task.await?;
         }
@@ -106,7 +112,7 @@ impl Run {
         let task = self.read(cx, |area, cx| {
             area.state
                 .read(cx)
-                .close_workspace(&workspace_id, false, cx)
+                .close_workspace(&area.machine(cx), &workspace_id, false, cx)
         })?;
         task.await?;
         Ok(())
@@ -116,7 +122,7 @@ impl Run {
     async fn drag_tab(
         &mut self,
         cx: &mut Cx,
-        tab_id: &str,
+        tab_id: &TabId,
         target: Target<'_>,
     ) -> anyhow::Result<()> {
         let (from, to) = self.drawn(cx, |d| {
@@ -177,7 +183,7 @@ impl Run {
         );
     }
 
-    fn tab_order(&self, cx: &mut Cx, workspace_id: &str) -> anyhow::Result<Vec<String>> {
+    fn tab_order(&self, cx: &mut Cx, workspace_id: &WorkspaceId) -> anyhow::Result<Vec<TabId>> {
         self.read(cx, |area, cx| {
             area.snapshot(cx)
                 .workspace(workspace_id)
@@ -186,7 +192,13 @@ impl Run {
         })
     }
 
-    async fn check_order(&mut self, cx: &mut Cx, workspace_id: &str, want: &[String], what: &str) {
+    async fn check_order(
+        &mut self,
+        cx: &mut Cx,
+        workspace_id: &WorkspaceId,
+        want: &[TabId],
+        what: &str,
+    ) {
         let workspace_id = workspace_id.to_owned();
         let matched = self
             .until(cx, Duration::from_secs(5), |area, _, cx| {

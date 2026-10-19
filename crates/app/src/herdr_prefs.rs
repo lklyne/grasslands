@@ -310,7 +310,7 @@ pub fn reload_server(cx: &mut App) {
     };
     let task = state
         .read(cx)
-        .call_on(&MachineId::Local, cx, |c| c.server_reload_config());
+        .call(&MachineId::Local, cx, |c| c.server_reload_config());
     cx.spawn(async move |cx| {
         let result = task.await;
         cx.update(|cx| {

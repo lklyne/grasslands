@@ -45,10 +45,10 @@ use crate::chrome::{
     self, Callback, Chrome, HerdrCommand, MenuCommand, MenuEntry, MenuTarget, WorktreeCommand,
 };
 use crate::herdr::config::AgentPanelSort;
-use crate::herdr::{Snapshot, WorkspaceInfo, WorktreeParams};
+use crate::herdr::{Snapshot, WorkspaceId, WorkspaceInfo, WorktreeParams};
 use crate::machines::{self, MachineActions, MachineState, machine_header, ssh_config};
 use crate::prompt::NewWorktree;
-use crate::state::{AppEvent, AppState, Machine, MachineId, MachineTask};
+use crate::state::{AppEvent, AppState, Machine, MachineId, MachineTask, On};
 use crate::status;
 use git::{Checkout, HeadWatcher, Placement, RemoteCheckouts, Repo};
 use groups::{Entry, Kind, Slot};
@@ -114,7 +114,7 @@ pub struct WorkspaceList {
     drag_tick: Option<(usize, usize)>,
     /// Where each workspace's row was drawn last frame (by [`row_key`]), for
     /// the script's in-app pointer input.
-    drawn_rows: Rc<RefCell<HashMap<String, Bounds<Pixels>>>>,
+    drawn_rows: Rc<RefCell<HashMap<On<WorkspaceId>, Bounds<Pixels>>>>,
     /// Where each machine's header was drawn last frame, by machine.
     drawn_headers: Rc<RefCell<HashMap<MachineId, Bounds<Pixels>>>>,
     focus: FocusHandle,
@@ -156,13 +156,10 @@ fn text(s: impl Into<SharedString>) -> Div {
     div().flex_shrink_0().whitespace_nowrap().child(s.into())
 }
 
-/// What [`WorkspaceList::drawn_rows`] calls a workspace's row: its id on
-/// Local, `<machine>/<id>` elsewhere (ids repeat across machines).
-pub(super) fn row_key(machine: &MachineId, workspace_id: &str) -> String {
-    match machine {
-        MachineId::Local => workspace_id.to_owned(),
-        MachineId::Remote(_) => format!("{machine}/{workspace_id}"),
-    }
+/// What [`WorkspaceList::drawn_rows`] calls a workspace's row (ids repeat
+/// across machines).
+pub(super) fn row_key(machine: &MachineId, workspace_id: &WorkspaceId) -> On<WorkspaceId> {
+    On::new(machine.clone(), workspace_id.clone())
 }
 
 /// The folder a workspace's branch is read from: herdr's checkout path, or
@@ -529,7 +526,7 @@ impl WorkspaceList {
 
     /// `workspace.focus` on the selected machine; the terminal area follows
     /// herdr's focused workspace.
-    pub fn activate_workspace(&mut self, workspace_id: &str, cx: &mut Context<Self>) {
+    pub fn activate_workspace(&mut self, workspace_id: &WorkspaceId, cx: &mut Context<Self>) {
         let machine = self.state.read(cx).selected().clone();
         self.activate_workspace_on(&machine, workspace_id, cx);
     }
@@ -538,12 +535,12 @@ impl WorkspaceList {
     pub fn activate_workspace_on(
         &mut self,
         machine: &MachineId,
-        workspace_id: &str,
+        workspace_id: &WorkspaceId,
         cx: &mut Context<Self>,
     ) {
         self.state.update(cx, |state, cx| {
             state
-                .focus_workspace_on(machine, workspace_id, cx)
+                .focus_workspace(machine, workspace_id, cx)
                 .detach_and_log_err(cx);
         });
     }
@@ -579,7 +576,11 @@ impl WorkspaceList {
     }
 
     /// Where a workspace's row was drawn last frame, if it was.
-    pub fn drawn_row(&self, machine: &MachineId, workspace_id: &str) -> Option<Bounds<Pixels>> {
+    pub fn drawn_row(
+        &self,
+        machine: &MachineId,
+        workspace_id: &WorkspaceId,
+    ) -> Option<Bounds<Pixels>> {
         self.drawn_rows
             .borrow()
             .get(&row_key(machine, workspace_id))
@@ -587,12 +588,17 @@ impl WorkspaceList {
     }
 
     /// The branch `workspace_id`'s row shows, for script hooks.
-    pub fn branch_of(&self, machine: &MachineId, workspace_id: &str, cx: &App) -> Option<String> {
+    pub fn branch_of(
+        &self,
+        machine: &MachineId,
+        workspace_id: &WorkspaceId,
+        cx: &App,
+    ) -> Option<String> {
         let snapshot = self.state.read(cx).machine(machine)?.snapshot().clone();
         let info = &snapshot
             .workspaces
             .iter()
-            .find(|w| w.info.workspace_id == workspace_id)?
+            .find(|w| &w.info.workspace_id == workspace_id)?
             .info;
         self.checkout(machine, &snapshot, info)?.branch.clone()
     }
@@ -643,7 +649,7 @@ impl WorkspaceList {
         );
         if let Some(order) = groups::reordered(&entries, dragged, target) {
             state
-                .reorder_workspaces_on(machine, order, cx)
+                .reorder_workspaces(machine, order, cx)
                 .detach_and_log_err(cx);
         }
     }
@@ -694,7 +700,7 @@ impl WorkspaceList {
             state.select_machine(machine, cx);
             let cwd = state.active_worktree().cloned();
             state
-                .new_workspace_on(machine, cwd, label, cx)
+                .new_workspace(machine, cwd, label, cx)
                 .detach_and_log_err(cx);
         });
     }
@@ -773,7 +779,7 @@ impl WorkspaceList {
                 focus: true,
                 ..Default::default()
             };
-            state.create_worktree_on(machine, params, cx)
+            state.create_worktree(machine, params, cx)
         });
         cx.spawn_in(window, async move |_, cx| {
             let result = task.await;
@@ -1297,7 +1303,7 @@ fn toast_error(
 
 fn open_workspace_menu(
     machine: &MachineId,
-    workspace_id: &str,
+    workspace_id: &WorkspaceId,
     position: Point<Pixels>,
     window: &mut Window,
     cx: &mut App,
@@ -1317,7 +1323,7 @@ fn open_workspace_menu(
 /// Closes through the chrome, which asks first when agents are running there.
 pub(super) fn close_workspace(
     machine: &MachineId,
-    workspace_id: &str,
+    workspace_id: &WorkspaceId,
     window: &mut Window,
     cx: &mut App,
 ) {
@@ -1334,7 +1340,7 @@ pub(super) fn close_workspace(
 /// The chrome's rename prompt for a workspace.
 pub(super) fn rename_workspace(
     machine: &MachineId,
-    workspace_id: &str,
+    workspace_id: &WorkspaceId,
     window: &mut Window,
     cx: &mut App,
 ) {

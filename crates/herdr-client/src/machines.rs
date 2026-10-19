@@ -37,6 +37,7 @@ use serde::Deserialize;
 use crate::client::{Client, SshAgentRegistration};
 use crate::endpoint::{DEV_ROOT, Endpoint};
 use crate::error::{Error, Result};
+use crate::ids::{ProfileId, TerminalId};
 use crate::remote_fs::RemoteFs;
 use crate::types::ServerCapabilities;
 
@@ -94,7 +95,7 @@ static CLEANED: Once = Once::new();
 /// A saved SSH machine, from `herdr machine list --json`.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct MachineProfile {
-    pub id: String,
+    pub id: ProfileId,
     pub label: String,
     /// e.g. "ssh://lyle@127.0.0.1:2222" or an ssh_config alias.
     pub target: String,
@@ -767,7 +768,7 @@ impl MachineLink {
     /// Shell command for a terminal surface in a remote pane, like
     /// `Launch::attach_command`. `None` until the remote herdr is found.
     /// Without `takeover`, herdr refuses a terminal another client has.
-    pub fn attach_command(&self, terminal_id: &str, takeover: bool) -> Option<String> {
+    pub fn attach_command(&self, terminal_id: &TerminalId, takeover: bool) -> Option<String> {
         let target = self.target.as_ref()?;
         let herdr = lock(&self.shared.herdr).clone()?;
         Some(attach_command_line(

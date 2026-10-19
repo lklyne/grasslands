@@ -24,7 +24,7 @@ use gpui_kit::*;
 use super::remote::{all_attached, docker, focus, remote, shows};
 use super::{Cx, Run};
 use crate::chrome::HerdrCommand;
-use crate::herdr::MachineStatus;
+use crate::herdr::{MachineStatus, WorkspaceId};
 use crate::sidebar;
 use crate::state::{MachineId, MachineTask, RunStage};
 use crate::terminal_area::TerminalArea;
@@ -55,7 +55,7 @@ impl Run {
         // A Local workspace, so both groups have rows; closed at the end.
         let created = self
             .read(cx, |area, cx| {
-                area.state.read(cx).new_workspace_on(
+                area.state.read(cx).new_workspace(
                     &MachineId::Local,
                     None,
                     Some(LOCAL_WORKSPACE.into()),
@@ -305,7 +305,7 @@ impl Run {
             let close = self.read(cx, |area, cx| {
                 area.state
                     .read(cx)
-                    .close_workspace_on(&MachineId::Local, &workspace, false, cx)
+                    .close_workspace(&MachineId::Local, &workspace, false, cx)
             })?;
             self.check(close.await.is_ok(), "closed the Local workspace");
         }
@@ -442,7 +442,7 @@ fn workspace_named(
     cx: &App,
     machine: &MachineId,
     label: &str,
-) -> Option<String> {
+) -> Option<WorkspaceId> {
     area.state
         .read(cx)
         .machine(machine)?

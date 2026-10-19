@@ -14,7 +14,6 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use serde::Serialize;
-use serde::de::DeserializeOwned;
 use serde_json::Value;
 
 use crate::error::{Error, Result};
@@ -104,8 +103,9 @@ impl Endpoint {
         }
     }
 
-    /// Sends one request and returns its `result` object.
-    pub fn request_value<P: Serialize>(&self, method: &str, params: &P) -> Result<Value> {
+    /// Sends one request and returns its `result` object. Callers go
+    /// through `Client::send`, which types both sides.
+    pub(crate) fn request_value<P: Serialize>(&self, method: &str, params: &P) -> Result<Value> {
         self.request_open(method, params).map(|(_, value)| value)
     }
 
@@ -128,19 +128,6 @@ impl Endpoint {
         }
         let value = parse_response(&line, &id)?;
         Ok((stream, value))
-    }
-
-    /// Sends one request and deserializes its `result` into `R`.
-    pub fn request<P: Serialize, R: DeserializeOwned>(
-        &self,
-        method: &str,
-        params: &P,
-    ) -> Result<R> {
-        let value = self.request_value(method, params)?;
-        serde_json::from_value(value).map_err(|source| Error::Decode {
-            method: method.to_owned(),
-            source,
-        })
     }
 
     /// Starts the server in its own process group so it outlives this app, then waits

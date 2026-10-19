@@ -7,7 +7,7 @@ use std::ffi::OsString;
 use std::path::Path;
 
 use super::{Machine, MachineId};
-use crate::herdr::{FixCommand, MachineProfile, MachineStatus};
+use crate::herdr::{FixCommand, MachineProfile, MachineStatus, ProfileId};
 
 /// What a run is for.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -63,7 +63,7 @@ pub struct MachineRun {
     /// The command as a person would type it.
     pub display: String,
     /// Add only: the profiles saved before it ran, to tell the new one.
-    pub(super) known: Vec<String>,
+    pub(super) known: Vec<ProfileId>,
 }
 
 impl MachineRun {
@@ -72,7 +72,7 @@ impl MachineRun {
         task: MachineTask,
         bin: &Path,
         profile: Option<&MachineProfile>,
-        known: Vec<String>,
+        known: Vec<ProfileId>,
     ) -> Option<Self> {
         let argv = argv(&task, bin, profile)?;
         let command = FixCommand::new(argv);
@@ -102,7 +102,7 @@ fn argv(task: &MachineTask, bin: &Path, profile: Option<&MachineProfile>) -> Opt
                 "machine".into(),
                 "reconnect".into(),
                 // The id, not the label: labels can repeat or start with `-`.
-                profile?.id.clone().into(),
+                profile?.id.as_str().into(),
             ]);
         }
         MachineTask::SetUp(_) => {
@@ -121,7 +121,7 @@ fn argv(task: &MachineTask, bin: &Path, profile: Option<&MachineProfile>) -> Opt
 
 /// The profile in `saved` that isn't in `known`: what an add saved.
 pub fn added<'a>(
-    known: &[String],
+    known: &[ProfileId],
     saved: impl Iterator<Item = &'a MachineProfile>,
 ) -> Option<&'a MachineProfile> {
     saved.into_iter().find(|p| !known.contains(&p.id))
@@ -195,7 +195,7 @@ mod tests {
     #[test]
     fn added_finds_the_new_profile() {
         let saved = [profile("a", "default"), profile("b", "default")];
-        let new = added(&["a".to_owned()], saved.iter()).map(|p| p.id.as_str());
+        let new = added(&["a".into()], saved.iter()).map(|p| p.id.as_str());
         assert_eq!(new, Some("b"));
     }
 }

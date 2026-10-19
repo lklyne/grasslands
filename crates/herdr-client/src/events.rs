@@ -7,6 +7,8 @@
 use serde::Deserialize;
 use serde_json::{Value, json};
 
+use crate::ids::PaneId;
+
 /// Lifecycle subscriptions the session cache uses. `pane.agent_status_changed`
 /// needs a `pane_id`, so it is added per pane (see [`subscriptions`]).
 pub const LIFECYCLE_SUBSCRIPTIONS: &[&str] = &[
@@ -37,7 +39,7 @@ pub const LIFECYCLE_SUBSCRIPTIONS: &[&str] = &[
 ];
 
 /// The `subscriptions` array: every lifecycle kind plus agent status for each pane.
-pub fn subscriptions<'a>(pane_ids: impl IntoIterator<Item = &'a str>) -> Value {
+pub fn subscriptions<'a>(pane_ids: impl IntoIterator<Item = &'a PaneId>) -> Value {
     let lifecycle = LIFECYCLE_SUBSCRIPTIONS
         .iter()
         .map(|kind| json!({ "type": kind }));
@@ -83,7 +85,7 @@ mod tests {
 
     #[test]
     fn subscriptions_should_add_status_entry_per_pane() {
-        let subs = subscriptions(["w1:p1", "w1:p2"]);
+        let subs = subscriptions(&[PaneId::from("w1:p1"), PaneId::from("w1:p2")]);
         let count = subs.as_array().map_or(0, Vec::len);
         assert_eq!(count, LIFECYCLE_SUBSCRIPTIONS.len() + 2);
     }

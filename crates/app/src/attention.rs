@@ -23,8 +23,8 @@ pub struct Attention {
     statuses: HashMap<PaneId, AgentStatus>,
 }
 
-pub fn find_agent<'a>(snapshot: &'a Snapshot, pane_id: &str) -> Option<&'a Agent> {
-    snapshot.agents.iter().find(|a| a.pane_id == pane_id)
+pub fn find_agent<'a>(snapshot: &'a Snapshot, pane_id: &PaneId) -> Option<&'a Agent> {
+    snapshot.agents.iter().find(|a| &a.pane_id == pane_id)
 }
 
 impl Attention {
