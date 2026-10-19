@@ -31,7 +31,7 @@ delivery = "system"
 scripts/dev-run cargo run -p app
 ```
 
-`scripts/dev-run` sets `HERDR_BIN`, `HERDR_SESSION`, `HERDR_SOCKET_PATH` and `ZIG` for an isolated dev session, then runs the command. The session is named after the checkout's folder (`dev-<dir>`), lives under `~/.local/share/grasslands-herdr`, and runs herdr 0.9.5. The app starts that session's server if it isn't running.
+`scripts/dev-run` sets `HERDR_BIN`, `HERDR_SESSION`, `HERDR_SOCKET_PATH` and `ZIG` for an isolated dev session, then runs the command. The session is named after the checkout's folder (`dev-<dir>`; folder names over 16 characters become their first 9 plus a hash, to keep herdr's socket paths under the macOS limit; `RT_SESSION` overrides it), lives under `~/.local/share/grasslands-herdr`, and runs herdr 0.9.5. The app starts that session's server if it isn't running.
 
 Drive the dev session from a terminal with `scripts/herdr-dev`, which is the herdr CLI pointed at the same session:
 
