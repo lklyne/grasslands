@@ -24,6 +24,10 @@ use std::time::{Duration, SystemTime};
 
 use crate::machines::{LinkAccess, lock, shell_quote};
 
+mod codec;
+
+use codec::*;
+
 /// One entry of a remote folder listing.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RemoteEntry {
@@ -55,8 +59,6 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
 const CHUNK: u32 = 64 * 1024;
 /// READ or WRITE requests in flight at once.
 const WINDOW: usize = 16;
-/// Larger replies are a broken stream, not a real packet.
-const MAX_PACKET: usize = 16 * 1024 * 1024;
 const REMOVE_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// A machine's files. Cheap to share (`Arc`); one SFTP session inside,
@@ -324,230 +326,6 @@ fn already_exists(path: &[u8]) -> io::Error {
     )
 }
 
-// SFTP v3 packet types (draft-ietf-secsh-filexfer-02).
-const INIT: u8 = 1;
-const VERSION: u8 = 2;
-const OPEN: u8 = 3;
-const CLOSE: u8 = 4;
-const READ: u8 = 5;
-const WRITE: u8 = 6;
-const LSTAT: u8 = 7;
-const FSETSTAT: u8 = 10;
-const OPENDIR: u8 = 11;
-const READDIR: u8 = 12;
-const REMOVE: u8 = 13;
-const MKDIR: u8 = 14;
-const REALPATH: u8 = 16;
-const STAT: u8 = 17;
-const RENAME: u8 = 18;
-const STATUS: u8 = 101;
-const HANDLE: u8 = 102;
-const DATA: u8 = 103;
-const NAME: u8 = 104;
-const ATTRS: u8 = 105;
-const EXTENDED: u8 = 200;
-
-const FXF_READ: u32 = 0x01;
-const FXF_WRITE: u32 = 0x02;
-const FXF_CREAT: u32 = 0x08;
-const FXF_EXCL: u32 = 0x20;
-
-const FX_OK: u32 = 0;
-const FX_EOF: u32 = 1;
-const FX_NO_SUCH_FILE: u32 = 2;
-const FX_PERMISSION_DENIED: u32 = 3;
-const FX_BAD_MESSAGE: u32 = 5;
-const FX_NO_CONNECTION: u32 = 6;
-const FX_CONNECTION_LOST: u32 = 7;
-const FX_OP_UNSUPPORTED: u32 = 8;
-
-const ATTR_SIZE: u32 = 0x01;
-const ATTR_UIDGID: u32 = 0x02;
-const ATTR_PERMISSIONS: u32 = 0x04;
-const ATTR_ACMODTIME: u32 = 0x08;
-const ATTR_EXTENDED: u32 = 0x8000_0000;
-
-const S_IFMT: u32 = 0o170_000;
-const S_IFDIR: u32 = 0o040_000;
-const S_IFLNK: u32 = 0o120_000;
-
-/// A reply: its type, request id (the version, for VERSION) and the rest.
-#[derive(Debug)]
-struct Packet {
-    kind: u8,
-    id: u32,
-    body: Vec<u8>,
-}
-
-impl Packet {
-    /// The status code and message, if this is a STATUS reply.
-    fn status(&self) -> io::Result<Option<(u32, String)>> {
-        if self.kind != STATUS {
-            return Ok(None);
-        }
-        let mut r = Reader(&self.body);
-        let code = r.u32()?;
-        // OpenSSH always sends a message; very old servers may not.
-        let message = r.bytes().map(|m| String::from_utf8_lossy(m).into_owned());
-        Ok(Some((code, message.unwrap_or_default())))
-    }
-
-    /// The body of a reply of type `kind`; a STATUS becomes its error.
-    fn expect(&self, kind: u8) -> io::Result<Reader<'_>> {
-        if self.kind == kind {
-            return Ok(Reader(&self.body));
-        }
-        match self.status()? {
-            Some((code, message)) => Err(status_error(code, message)),
-            None => Err(bad_message(format!("unexpected reply type {}", self.kind))),
-        }
-    }
-
-    fn expect_ok(&self) -> io::Result<()> {
-        match self.status()? {
-            Some((FX_OK, _)) => Ok(()),
-            Some((code, message)) => Err(status_error(code, message)),
-            None => Err(bad_message(format!("unexpected reply type {}", self.kind))),
-        }
-    }
-}
-
-fn status_error(code: u32, message: String) -> io::Error {
-    let kind = match code {
-        FX_EOF => io::ErrorKind::UnexpectedEof,
-        FX_NO_SUCH_FILE => io::ErrorKind::NotFound,
-        FX_PERMISSION_DENIED => io::ErrorKind::PermissionDenied,
-        FX_BAD_MESSAGE => io::ErrorKind::InvalidData,
-        FX_NO_CONNECTION | FX_CONNECTION_LOST => io::ErrorKind::NotConnected,
-        FX_OP_UNSUPPORTED => io::ErrorKind::Unsupported,
-        _ => io::ErrorKind::Other,
-    };
-    let message = if message.is_empty() {
-        format!("sftp error {code}")
-    } else {
-        message
-    };
-    io::Error::new(kind, message)
-}
-
-fn bad_message(message: String) -> io::Error {
-    io::Error::new(io::ErrorKind::InvalidData, format!("sftp: {message}"))
-}
-
-/// An outgoing packet body, big-endian with u32-length strings.
-struct Body(Vec<u8>);
-
-impl Body {
-    fn new() -> Self {
-        Self(Vec::new())
-    }
-
-    fn u32(mut self, value: u32) -> Self {
-        self.0.extend_from_slice(&value.to_be_bytes());
-        self
-    }
-
-    fn u64(mut self, value: u64) -> Self {
-        self.0.extend_from_slice(&value.to_be_bytes());
-        self
-    }
-
-    fn bytes(self, value: &[u8]) -> Self {
-        let len = u32::try_from(value.len()).unwrap_or(u32::MAX);
-        let mut body = self.u32(len);
-        body.0.extend_from_slice(value);
-        body
-    }
-
-    /// Attributes with only the permissions, when given.
-    fn mode(self, mode: Option<u32>) -> Self {
-        match mode {
-            Some(mode) => self.u32(ATTR_PERMISSIONS).u32(mode),
-            None => self.u32(0),
-        }
-    }
-}
-
-struct Reader<'a>(&'a [u8]);
-
-impl<'a> Reader<'a> {
-    fn take(&mut self, n: usize) -> io::Result<&'a [u8]> {
-        if self.0.len() < n {
-            return Err(bad_message("short packet".to_owned()));
-        }
-        let (head, rest) = self.0.split_at(n);
-        self.0 = rest;
-        Ok(head)
-    }
-
-    fn u32(&mut self) -> io::Result<u32> {
-        let mut buf = [0; 4];
-        buf.copy_from_slice(self.take(4)?);
-        Ok(u32::from_be_bytes(buf))
-    }
-
-    fn u64(&mut self) -> io::Result<u64> {
-        let mut buf = [0; 8];
-        buf.copy_from_slice(self.take(8)?);
-        Ok(u64::from_be_bytes(buf))
-    }
-
-    fn bytes(&mut self) -> io::Result<&'a [u8]> {
-        let len = self.u32()? as usize;
-        self.take(len)
-    }
-
-    fn attrs(&mut self) -> io::Result<Attrs> {
-        let flags = self.u32()?;
-        let mut attrs = Attrs::default();
-        if flags & ATTR_SIZE != 0 {
-            attrs.size = Some(self.u64()?);
-        }
-        if flags & ATTR_UIDGID != 0 {
-            self.take(8)?;
-        }
-        if flags & ATTR_PERMISSIONS != 0 {
-            attrs.permissions = Some(self.u32()?);
-        }
-        if flags & ATTR_ACMODTIME != 0 {
-            let _atime = self.u32()?;
-            attrs.mtime = Some(self.u32()?);
-        }
-        if flags & ATTR_EXTENDED != 0 {
-            for _ in 0..self.u32()? {
-                self.bytes()?;
-                self.bytes()?;
-            }
-        }
-        Ok(attrs)
-    }
-}
-
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-struct Attrs {
-    size: Option<u64>,
-    permissions: Option<u32>,
-    mtime: Option<u32>,
-}
-
-impl Attrs {
-    fn file_type(&self) -> Option<u32> {
-        self.permissions.map(|mode| mode & S_IFMT)
-    }
-
-    fn is_dir(&self) -> bool {
-        self.file_type() == Some(S_IFDIR)
-    }
-
-    fn is_symlink(&self) -> bool {
-        self.file_type() == Some(S_IFLNK)
-    }
-
-    fn modified(&self) -> Option<SystemTime> {
-        self.mtime
-            .map(|secs| SystemTime::UNIX_EPOCH + Duration::from_secs(secs.into()))
-    }
-}
 
 /// One `ssh -s … sftp` process and the protocol state over its stdio.
 struct Session {
@@ -866,23 +644,6 @@ fn read_packets(mut stdout: impl Read, tx: &mpsc::Sender<io::Result<Packet>>) {
     }
 }
 
-fn read_packet(stdout: &mut impl Read) -> io::Result<Packet> {
-    let mut head = [0; 4];
-    stdout.read_exact(&mut head)?;
-    let len = u32::from_be_bytes(head) as usize;
-    if !(5..=MAX_PACKET).contains(&len) {
-        return Err(bad_message(format!("bad packet length {len}")));
-    }
-    let mut buf = vec![0; len];
-    stdout.read_exact(&mut buf)?;
-    let mut id = [0; 4];
-    id.copy_from_slice(&buf[1..5]);
-    Ok(Packet {
-        kind: buf[0],
-        id: u32::from_be_bytes(id),
-        body: buf.split_off(5),
-    })
-}
 
 fn drain_into(mut pipe: impl Read, sink: &Mutex<Vec<u8>>) {
     let mut buf = [0; 1024];
@@ -923,59 +684,5 @@ mod tests {
     fn temp_sibling_should_handle_a_bare_name() {
         let temp = temp_sibling(b"notes", 0);
         assert!(temp.starts_with(b".notes.grasslands-"));
-    }
-
-    #[test]
-    fn attrs_should_read_every_field_and_skip_extended() {
-        let body = Body::new()
-            .u32(ATTR_SIZE | ATTR_UIDGID | ATTR_PERMISSIONS | ATTR_ACMODTIME | ATTR_EXTENDED)
-            .u64(42)
-            .u32(1000)
-            .u32(1000)
-            .u32(S_IFDIR | 0o755)
-            .u32(1)
-            .u32(1_700_000_000)
-            .u32(1)
-            .bytes(b"k")
-            .bytes(b"v")
-            .u32(99)
-            .0;
-        let mut r = Reader(&body);
-        let attrs = r.attrs().unwrap();
-        assert_eq!(
-            (attrs.size, attrs.is_dir(), attrs.mtime, r.u32().unwrap()),
-            (Some(42), true, Some(1_700_000_000), 99)
-        );
-    }
-
-    #[test]
-    fn attrs_should_see_symlinks() {
-        let attrs = Attrs {
-            permissions: Some(S_IFLNK | 0o777),
-            ..Attrs::default()
-        };
-        assert!(attrs.is_symlink() && !attrs.is_dir());
-    }
-
-    #[test]
-    fn status_should_map_no_such_file_to_not_found() {
-        let err = status_error(FX_NO_SUCH_FILE, "No such file".to_owned());
-        assert_eq!(err.kind(), io::ErrorKind::NotFound);
-    }
-
-    #[test]
-    fn reader_should_refuse_short_packets() {
-        let mut r = Reader(&[0, 0, 0, 9, 1]);
-        assert!(r.bytes().is_err());
-    }
-
-    #[test]
-    fn read_packet_should_split_type_id_and_body() {
-        let mut wire: &[u8] = &[0, 0, 0, 7, HANDLE, 0, 0, 0, 5, 0xAB, 0xCD];
-        let packet = read_packet(&mut wire).unwrap();
-        assert_eq!(
-            (packet.kind, packet.id, packet.body),
-            (HANDLE, 5, vec![0xAB, 0xCD])
-        );
     }
 }
