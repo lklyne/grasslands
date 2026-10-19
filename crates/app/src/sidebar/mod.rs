@@ -16,7 +16,7 @@ pub fn init(cx: &mut App) {
     files::init(cx);
 }
 
-/// The spaces panel, for the terminal area's script hooks.
+/// The spaces panel, for the script hooks (`crate::script`).
 struct Spaces(WeakEntity<workspaces::WorkspaceList>);
 
 impl Global for Spaces {}
@@ -36,7 +36,7 @@ pub fn agents(cx: &App) -> Option<Entity<workspaces::AgentList>> {
     cx.try_global::<Agents>()?.0.upgrade()
 }
 
-/// The files panel, for the terminal area's script hooks.
+/// The files panel, for the script hooks.
 struct Files(WeakEntity<files::FileTree>);
 
 impl Global for Files {}
