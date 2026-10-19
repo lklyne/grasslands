@@ -1475,9 +1475,22 @@ impl AppState {
         workspace_id: Option<&str>,
         cx: &App,
     ) -> Task<herdr::Result<herdr::TabInfo>> {
+        self.new_tab_named_on(machine, workspace_id, None, cx)
+    }
+
+    /// A new, focused tab named `label` (herdr names it when `None`).
+    #[track_caller]
+    pub fn new_tab_named_on(
+        &self,
+        machine: &MachineId,
+        workspace_id: Option<&str>,
+        label: Option<String>,
+        cx: &App,
+    ) -> Task<herdr::Result<herdr::TabInfo>> {
         sounds::play(Cue::Open, sounds::subtle());
         let params = herdr::NewTab {
             workspace_id: workspace_id.map(str::to_owned),
+            label,
             focus: true,
             ..Default::default()
         };

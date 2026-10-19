@@ -140,11 +140,12 @@ The upper sidebar panel lists every herdr workspace and agent, laid out like her
 
 ## Replacing herdr's UI
 
-- **Notifications:** agent status changes become our own toasts, badges and sounds. herdr's toast delivery is set to system so nothing is lost when no herdr client is attached.
+- **Notifications:** agent status changes become our own toasts, badges and sounds, following herdr's config: `[ui.sound]` and its per-agent mutes, `[ui.toast]` delivery and delay, and herdr's rule of no sound for the workspace and no toast for the tab you're looking at (decision 0022).
+- **herdr's settings:** the app reads Local herdr's `config.toml` live and follows `ui.agent_panel_sort`, `ui.confirm_close`, `ui.prompt_new_tab_name` and `ui.prompt_new_workspace_name`. Settings → herdr edits them in the file, keeping its comments, then runs `server.reload_config`. grasslands' own appearance and sounds stay in `settings.json`.
 - **Context menus:** our own GPUI Kit menus on panes, tabs and workspaces.
 - **Command palette:** lists every plugin action from `plugin.action.list` and runs it with `plugin.action.invoke`, alongside the app's own commands.
 - **Plugin panes:** plugins that open as a split, tab, zoomed pane or overlay create real panes, which we show like any other pane.
-- **Confirmations:** herdr API closes happen immediately, so the app asks before closing a running agent or a whole worktree group.
+- **Confirmations:** herdr API closes happen immediately, so the app asks before closing a pane or tab with a running agent, and before closing any workspace or worktree group while herdr's `ui.confirm_close` is on.
 - **Popovers over terminals:** because Ghostty views sit above the GPUI layer, menus, popovers, the command palette and toasts are drawn in a transparent, borderless overlay window above the main window.
 
 **Known gaps in herdr's API (re-check against 0.9.5; file feature requests if still missing):**

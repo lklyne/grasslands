@@ -3,6 +3,7 @@
 //! cache is fed with `replace_snapshot` instead.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use gpui_kit::component::WindowExt as _;
 use gpui_kit::{
@@ -11,6 +12,7 @@ use gpui_kit::{
 };
 
 use super::{Chrome, HerdrCommand, MenuEntry, MenuTarget};
+use crate::herdr::config::{Edit, ToastDelivery};
 use crate::herdr::{self, Agent, AgentStatus, Snapshot};
 use crate::state::{AppState, MachineId};
 
@@ -191,19 +193,65 @@ fn palette_opens_as_a_dialog(cx: &mut TestAppContext) {
     assert!(has_dialog(cx, &f));
 }
 
-#[gpui_kit::test]
-fn blocked_agent_raises_a_toast(cx: &mut TestAppContext) {
-    let f = fixture(cx);
+/// herdr's `[ui.toast]`, in memory (tests never write herdr's config).
+fn toasts_from_herdr(cx: &mut TestAppContext, delivery: ToastDelivery, delay_seconds: u64) {
+    cx.update(|cx| {
+        crate::herdr_prefs::set(Edit::ToastDelivery(delivery), cx);
+        crate::herdr_prefs::set(Edit::ToastDelay(delay_seconds), cx);
+    });
+}
+
+fn set_status(cx: &mut TestAppContext, f: &Fixture, status: AgentStatus) {
     cx.update(|cx| {
         f.state.update(cx, |state, cx| {
-            state.replace_snapshot(snapshot(AgentStatus::Blocked), cx);
+            state.replace_snapshot(snapshot(status), cx);
         });
     });
     cx.run_until_parked();
-    let toasts = cx
-        .update_window(f.window, |_, window, cx| window.notifications(cx).len())
-        .unwrap();
-    assert_eq!(toasts, 1);
+}
+
+fn toast_count(cx: &mut TestAppContext, f: &Fixture) -> usize {
+    cx.update_window(f.window, |_, window, cx| window.notifications(cx).len())
+        .unwrap()
+}
+
+#[gpui_kit::test]
+fn blocked_agent_raises_a_toast(cx: &mut TestAppContext) {
+    let f = fixture(cx);
+    toasts_from_herdr(cx, ToastDelivery::Herdr, 0);
+    set_status(cx, &f, AgentStatus::Blocked);
+    assert_eq!(toast_count(cx, &f), 1);
+}
+
+#[gpui_kit::test]
+fn herdrs_default_delivery_raises_no_toast(cx: &mut TestAppContext) {
+    let f = fixture(cx);
+    set_status(cx, &f, AgentStatus::Blocked);
+    cx.executor().advance_clock(Duration::from_secs(2));
+    cx.run_until_parked();
+    assert_eq!(toast_count(cx, &f), 0);
+}
+
+#[gpui_kit::test]
+fn the_toast_waits_out_herdrs_delay(cx: &mut TestAppContext) {
+    let f = fixture(cx);
+    toasts_from_herdr(cx, ToastDelivery::Herdr, 1);
+    set_status(cx, &f, AgentStatus::Blocked);
+    let before = toast_count(cx, &f);
+    cx.executor().advance_clock(Duration::from_secs(1));
+    cx.run_until_parked();
+    assert_eq!((before, toast_count(cx, &f)), (0, 1));
+}
+
+#[gpui_kit::test]
+fn an_agent_that_moves_on_during_the_delay_gets_no_toast(cx: &mut TestAppContext) {
+    let f = fixture(cx);
+    toasts_from_herdr(cx, ToastDelivery::Herdr, 1);
+    set_status(cx, &f, AgentStatus::Blocked);
+    set_status(cx, &f, AgentStatus::Working);
+    cx.executor().advance_clock(Duration::from_secs(1));
+    cx.run_until_parked();
+    assert_eq!(toast_count(cx, &f), 0);
 }
 
 #[gpui_kit::test]

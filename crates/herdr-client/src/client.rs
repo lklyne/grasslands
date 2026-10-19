@@ -184,6 +184,22 @@ pub struct PaneMoveResult {
     pub reason: Option<String>,
 }
 
+/// `server.reload_config`'s answer.
+#[derive(Debug, Clone, Deserialize)]
+pub struct ConfigReload {
+    pub status: ConfigReloadStatus,
+    #[serde(default)]
+    pub diagnostics: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ConfigReloadStatus {
+    Applied,
+    Partial,
+    Failed,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct NotificationShown {
     pub shown: bool,
@@ -513,5 +529,13 @@ impl Client {
             "notification.show",
             &json!({ "title": title, "body": body }),
         )
+    }
+
+    // Server
+
+    /// Makes the server re-read `config.toml` (herdr has no method to read or
+    /// write it; see `crate::config`).
+    pub fn server_reload_config(&self) -> Result<ConfigReload> {
+        self.endpoint.request("server.reload_config", &json!({}))
     }
 }

@@ -26,6 +26,7 @@ use serde_json::json;
 
 mod chrome;
 mod drags;
+mod herdr_prefs;
 mod machines;
 mod remote;
 mod remote_files;
@@ -48,6 +49,7 @@ pub fn start(scenario: String, area: Entity<TerminalArea>, window: &mut Window, 
         "chrome",
         "titlebar",
         "settings",
+        "herdr-prefs",
         "drags",
         "setup",
         "machine-ui",
@@ -60,6 +62,14 @@ pub fn start(scenario: String, area: Entity<TerminalArea>, window: &mut Window, 
         eprintln!("script: unknown scenario {scenario:?}");
         return;
     }
+    // herdr's `ui.prompt_new_tab_name` and `ui.prompt_new_workspace_name`
+    // would stop cmd-t and New Workspace at a name dialog; the scenarios
+    // check what follows. `herdr-prefs` checks the prefs themselves.
+    if scenario != "herdr-prefs" {
+        use crate::herdr::config::Edit;
+        crate::herdr_prefs::override_for_script(Edit::PromptNewTabName(false), cx);
+        crate::herdr_prefs::override_for_script(Edit::PromptNewWorkspaceName(false), cx);
+    }
     window
         .spawn(cx, async move |cx| {
             let mut run = Run {
@@ -71,6 +81,7 @@ pub fn start(scenario: String, area: Entity<TerminalArea>, window: &mut Window, 
                 "chrome" => run.chrome(cx).await,
                 "titlebar" => run.titlebar(cx).await,
                 "settings" => run.settings(cx).await,
+                "herdr-prefs" => run.herdr_prefs(cx).await,
                 "drags" => run.drags(cx).await,
                 "setup" => run.setup(cx).await,
                 "machine-ui" => run.machine_ui(cx).await,

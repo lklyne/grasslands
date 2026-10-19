@@ -337,7 +337,7 @@ fn sort_toggle_should_switch_to_priority(cx: &mut TestAppContext) {
     let toggle = cx.debug_bounds("agents-sort").unwrap().center();
     cx.simulate_click(toggle, Modifiers::none());
     cx.run_until_parked();
-    let sort = panels.agents.read_with(cx, |list, _| list.sort);
+    let sort = panels.agents.read_with(cx, |list, cx| list.sort(cx));
     assert_eq!(sort, AgentSort::Priority);
 }
 

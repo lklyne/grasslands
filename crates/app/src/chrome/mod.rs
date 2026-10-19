@@ -15,13 +15,15 @@ mod script;
 mod worktrees;
 
 use std::collections::HashMap;
+use std::path::Path;
 use std::rc::Rc;
+use std::time::Duration;
 
 use gpui_kit::component::WindowExt as _;
 use gpui_kit::component::command::CommandState;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::menu::{PopupMenu, PopupMenuItem};
-use gpui_kit::component::notification::{Notification, NotificationDelivery};
+use gpui_kit::component::notification::Notification;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
@@ -178,6 +180,8 @@ pub struct Chrome {
     /// The rename dialog's input, while one is open.
     rename_input: Option<WeakEntity<InputState>>,
     badge: usize,
+    /// Agent alerts waiting out herdr's `ui.toast.delay_seconds`, by toast key.
+    pending_alerts: HashMap<SharedString, Task<()>>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -209,6 +213,7 @@ impl Chrome {
             rename: None,
             rename_input: None,
             badge: 0,
+            pending_alerts: HashMap::new(),
             _subscriptions: vec![events, badge],
         };
         chrome.refresh_plugin_actions(cx);
@@ -273,10 +278,52 @@ impl Chrome {
             .map_or(self.main_window, |overlay| overlay.read(cx).window_handle())
     }
 
-    /// A toast (bottom right) and a sound for an agent that needs you
-    /// (blocked) or finished.
-    /// While the window is in the background the toast also goes to the OS.
+    /// After herdr's `ui.toast.delay_seconds`, alerts for an agent that
+    /// needs you (blocked) or finished, if it is still in that state (as
+    /// herdr does). A newer change for the same pane replaces a pending one.
     fn agent_toast(
+        &mut self,
+        machine: &MachineId,
+        change: &StatusChange,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let key = toast_key(machine, &change.pane_id);
+        self.pending_alerts.remove(&key);
+        if !matches!(change.status, AgentStatus::Blocked | AgentStatus::Done) {
+            return;
+        }
+        let delay = Duration::from_secs(crate::herdr_prefs::get(cx).toast.delay_seconds);
+        if delay.is_zero() {
+            self.agent_alert(machine, change, window, cx);
+            return;
+        }
+        let (machine, change) = (machine.clone(), change.clone());
+        let task = cx.spawn_in(window, async move |this, cx| {
+            cx.background_executor().timer(delay).await;
+            // The finished task stays in `pending_alerts` until the pane's
+            // next change replaces it; dropping it from inside would cancel it.
+            this.update_in(cx, |this, window, cx| {
+                let still = this
+                    .state
+                    .read(cx)
+                    .machine(&machine)
+                    .and_then(|m| find_agent(m.snapshot(), &change.pane_id))
+                    .is_some_and(|agent| agent.agent_status == change.status);
+                if still {
+                    this.agent_alert(&machine, &change, window, cx);
+                }
+            })
+            .ok();
+        });
+        self.pending_alerts.insert(key, task);
+    }
+
+    /// A toast (bottom right) and a sound for an agent that needs you
+    /// (blocked) or finished, as herdr's config says: no sound for the
+    /// workspace in view, no toast for the tab in view, toasts delivered
+    /// per `ui.toast.delivery` (`herdr_prefs::alert`).
+    fn agent_alert(
         &mut self,
         machine: &MachineId,
         change: &StatusChange,
@@ -288,7 +335,8 @@ impl Chrome {
             AgentStatus::Done => "finished",
             _ => return,
         };
-        let Some(snapshot) = self.state.read(cx).machine(machine).map(|m| m.snapshot()) else {
+        let state = self.state.read(cx);
+        let Some(snapshot) = state.machine(machine).map(|m| m.snapshot()) else {
             return;
         };
         let agent = find_agent(snapshot, &change.pane_id);
@@ -301,10 +349,32 @@ impl Chrome {
             .and_then(|agent| snapshot.workspace(&agent.workspace_id))
             .map(|w| format!(" in {}", w.info.label))
             .unwrap_or_default();
-        let delivery = if window.is_window_active() {
-            NotificationDelivery::InApp
-        } else {
-            NotificationDelivery::InAppAndSystem
+        let window_active = window.is_window_active();
+        let looking = agent.map_or_else(Default::default, |agent| {
+            crate::herdr_prefs::Looking::at(
+                agent,
+                snapshot,
+                state.selected() == machine,
+                window_active,
+            )
+        });
+        let prefs = crate::herdr_prefs::get(cx);
+        let alert = crate::herdr_prefs::alert(
+            prefs,
+            agent.and_then(|a| a.agent.as_deref()),
+            looking,
+            window_active,
+            crate::herdr::config::sound_disabled_by_env(),
+        );
+        if alert.sound {
+            let custom = prefs
+                .sound
+                .custom_sound(change.status == AgentStatus::Done)
+                .map(Path::to_path_buf);
+            dock::play_for(change.status, !window_active, custom.as_deref());
+        }
+        let Some(delivery) = alert.toast else {
+            return;
         };
         let target = change.pane_id.clone();
         let target_machine = machine.clone();
@@ -328,7 +398,6 @@ impl Chrome {
                 });
             });
         self.floating(cx, move |window, cx| window.push_notification(note, cx));
-        dock::play_for(change.status, !window.is_window_active());
     }
 
     pub fn toast(
@@ -716,7 +785,20 @@ impl Chrome {
     /// Sends a herdr command, asking first when it would close a running
     /// agent or a whole worktree group (herdr closes immediately).
     pub fn run(&mut self, command: HerdrCommand, window: &mut Window, cx: &mut Context<Self>) {
-        let confirmation = confirm::needed_for(&command, self.snapshot_of(command.machine(), cx));
+        if let HerdrCommand::NewTab {
+            machine,
+            workspace_id,
+        } = &command
+        {
+            self.new_tab(machine.clone(), Some(workspace_id.clone()), window, cx);
+            return;
+        }
+        let confirm_close = crate::herdr_prefs::get(cx).confirm_close;
+        let confirmation = confirm::needed_for(
+            &command,
+            self.snapshot_of(command.machine(), cx),
+            confirm_close,
+        );
         let Some(confirmation) = confirmation else {
             self.send(command, window, cx);
             return;
@@ -729,6 +811,43 @@ impl Chrome {
             });
         };
         self.confirm(confirmation, send, window, cx);
+    }
+
+    /// A new tab in `workspace_id` (the focused one when `None`) on
+    /// `machine`. With herdr's `ui.prompt_new_tab_name` (on by default) it
+    /// asks for the name first; an empty name lets herdr pick one.
+    pub fn new_tab(
+        &mut self,
+        machine: MachineId,
+        workspace_id: Option<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let state = self.state.clone();
+        let create = move |label: Option<String>, cx: &mut App| {
+            state
+                .read(cx)
+                .new_tab_named_on(&machine, workspace_id.as_deref(), label, cx)
+                .detach_and_log_err(cx);
+        };
+        if !crate::herdr_prefs::get(cx).prompt_new_tab_name {
+            create(None, cx);
+            return;
+        }
+        // `ask_name` reaches the chrome itself, so it opens after this update.
+        window.defer(cx, move |window, cx| {
+            crate::prompt::ask_name(
+                "New Tab",
+                "Create",
+                "",
+                move |name, _, cx| {
+                    let name = name.trim();
+                    create((!name.is_empty()).then(|| name.to_owned()), cx);
+                },
+                window,
+                cx,
+            );
+        });
     }
 
     /// Sends without asking; a failure becomes an error toast.

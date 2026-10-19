@@ -3025,9 +3025,11 @@ dependencies = [
  "async-channel",
  "libc",
  "log",
+ "notify",
  "serde",
  "serde_json",
  "thiserror 2.0.21",
+ "toml_edit 0.25.17+spec-1.1.0",
 ]
 
 [[package]]
@@ -6999,6 +7001,7 @@ dependencies = [
  "indexmap",
  "toml_datetime 1.1.2+spec-1.1.0",
  "toml_parser",
+ "toml_writer",
  "winnow 1.0.4",
 ]
 

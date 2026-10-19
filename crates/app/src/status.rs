@@ -12,9 +12,9 @@ use gpui_kit::component::{ActiveTheme as _, Icon, Sizable as _};
 use gpui_kit::*;
 
 use crate::herdr::AgentStatus;
+use crate::herdr::config::StatusIndicators;
 
-/// herdr's `ui.status_indicators`. Set it app-wide with `cx.set_global`;
-/// without one the views draw herdr's default, dots.
+/// How status glyphs draw: herdr's `ui.status_indicators`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Indicators {
     #[default]
@@ -22,11 +22,12 @@ pub enum Indicators {
     Symbols,
 }
 
-impl Global for Indicators {}
-
-/// The app-wide [`Indicators`].
+/// The indicators herdr's config asks for.
 pub fn indicators(cx: &App) -> Indicators {
-    cx.try_global::<Indicators>().copied().unwrap_or_default()
+    match crate::herdr_prefs::get(cx).status_indicators {
+        StatusIndicators::Dots => Indicators::Dots,
+        StatusIndicators::Symbols => Indicators::Symbols,
+    }
 }
 
 /// herdr's `status_priority`: what needs you most ranks highest.
