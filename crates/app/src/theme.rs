@@ -238,7 +238,7 @@ pub fn read_settings_file() -> Map<String, Value> {
 /// Script runs toggle settings to check the app follows; they must not
 /// change the user's saved choices.
 pub fn write_settings_file(write: impl FnOnce(&mut Map<String, Value>)) {
-    if std::env::var_os("RT_SCRIPT").is_some() {
+    if cfg!(debug_assertions) && std::env::var_os("RT_SCRIPT").is_some() {
         return;
     }
     let Some(path) = settings_path() else {

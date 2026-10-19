@@ -39,7 +39,7 @@ pub fn play(cue: Cue, options: PlayOptions) {
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .push(cue);
-    if cfg!(test) || std::env::var_os("RT_SCRIPT").is_some() {
+    if cfg!(test) || (cfg!(debug_assertions) && std::env::var_os("RT_SCRIPT").is_some()) {
         return;
     }
     if let Some(cues) = cues() {

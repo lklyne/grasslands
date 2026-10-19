@@ -92,7 +92,7 @@ pub fn play_for(status: AgentStatus, background: bool, custom: Option<&Path>) {
 /// as herdr falls back to its default sound. Silent in tests and script
 /// runs, which pretend it played.
 fn play_file(path: &Path) -> bool {
-    if cfg!(test) || std::env::var_os("RT_SCRIPT").is_some() {
+    if cfg!(test) || (cfg!(debug_assertions) && std::env::var_os("RT_SCRIPT").is_some()) {
         return path.is_file();
     }
     play_file_now(path)

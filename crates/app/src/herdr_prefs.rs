@@ -249,7 +249,9 @@ fn writable(path: &Path) -> Result<(), String> {
     if cfg!(test) {
         return Err("tests don't write herdr's config".into());
     }
-    if std::env::var("RT_SCRIPT").is_ok_and(|s| !s.is_empty() && s != "herdr-prefs") {
+    if cfg!(debug_assertions)
+        && std::env::var("RT_SCRIPT").is_ok_and(|s| !s.is_empty() && s != "herdr-prefs")
+    {
         return Err("script runs don't write herdr's config".into());
     }
     if cfg!(debug_assertions) && std::env::var(ALLOW_LIVE_ENV).is_err() {
