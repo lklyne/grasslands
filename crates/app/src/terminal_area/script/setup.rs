@@ -21,8 +21,9 @@
 use std::time::Duration;
 
 use super::{Cx, Run};
-use crate::herdr::{Check, ConnectionStatus};
+use crate::herdr::Check;
 use crate::setup::Stage;
+use crate::state::{MachineId, Status};
 
 impl Run {
     pub(super) async fn setup(&mut self, cx: &mut Cx) -> anyhow::Result<()> {
@@ -33,14 +34,15 @@ impl Run {
             .until(cx, Duration::from_secs(20), |area, _, cx| {
                 let app = area.state.read(cx);
                 match expect.as_str() {
-                    "unreachable" => {
-                        matches!(app.connection(), ConnectionStatus::Reconnecting { .. })
-                    }
-                    _ => !matches!(app.setup.stage, Stage::Checking),
+                    "unreachable" => app.machine(&MachineId::Local).is_some_and(|local| {
+                        matches!(local.status(), Status::Offline { retrying: true, .. })
+                    }),
+                    _ => !matches!(app.setup().read(cx).stage(), Stage::Checking),
                 }
             })
             .await;
-        let stage = cx.update(|_, cx| state.read(cx).setup.stage.clone())?;
+        let setup = cx.update(|_, cx| state.read(cx).setup().clone())?;
+        let stage = cx.update(|_, cx| setup.read(cx).stage().clone())?;
         eprintln!("script: stage {stage:?}");
         let found = match &stage {
             Stage::Ready => "ready",
@@ -63,7 +65,8 @@ impl Run {
         );
         let drawn = self
             .until(cx, Duration::from_secs(2), |area, _, cx| {
-                crate::setup::render(&area.state, None, cx).is_some() == (expect != "ready")
+                let app = area.state.read(cx);
+                crate::setup::render(app.setup(), app, None, cx).is_some() == (expect != "ready")
             })
             .await;
         self.check(
@@ -83,10 +86,10 @@ impl Run {
             return Ok(());
         };
         eprintln!("script: running {fix:?}");
-        cx.update(|_, cx| state.update(cx, |state, cx| state.run_fix(fix, cx)))?;
+        cx.update(|_, cx| setup.update(cx, |setup, cx| setup.run_fix(fix, cx)))?;
         let showing = self
-            .until(cx, Duration::from_secs(10), |area, _, _| {
-                area.setup_terminal.is_some()
+            .until(cx, Duration::from_secs(10), |area, _, cx| {
+                area.setup_terminal.read(cx).terminal().is_some()
             })
             .await;
         self.check(showing, "the fix runs in a terminal beside the screen");
@@ -95,7 +98,10 @@ impl Run {
         if std::env::var("RT_SETUP_FIX").as_deref() == Ok("fails") {
             let failed = self
                 .until(cx, Duration::from_secs(60), |area, _, cx| {
-                    matches!(area.state.read(cx).setup.stage, Stage::Needed(_))
+                    matches!(
+                        area.state.read(cx).setup().read(cx).stage(),
+                        Stage::Needed(_)
+                    )
                 })
                 .await;
             self.check(failed, "a failed fix offers the fix again");
@@ -104,18 +110,18 @@ impl Run {
         }
         let done = self
             .until(cx, Duration::from_secs(120), |area, _, cx| {
-                area.state.read(cx).setup.stage == Stage::Done
+                *area.state.read(cx).setup().read(cx).stage() == Stage::Done
             })
             .await;
         self.check(done, "a fix that worked offers Finish Setup");
         self.shoot(cx, "setup-done");
-        cx.update(|_, cx| state.update(cx, |state, cx| state.finish_setup(cx)))?;
+        cx.update(|_, cx| setup.update(cx, |setup, cx| setup.finish_setup(cx)))?;
         let connected = self
             .until(cx, Duration::from_secs(30), |area, _, cx| {
                 let app = area.state.read(cx);
-                app.setup.is_ready()
+                app.setup().read(cx).is_ready()
                     && app.snapshot().generation > 0
-                    && area.setup_terminal.is_none()
+                    && area.setup_terminal.read(cx).terminal().is_none()
             })
             .await;
         self.check(

@@ -4,9 +4,10 @@
 //! machines; see docs/decisions/0019-remote-machines.md), which one is
 //! selected, and each machine's active worktree. `snapshot`, `call` and the command
 //! methods act on the selected machine. Views keep an
-//! `Entity<AppState>`, read it in `render`, and `cx.observe` it to re-render.
-//! Discrete changes that views must react to (not just redraw) are emitted
-//! as `AppEvent`s; views `cx.subscribe` to those.
+//! `Entity<AppState>` and read it in `render`. Every change is announced as
+//! an `AppEvent`; a view that shows one machine subscribes to the events
+//! for what it reads, so another machine's traffic doesn't wake it. Only
+//! views that list every machine (the sidebar) `cx.observe` it.
 //!
 //! The herdr connection runs on `herdr-client`'s own thread (`SessionSync`);
 //! its updates are applied here on the foreground. Commands go through the
@@ -22,19 +23,20 @@ use gpui_kit::*;
 use crate::attention::{self, Attention, StatusChange};
 use crate::fs::{Fs, SummaryCache};
 use crate::herdr::{
-    self, Agent, Check, Client, ConnectionStatus, Fix, MIN_VERSION, MachineLink, MachineProfile,
-    MachineStatus, PaneId, SessionSync, Snapshot, TabId, TerminalId, Update, Version, WorkspaceId,
-    machines,
+    self, Agent, Client, ConnectionStatus, MachineLink, MachineProfile, MachineStatus, PaneId,
+    SessionSync, Snapshot, TabId, TerminalId, Update, WorkspaceId, machines,
 };
-use crate::setup::{FixRun, Setup, Stage};
+use crate::setup::{Setup, SetupEvent};
 use crate::sounds;
 use cues::{Cue, PlayOptions};
 
 mod machine_list;
 mod machine_run;
+mod status;
 
 pub use machine_list::{MachineId, On};
 pub use machine_run::{MachineRun, MachineTask, RunStage};
+pub use status::Status;
 
 /// herdr 0.9.5 sends no event when a pane's folder changes, so the focused
 /// pane's folder is re-read this often (one `pane.get`).
@@ -64,10 +66,12 @@ pub enum AppEvent {
         machine: MachineId,
         change: StatusChange,
     },
-    /// The machine list, a machine's label or status, or a machine's cache
-    /// changed. Views listing every machine (the sidebar) redraw from
-    /// `AppState::machines`.
+    /// The machine list, or a machine's label or status, changed (not its
+    /// cache: see `MachineSnapshot`).
     MachinesChanged,
+    /// A machine's herdr cache was replaced, whichever machine is selected.
+    /// For the selected one, `SnapshotReplaced` comes first.
+    MachineSnapshot(MachineId),
     /// A machine's link (re)connected. Terminals whose attach died with the
     /// old connection attach again.
     MachineConnected(MachineId),
@@ -89,6 +93,9 @@ pub enum AppEvent {
     /// The file tree removed a file or folder: to the Trash on Local, for
     /// good on a saved machine.
     FileRemoved { machine: MachineId, path: PathBuf },
+    /// A machine's sign-in, setup or add started, moved on a stage or
+    /// closed (`AppState::machine_run`).
+    MachineRunChanged,
 }
 
 /// Where the active workspace's files are: a folder on a machine.
@@ -102,7 +109,12 @@ pub struct ActiveRoot {
 pub struct Machine {
     id: MachineId,
     label: String,
-    status: MachineStatus,
+    /// What the app asks; derived from `link_status` and `connection` by
+    /// `refresh_status`, the only place that compares them.
+    status: Status,
+    /// The SSH link's last status; `None` for Local, which has no link.
+    link_status: Option<MachineStatus>,
+    /// The sync's connection to the machine's herdr server.
     connection: ConnectionStatus,
     /// The latest herdr cache: workspaces → tabs → split trees, panes, agents.
     snapshot: Arc<Snapshot>,
@@ -129,11 +141,12 @@ pub struct Machine {
 }
 
 impl Machine {
-    fn new(id: MachineId, label: String, status: MachineStatus) -> Self {
-        Self {
+    fn new(id: MachineId, label: String, link_status: Option<MachineStatus>) -> Self {
+        let mut machine = Self {
             id,
             label,
-            status,
+            status: Status::Connecting,
+            link_status,
             connection: ConnectionStatus::Connecting,
             snapshot: Arc::default(),
             focused_pane: None,
@@ -146,7 +159,18 @@ impl Machine {
             summaries: Arc::default(),
             sync: None,
             _statuses: None,
-        }
+        };
+        machine.refresh_status(false);
+        machine
+    }
+
+    /// Derives `status`: a saved machine's from its link, Local's from
+    /// `needs_setup` and its sync (see `Status`).
+    fn refresh_status(&mut self, needs_setup: bool) {
+        self.status = match &self.link_status {
+            Some(link) => Status::remote(link),
+            None => Status::local(&self.connection, needs_setup),
+        };
     }
 
     pub fn id(&self) -> &MachineId {
@@ -157,12 +181,9 @@ impl Machine {
         &self.label
     }
 
-    pub fn status(&self) -> &MachineStatus {
+    /// Whether it can be used, and why not: the one status views ask.
+    pub fn status(&self) -> &Status {
         &self.status
-    }
-
-    pub fn connection(&self) -> &ConnectionStatus {
-        &self.connection
     }
 
     pub fn snapshot(&self) -> &Arc<Snapshot> {
@@ -195,8 +216,9 @@ impl Machine {
 pub struct AppState {
     /// Local's herdr. `None` when the endpoint was refused.
     pub herdr_config: Option<herdr::Config>,
-    /// What Local's herdr needs before the app can use it, and the fix running.
-    pub setup: Setup,
+    /// What Local's herdr needs before the app can use it, and the fix
+    /// running; Local's sync starts when it says herdr is ready.
+    setup: Entity<Setup>,
     /// Local first, then herdr's saved machines in herdr's order.
     machines: Vec<Machine>,
     /// The machine whose workspace is active, as in herdr.
@@ -204,15 +226,12 @@ pub struct AppState {
     /// A sign-in, setup or add running in a terminal on Local, and its outcome.
     machine_run: Option<MachineRun>,
     runs: u64,
-    /// The old Local server version last sent to the setup check, so it's
-    /// checked once rather than on every snapshot.
-    old_server_checked: Option<String>,
     /// Machines this process's add runs saved (see `edit_allowed`).
     added_here: Vec<MachineId>,
     _run_check: Option<Task<()>>,
     _cwd_poll: Option<Task<()>>,
-    _check: Option<Task<()>>,
     _machines_poll: Option<Task<()>>,
+    _setup: Subscription,
     _quit: Option<Subscription>,
     /// In-memory disks standing in for remote machines (see `set_test_fs`).
     #[cfg(test)]
@@ -222,38 +241,31 @@ pub struct AppState {
 impl EventEmitter<AppEvent> for AppState {}
 
 impl AppState {
-    /// Checks herdr, then connects (starting its server if needed); until the
-    /// check passes, `setup` says what herdr needs. A refused endpoint (see
-    /// `herdr::Config::from_env`) leaves the app disconnected: no sync, no
-    /// client, every call fails. Under `cargo test` it stays offline: GPUI's
-    /// test scheduler rejects wakeups from the sync thread, and tests must
-    /// never reach a real herdr by accident.
-    ///
-    /// herdr's saved machines load in the background and are re-read every
-    /// [`MACHINES_POLL`].
+    /// Local's machine, offline until [`Self::start`]. A refused endpoint
+    /// (see `herdr::Config::from_env`) leaves the app disconnected for good:
+    /// no sync, no client, every call fails. Building one has no side
+    /// effects, so tests use it as is: GPUI's test scheduler rejects wakeups
+    /// from the sync thread, and tests must never reach a real herdr.
     pub fn new(herdr_config: herdr::Result<herdr::Config>, cx: &mut Context<Self>) -> Self {
         let herdr_config = match herdr_config {
             Ok(config) => config,
             Err(error) => {
                 tracing::error!("herdr: {error}");
-                return Self::disconnected(error.to_string());
+                return Self::disconnected(None, error.to_string(), cx);
             }
         };
-        // `from_env` configs auto-start a server; tests must use an inert one.
+        // `from_env` configs auto-start a server on the first call; tests
+        // must use an inert one.
         #[cfg(test)]
         assert!(
             !herdr_config.auto_start,
             "tests must not build AppState from the environment; use an auto_start: false config"
         );
-        let mut this = Self::disconnected(String::new());
+        let mut this = Self::disconnected(Some(herdr_config.clone()), String::new(), cx);
         this.local_mut().client = Some(Client::new(herdr_config.clone()));
         this.local_mut().connection = ConnectionStatus::Connecting;
         this.herdr_config = Some(herdr_config);
-        this.refresh_local_status();
-        if !cfg!(test) {
-            this.check_herdr(cx);
-            this._machines_poll = Some(Self::poll_machines(cx));
-        }
+        this.refresh_local_status(cx);
         // GPUI's quit ends the process without dropping entities, so the
         // links (and their ssh masters) are stopped here.
         this._quit = Some(cx.on_app_quit(|this, _| {
@@ -263,30 +275,55 @@ impl AppState {
         this
     }
 
-    fn disconnected(reason: String) -> Self {
-        let mut local = Machine::new(
-            MachineId::Local,
-            "Local".into(),
-            MachineStatus::Offline(reason.clone()),
-        );
+    /// Checks herdr, then connects (starting its server if needed); until
+    /// the check passes, [`Setup`] says what herdr needs. herdr's saved
+    /// machines load in the background and are re-read every
+    /// [`MACHINES_POLL`].
+    pub fn start(&mut self, cx: &mut Context<Self>) {
+        self.setup.update(cx, Setup::check_herdr);
+        if self.herdr_config.is_some() {
+            self._machines_poll = Some(Self::poll_machines(cx));
+        }
+    }
+
+    fn disconnected(config: Option<herdr::Config>, reason: String, cx: &mut Context<Self>) -> Self {
+        let mut local = Machine::new(MachineId::Local, "Local".into(), None);
         local.connection = ConnectionStatus::Disconnected { reason };
+        local.refresh_status(false);
         local.worktree = std::env::current_dir().ok();
+        let setup = cx.new(|_| Setup::new(config));
+        let setup_events = cx.subscribe(&setup, |this, _, event, cx| this.on_setup(*event, cx));
         Self {
             herdr_config: None,
-            setup: Setup::default(),
+            setup,
             machines: vec![local],
             selected: MachineId::Local,
             machine_run: None,
             runs: 0,
-            old_server_checked: None,
             added_here: Vec::new(),
             _run_check: None,
             _cwd_poll: None,
-            _check: None,
             _machines_poll: None,
+            _setup: setup_events,
             _quit: None,
             #[cfg(test)]
             test_fs: Default::default(),
+        }
+    }
+
+    /// Local's herdr setup (its check, screen and fixes).
+    pub fn setup(&self) -> &Entity<Setup> {
+        &self.setup
+    }
+
+    fn on_setup(&mut self, event: SetupEvent, cx: &mut Context<Self>) {
+        match event {
+            SetupEvent::HerdrReady => self.start_sync(cx),
+            SetupEvent::StageChanged => {
+                self.refresh_local_status(cx);
+                cx.emit(AppEvent::MachinesChanged);
+                cx.notify();
+            }
         }
     }
 
@@ -326,11 +363,6 @@ impl AppState {
         &self.selected_machine().snapshot
     }
 
-    /// The selected machine's connection to its herdr server.
-    pub fn connection(&self) -> &ConnectionStatus {
-        &self.selected_machine().connection
-    }
-
     /// The selected machine's focused pane.
     pub fn focused_pane(&self) -> Option<&str> {
         self.selected_machine().focused_pane()
@@ -341,7 +373,7 @@ impl AppState {
     pub fn live_machines(&self) -> impl Iterator<Item = &Machine> {
         self.machines
             .iter()
-            .filter(|m| m.id.is_local() || m.status == MachineStatus::Connected)
+            .filter(|m| m.id.is_local() || m.status.is_usable())
     }
 
     /// Blocked agents plus unseen finished ones (herdr's `done`) on the live
@@ -495,7 +527,7 @@ impl AppState {
         let id = MachineId::Remote(profile.id.clone());
         let label = profile.label.clone();
         let link = MachineLink::start(profile, dir, bin);
-        let mut machine = Machine::new(id.clone(), label, link.status());
+        let mut machine = Machine::new(id.clone(), label, Some(link.status()));
         let statuses = link.statuses();
         machine._statuses = Some(cx.spawn(async move |this, cx| {
             while let Ok(status) = statuses.recv().await {
@@ -508,7 +540,7 @@ impl AppState {
                 }
             }
         }));
-        let connected = machine.status == MachineStatus::Connected;
+        let connected = machine.status.is_usable();
         machine.link = Some(link);
         if connected {
             Self::start_remote_sync(&mut machine, cx);
@@ -520,23 +552,28 @@ impl AppState {
         let Some(machine) = self.machine_mut(id) else {
             return;
         };
-        if machine.status == status {
+        // Local has no link.
+        let Some(previous) = machine.link_status.clone() else {
+            return;
+        };
+        if previous == status {
             return;
         }
         tracing::info!("machine {}: {status:?}", machine.label);
-        if let Some(cue) = machine_list::status_cue(&machine.status, &status, machine.lost) {
+        if let Some(cue) = machine_list::status_cue(&previous, &status, machine.lost) {
             sounds::play(cue, PlayOptions::default());
         }
         let connected = status == MachineStatus::Connected;
         if connected {
             machine.lost = false;
-        } else if machine.status == MachineStatus::Connected {
+        } else if previous == MachineStatus::Connected {
             machine.lost = true;
         }
-        machine.status = status;
+        machine.link_status = Some(status);
+        machine.refresh_status(false);
         // The forwarded socket is fixed for the link's life, so one sync
         // started on the first connection follows every reconnect.
-        if machine.status == MachineStatus::Connected && machine.sync.is_none() {
+        if connected && machine.sync.is_none() {
             Self::start_remote_sync(machine, cx);
         }
         if connected {
@@ -676,11 +713,11 @@ impl AppState {
     /// when it isn't ready.
     pub fn reconnect_machine(&mut self, id: &MachineId, cx: &mut Context<Self>) {
         match id {
-            MachineId::Local => {
-                if !self.setup.is_ready() {
-                    self.check_herdr(cx);
+            MachineId::Local => self.setup.update(cx, |setup, cx| {
+                if !setup.is_ready() {
+                    setup.check_herdr(cx);
                 }
-            }
+            }),
             MachineId::Remote(_) => {
                 if let Some(link) = self.machine(id).and_then(|m| m.link.as_ref()) {
                     link.reconnect();
@@ -738,6 +775,7 @@ impl AppState {
         sounds::play(Cue::Loading, PlayOptions::default());
         self.machine_run = Some(run);
         self._run_check = None;
+        cx.emit(AppEvent::MachineRunChanged);
         cx.notify();
     }
 
@@ -770,6 +808,7 @@ impl AppState {
                 }
             }
         }));
+        cx.emit(AppEvent::MachineRunChanged);
         cx.notify();
     }
 
@@ -794,12 +833,14 @@ impl AppState {
         if let Some(id) = &added {
             self.added_here.push(id.clone());
             run.machine = added;
+            // The card names the machine now.
+            cx.emit(AppEvent::MachineRunChanged);
         }
         let connected = run
             .machine
             .as_ref()
             .and_then(|id| self.machines.iter().find(|m| &m.id == id))
-            .is_some_and(|m| m.status == MachineStatus::Connected);
+            .is_some_and(|m| m.status.is_usable());
         let stage = if connected {
             sounds::play(Cue::Success, sounds::strong());
             RunStage::Done
@@ -812,6 +853,7 @@ impl AppState {
         if let Some(run) = self.machine_run.as_mut() {
             run.stage = stage;
         }
+        cx.emit(AppEvent::MachineRunChanged);
         cx.notify();
         true
     }
@@ -829,6 +871,7 @@ impl AppState {
         {
             self.select_machine(machine, cx);
         }
+        cx.emit(AppEvent::MachineRunChanged);
         cx.notify();
     }
 
@@ -850,19 +893,15 @@ impl AppState {
         let mut machine = Machine::new(
             MachineId::Remote(profile_id.into()),
             label.into(),
-            MachineStatus::Connected,
+            Some(MachineStatus::Connected),
         );
         machine.snapshot = snapshot;
         self.machines.push(machine);
     }
 
-    fn refresh_local_status(&mut self) {
-        let setup_needed = match &self.setup.stage {
-            Stage::Needed(_) | Stage::Fixing(_) => Some("herdr needs setup".to_owned()),
-            Stage::Checking | Stage::Done | Stage::Ready => None,
-        };
-        let local = self.local_mut();
-        local.status = machine_list::local_status(&local.connection, setup_needed);
+    fn refresh_local_status(&mut self, cx: &App) {
+        let needs_setup = self.setup.read(cx).needs_setup();
+        self.local_mut().refresh_status(needs_setup);
     }
 
     // Local
@@ -886,115 +925,8 @@ impl AppState {
                 self.local_mut().connection = ConnectionStatus::Reconnecting {
                     reason: error.to_string(),
                 };
-                self.refresh_local_status();
+                self.refresh_local_status(cx);
             }
-        }
-    }
-
-    /// Checks the herdr binary and server (`herdr status`); connects when
-    /// they're fine, else shows the setup screen.
-    pub fn check_herdr(&mut self, cx: &mut Context<Self>) {
-        self.check(false, cx);
-    }
-
-    /// `after_fix` when the setup terminal's command just ended: the check
-    /// says whether the fix worked.
-    fn check(&mut self, after_fix: bool, cx: &mut Context<Self>) {
-        let Some(config) = self.herdr_config.clone() else {
-            return;
-        };
-        // While a fix runs, only its end says anything new.
-        if matches!(self.setup.stage, Stage::Fixing(_)) && !after_fix {
-            return;
-        }
-        let was = self.setup.stage.clone();
-        // A screen already showing stays put while it checks again.
-        if !matches!(was, Stage::Needed(_)) {
-            self.setup.stage = Stage::Checking;
-            cx.notify();
-        }
-        let shown = matches!(was, Stage::Needed(_)) || self.setup.run.is_some();
-        // The fix's command searches PATH (for brew), so it's found here
-        // rather than on every render of the setup screen.
-        let check = cx.background_executor().spawn(async move {
-            let check = config.check();
-            let command = check.fix().and_then(|fix| config.fix_command(fix));
-            (check, command)
-        });
-        self._check = Some(cx.spawn(async move |this, cx| {
-            let (check, command) = check.await;
-            this.update(cx, |this, cx| {
-                tracing::info!("herdr check: {check:?}");
-                if check == Check::Ready {
-                    if after_fix {
-                        sounds::play(Cue::Success, sounds::strong());
-                    }
-                    this.setup.stage = if shown { Stage::Done } else { Stage::Ready };
-                    this.start_sync(cx);
-                } else {
-                    let stage = Stage::Needed(check);
-                    if after_fix {
-                        sounds::play(Cue::Error, PlayOptions::default());
-                    } else if was != stage {
-                        sounds::play(Cue::Warning, PlayOptions::default());
-                    }
-                    this.setup.stage = stage;
-                }
-                this.setup.fix_command = command;
-                this.refresh_local_status();
-                cx.emit(AppEvent::MachinesChanged);
-                cx.notify();
-            })
-            .ok();
-        }));
-    }
-
-    /// Starts `fix` in the setup terminal; the terminal area runs it and
-    /// calls [`Self::fix_exited`] when it ends.
-    pub fn run_fix(&mut self, fix: Fix, cx: &mut Context<Self>) {
-        if !matches!(self.setup.stage, Stage::Needed(_)) {
-            return;
-        }
-        let Some(command) = self.setup.fix_command.clone() else {
-            return;
-        };
-        // A check still running would overwrite `Fixing` when it ends.
-        self._check = None;
-        self.setup.spawn_error = None;
-        tracing::info!("herdr setup: running {}", command.display());
-        sounds::play(Cue::Loading, PlayOptions::default());
-        let id = self.setup.run.as_ref().map_or(0, |run| run.id + 1);
-        self.setup.stage = Stage::Fixing(fix);
-        self.setup.run = Some(FixRun {
-            id,
-            command: command.terminal_command(),
-        });
-        self.refresh_local_status();
-        cx.emit(AppEvent::MachinesChanged);
-        cx.notify();
-    }
-
-    /// The setup terminal couldn't start; the screen says why, then checks
-    /// again.
-    pub fn fix_failed_to_start(&mut self, error: String, cx: &mut Context<Self>) {
-        self.setup.spawn_error = Some(error);
-        self.fix_exited(cx);
-    }
-
-    /// The setup terminal's command ended (or couldn't start); checks again.
-    pub fn fix_exited(&mut self, cx: &mut Context<Self>) {
-        if matches!(self.setup.stage, Stage::Fixing(_)) {
-            tracing::info!("herdr setup: the fix ended");
-            self.check(true, cx);
-        }
-    }
-
-    /// Closes the setup screen once herdr is ready.
-    pub fn finish_setup(&mut self, cx: &mut Context<Self>) {
-        if self.setup.stage == Stage::Done {
-            sounds::play(Cue::Tap, PlayOptions::default());
-            self.setup = Setup::default();
-            cx.notify();
         }
     }
 
@@ -1076,9 +1008,9 @@ impl AppState {
                 target.connection = status;
                 if machine.is_local() {
                     if !matches!(target.connection, ConnectionStatus::Connected) {
-                        self.old_server_checked = None;
+                        self.setup.update(cx, |setup, _| setup.connection_lost());
                     }
-                    self.refresh_local_status();
+                    self.refresh_local_status(cx);
                 }
                 cx.emit(AppEvent::MachinesChanged);
                 cx.notify();
@@ -1116,7 +1048,7 @@ impl AppState {
             return online.then(|| Fs::Fake(fake.clone()));
         }
         let target = self.machine(machine)?;
-        if target.status != MachineStatus::Connected {
+        if !target.status.is_usable() {
             return None;
         }
         Some(Fs::Remote {
@@ -1179,18 +1111,9 @@ impl AppState {
     }
 
     fn apply_snapshot(&mut self, id: &MachineId, snapshot: Arc<Snapshot>, cx: &mut Context<Self>) {
-        // A server from an older herdr (one started before an update, say):
-        // the setup check names it and offers the restart.
         if id.is_local() {
-            let old_server = Version::parse(&snapshot.version).is_some_and(|v| v < MIN_VERSION);
-            let unchecked = self.old_server_checked.as_ref() != Some(&snapshot.version);
-            if old_server && unchecked && self.setup.is_ready() {
-                // Once per version and connection: a check that comes back
-                // `Ready` (a server it can't identify) mustn't run again on
-                // every event.
-                self.old_server_checked = Some(snapshot.version.clone());
-                self.check_herdr(cx);
-            }
+            self.setup
+                .update(cx, |setup, cx| setup.server_seen(&snapshot.version, cx));
         }
         let selected = id == &self.selected;
         let Some(machine) = self.machine_mut(id) else {
@@ -1204,7 +1127,7 @@ impl AppState {
         if selected {
             cx.emit(AppEvent::SnapshotReplaced);
         }
-        cx.emit(AppEvent::MachinesChanged);
+        cx.emit(AppEvent::MachineSnapshot(id.clone()));
         for change in changes {
             cx.emit(AppEvent::AgentStatusChanged {
                 machine: id.clone(),
@@ -1768,9 +1691,9 @@ mod tests {
     use std::rc::Rc;
     use std::sync::Arc;
 
+    use super::Status;
     use super::{ActiveRoot, AppEvent, AppState, MachineId, offline_config};
-    use crate::herdr::{self, ConnectionStatus, Snapshot};
-    use crate::setup::Stage;
+    use crate::herdr::{self, Snapshot};
 
     fn agent(pane: &str) -> herdr::Agent {
         herdr::Agent {
@@ -1895,6 +1818,58 @@ mod tests {
         assert_eq!(roots.borrow().as_slice(), &[Some(remote())]);
     }
 
+    /// The events `AppState` emits while `f` runs, by kind.
+    fn emitted(
+        state: &gpui_kit::Entity<AppState>,
+        cx: &mut TestAppContext,
+        f: impl FnOnce(&mut AppState, &mut gpui_kit::Context<AppState>),
+    ) -> Vec<String> {
+        let events = Rc::new(RefCell::new(Vec::new()));
+        let _subscription = cx.update(|cx| {
+            let events = events.clone();
+            cx.subscribe(state, move |_, event, _| {
+                events.borrow_mut().push(format!("{event:?}"));
+            })
+        });
+        state.update(cx, f);
+        events.take()
+    }
+
+    fn remote_snapshot() -> Arc<Snapshot> {
+        Arc::new(Snapshot {
+            generation: 8,
+            ..Snapshot::default()
+        })
+    }
+
+    #[gpui::test]
+    fn a_background_machines_snapshot_isnt_the_selected_ones(cx: &mut TestAppContext) {
+        let state = with_remote(cx);
+        let events = emitted(&state, cx, |state, cx| {
+            state.apply_snapshot(&remote(), remote_snapshot(), cx);
+        });
+        assert_eq!(
+            events,
+            [format!("{:?}", AppEvent::MachineSnapshot(remote()))]
+        );
+    }
+
+    #[gpui::test]
+    fn the_selected_machines_snapshot_is_announced_first(cx: &mut TestAppContext) {
+        let state = with_remote(cx);
+        state.update(cx, |state, cx| state.select_machine(&remote(), cx));
+        let events = emitted(&state, cx, |state, cx| {
+            state.apply_snapshot(&remote(), remote_snapshot(), cx);
+        });
+        assert_eq!(
+            events,
+            [
+                format!("{:?}", AppEvent::SnapshotReplaced),
+                format!("{:?}", AppEvent::MachineSnapshot(remote())),
+            ]
+        );
+    }
+
     #[gpui::test]
     fn local_files_are_always_available(cx: &mut TestAppContext) {
         let state = with_remote(cx);
@@ -1950,8 +1925,14 @@ mod tests {
     #[gpui::test]
     fn refused_endpoint_leaves_app_disconnected(cx: &mut TestAppContext) {
         let state = cx.new(|cx| AppState::new(Err(refused()), cx));
-        let connection = cx.read(|cx| state.read(cx).connection().clone());
-        assert!(matches!(connection, ConnectionStatus::Disconnected { .. }));
+        let status = cx.read(|cx| state.read(cx).selected_machine().status().clone());
+        assert!(matches!(
+            status,
+            Status::Offline {
+                retrying: false,
+                ..
+            }
+        ));
     }
 
     #[gpui::test]
@@ -2015,7 +1996,8 @@ mod tests {
             });
             state.add_test_machine("b87d", "dockerbox", snapshot);
             if let Some(machine) = state.machine_mut(&remote()) {
-                machine.status = herdr::MachineStatus::Offline("gone".into());
+                machine.link_status = Some(herdr::MachineStatus::Offline("gone".into()));
+                machine.refresh_status(false);
             }
             state.attention_count()
         });
@@ -2046,67 +2028,14 @@ mod tests {
         assert!(!started);
     }
 
-    fn needing_install(cx: &mut TestAppContext) -> gpui_kit::Entity<AppState> {
+    #[gpui::test]
+    fn local_needs_setup_while_its_check_fails(cx: &mut TestAppContext) {
         let state = cx.new(|cx| AppState::new(Ok(offline_config()), cx));
-        state.update(cx, |state, _| {
-            state.setup.stage = Stage::Needed(herdr::Check::Missing);
-            state.setup.fix_command = Some(herdr::FixCommand::new(vec!["true".into()]));
-        });
-        state
-    }
-
-    #[gpui::test]
-    fn a_check_started_before_a_fix_doesnt_overwrite_it(cx: &mut TestAppContext) {
-        let state = needing_install(cx);
-        state.update(cx, |state, cx| {
-            state.check_herdr(cx);
-            state.run_fix(herdr::Fix::Install, cx);
-        });
+        let setup = cx.read(|cx| state.read(cx).setup().clone());
+        setup.update(cx, |setup, cx| setup.set_needed(herdr::Check::Missing, cx));
         cx.run_until_parked();
-        let stage = cx.read(|cx| state.read(cx).setup.stage.clone());
-        assert_eq!(stage, Stage::Fixing(herdr::Fix::Install));
-    }
-
-    #[gpui::test]
-    fn checking_while_a_fix_runs_does_nothing(cx: &mut TestAppContext) {
-        let state = needing_install(cx);
-        state.update(cx, |state, cx| {
-            state.run_fix(herdr::Fix::Install, cx);
-            state.check_herdr(cx);
-        });
-        cx.run_until_parked();
-        let stage = cx.read(|cx| state.read(cx).setup.stage.clone());
-        assert_eq!(stage, Stage::Fixing(herdr::Fix::Install));
-    }
-
-    #[gpui::test]
-    fn a_second_fix_click_doesnt_start_another_run(cx: &mut TestAppContext) {
-        let state = needing_install(cx);
-        state.update(cx, |state, cx| {
-            state.run_fix(herdr::Fix::Install, cx);
-            state.run_fix(herdr::Fix::Install, cx);
-        });
-        let run = cx.read(|cx| state.read(cx).setup.run.as_ref().map(|r| r.id));
-        assert_eq!(run, Some(0));
-    }
-
-    #[gpui::test]
-    fn an_old_local_server_is_checked_once_per_version(cx: &mut TestAppContext) {
-        let state = cx.new(|cx| AppState::new(Ok(offline_config()), cx));
-        let old = || {
-            Arc::new(Snapshot {
-                version: "0.9.0".into(),
-                ..Snapshot::default()
-            })
-        };
-        state.update(cx, |state, cx| state.replace_snapshot(old(), cx));
-        cx.run_until_parked();
-        state.update(cx, |state, cx| {
-            state.setup.stage = Stage::Ready;
-            state.replace_snapshot(old(), cx);
-        });
-        let stage = cx.read(|cx| state.read(cx).setup.stage.clone());
-        assert_eq!(stage, Stage::Ready);
+        let status = cx.read(|cx| state.read(cx).selected_machine().status().clone());
+        assert!(matches!(status, Status::NeedsSetup(_)));
     }
 
     #[gpui::test]

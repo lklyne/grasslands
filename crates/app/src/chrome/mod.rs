@@ -197,16 +197,17 @@ pub struct Chrome {
 
 impl Chrome {
     pub fn new(state: Entity<AppState>, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let events = cx.subscribe_in(&state, window, |this, _, event, window, cx| {
-            if let AppEvent::AgentStatusChanged { machine, change } = event {
-                this.agent_toast(machine, change, window, cx);
-            }
-        });
-        let badge = cx.observe(&state, |this, state, cx| {
-            let count = state.read(cx).attention_count();
-            if count != this.badge {
-                this.badge = count;
-                dock::set_badge(count);
+        let events = cx.subscribe_in(&state, window, |this, state, event, window, cx| {
+            match event {
+                AppEvent::AgentStatusChanged { machine, change } => {
+                    this.agent_toast(machine, change, window, cx);
+                }
+                // The badge counts the live machines' agents: their caches,
+                // and which machines are live.
+                AppEvent::MachineSnapshot(_) | AppEvent::MachinesChanged => {
+                    this.update_badge(state.read(cx).attention_count());
+                }
+                _ => {}
             }
         });
         let main_window = window.window_handle();
@@ -221,12 +222,19 @@ impl Chrome {
             rename_input: None,
             badge: 0,
             pending_alerts: HashMap::new(),
-            _subscriptions: vec![events, badge],
+            _subscriptions: vec![events],
         };
         chrome.refresh_plugin_actions(cx);
         #[cfg(debug_assertions)]
         script::start(window, cx);
         chrome
+    }
+
+    fn update_badge(&mut self, count: usize) {
+        if count != self.badge {
+            self.badge = count;
+            dock::set_badge(count);
+        }
     }
 
     fn refresh_plugin_actions(&mut self, cx: &mut Context<Self>) {

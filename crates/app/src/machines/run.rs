@@ -2,6 +2,8 @@
 //! setup screen's pattern (`crate::setup`), with herdr's own command doing
 //! the work on the right and the app checking the machine when it exits.
 
+use std::rc::Rc;
+
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::empty::{Empty, EmptyContent};
 use gpui_kit::component::{ActiveTheme as _, Icon, IconName, h_flex};
@@ -9,7 +11,46 @@ use gpui_kit::*;
 
 use crate::chrome::Callback;
 use crate::setup;
-use crate::state::{MachineTask, RunStage};
+use crate::state::{AppEvent, AppState, MachineTask, RunStage};
+use crate::terminal_area::command_terminal::{CommandRun, CommandTerminal, OnEnded};
+
+/// The terminal a machine's sign-in, setup or add runs in
+/// (`AppState::machine_run`): each run gets a fresh one, and its end (or
+/// failure to start) has the app check the machine.
+pub fn run_terminal(
+    state: &Entity<AppState>,
+    window: &mut Window,
+    cx: &mut App,
+) -> Entity<CommandTerminal> {
+    let wanted = |state: &AppState| {
+        state.machine_run().map(|run| CommandRun {
+            id: run.id,
+            command: run.command.clone(),
+        })
+    };
+    let on_ended: OnEnded = {
+        let state = state.downgrade();
+        Rc::new(move |_, _, cx| {
+            state
+                .update(cx, |state, cx| state.machine_run_exited(cx))
+                .ok();
+        })
+    };
+    cx.new(|cx| {
+        let mut terminal = CommandTerminal::new(on_ended, window, cx);
+        terminal.follow(cx.subscribe_in(
+            state,
+            window,
+            move |terminal, state, event, window, cx| {
+                if matches!(event, AppEvent::MachineRunChanged) {
+                    terminal.sync(wanted(state.read(cx)), window, cx);
+                }
+            },
+        ));
+        terminal.sync(wanted(state.read(cx)), window, cx);
+        terminal
+    })
+}
 
 /// What the card shows about a run.
 pub struct RunCard<'a> {

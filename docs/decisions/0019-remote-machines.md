@@ -185,6 +185,18 @@ add an SSH channel per pane to each switch.
 
 - `AppState` holds one connection per machine: Local plus each enabled saved
   machine, each with its own `SessionSync`, snapshot and status.
+- **One status per machine.** herdr-client keeps two state machines: the
+  link's `MachineStatus` (saved machines) and the sync's `ConnectionStatus`
+  (every machine); each drives its own retries, so they stay apart there.
+  The app asks only `state::Status`, derived in one place
+  (`Machine::refresh_status`): a saved machine's from its link, which
+  already probes herdr there; Local's, which has no link, from the setup
+  check and then its sync. It answers "usable?" (`is_usable`), "why not?"
+  in herdr's words (`reason`), and whether it's retrying (`Offline {
+  retrying }`). The files panel, Changes, the terminal area, `fs_for`, the
+  badge's live machines and the sidebar (`MachineState::of`) all read it.
+  Sound cues still follow the raw transitions: the link's for saved
+  machines, the sync's for Local.
 - One machine is **selected**, as in herdr: the one whose workspace is
   active. `snapshot`, `call` and the terminal area all refer to the selected
   machine, so most existing code is unchanged. Activating a workspace on

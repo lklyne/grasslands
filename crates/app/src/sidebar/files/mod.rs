@@ -46,7 +46,6 @@ use self::watch::RootWatcher;
 use crate::actions::{OpenChanges, OpenFile, OpenFileAt};
 use crate::chrome::{self, Confirmation, MenuCommand, MenuEntry};
 use crate::fs::{Caps, Fs, Removal, git, search};
-use crate::herdr::MachineStatus;
 use crate::state::{ActiveRoot, AppEvent, AppState, MachineId};
 
 /// Watcher events arriving within this window are folded into one re-list.
@@ -1480,7 +1479,7 @@ fn error(message: impl Into<SharedString>, window: &mut Window, cx: &mut App) {
 impl Render for FileTree {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let machine = self.state.read(cx).selected_machine();
-        if !machine.id().is_local() && *machine.status() != MachineStatus::Connected {
+        if !machine.id().is_local() && !machine.status().is_usable() {
             let label = machine.label().to_owned();
             return div()
                 .size_full()
