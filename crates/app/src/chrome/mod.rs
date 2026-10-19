@@ -205,7 +205,7 @@ impl Chrome {
                 // The badge counts the live machines' agents: their caches,
                 // and which machines are live.
                 AppEvent::MachineSnapshot(_) | AppEvent::MachinesChanged => {
-                    this.update_badge(state.read(cx).attention_count());
+                    this.update_badge(state.read(cx).attention_count(cx));
                 }
                 _ => {}
             }
@@ -237,7 +237,9 @@ impl Chrome {
 
     fn refresh_plugin_actions(&mut self, cx: &mut Context<Self>) {
         let state = self.state.read(cx);
-        let task = state.plugin_actions(state.selected(), cx);
+        let task = state.on(state.selected(), cx, |session, cx| {
+            session.plugin_actions(cx)
+        });
         cx.spawn(async move |this, cx| match task.await {
             Ok(actions) => this
                 .update(cx, |this, cx| {
@@ -321,7 +323,7 @@ impl Chrome {
                 let still = this
                     .state
                     .read(cx)
-                    .machine(&machine)
+                    .machine(&machine, cx)
                     .and_then(|m| find_agent(m.snapshot(), &change.pane_id))
                     .is_some_and(|agent| agent.agent_status == change.status);
                 if still {
@@ -350,7 +352,7 @@ impl Chrome {
             _ => return,
         };
         let state = self.state.read(cx);
-        let Some(snapshot) = state.machine(machine).map(|m| m.snapshot()) else {
+        let Some(snapshot) = state.machine(machine, cx).map(|m| m.snapshot()) else {
             return;
         };
         let agent = find_agent(snapshot, &change.pane_id);
@@ -560,7 +562,7 @@ impl Chrome {
         static EMPTY: std::sync::LazyLock<Snapshot> = std::sync::LazyLock::new(Snapshot::default);
         self.state
             .read(cx)
-            .machine(machine)
+            .machine(machine, cx)
             .map_or(&*EMPTY, |m| m.snapshot())
     }
 
@@ -762,7 +764,7 @@ impl Chrome {
         if machine != state.selected() {
             return Vec::new();
         }
-        let snapshot = state.snapshot();
+        let snapshot = state.snapshot(cx);
         let (kind, context) = invocation_context(target, snapshot);
         self.plugin_actions
             .iter()
@@ -840,7 +842,9 @@ impl Chrome {
         let create = move |label: Option<String>, cx: &mut App| {
             state
                 .read(cx)
-                .new_tab_named(&machine, workspace_id.as_ref(), label, cx)
+                .on(&machine, cx, |session, cx| {
+                    session.new_tab_named(workspace_id.as_ref(), label, cx)
+                })
                 .detach_and_log_err(cx);
         };
         if !crate::herdr_prefs::get(cx).prompt_new_tab_name {

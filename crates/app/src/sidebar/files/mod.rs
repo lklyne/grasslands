@@ -212,7 +212,7 @@ impl FileTree {
                 }
             }
         });
-        let root = state.read(cx).active_root();
+        let root = state.read(cx).active_root(cx);
         let mut this = Self {
             state,
             tree,
@@ -323,7 +323,7 @@ impl FileTree {
 
     /// The root's files; `None` while its machine is offline.
     fn fs(&self, cx: &App) -> Option<Fs> {
-        self.state.read(cx).fs_for(&self.machine)
+        self.state.read(cx).fs_for(&self.machine, cx)
     }
 
     /// The root as it is now, for an action being chosen; the error says why
@@ -343,7 +343,7 @@ impl FileTree {
     fn machine_label(&self, machine: &MachineId, cx: &App) -> String {
         self.state
             .read(cx)
-            .machine(machine)
+            .machine(machine, cx)
             .map_or_else(|| machine.to_string(), |m| m.label().to_owned())
     }
 
@@ -1478,7 +1478,7 @@ fn error(message: impl Into<SharedString>, window: &mut Window, cx: &mut App) {
 
 impl Render for FileTree {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let machine = self.state.read(cx).selected_machine();
+        let machine = self.state.read(cx).selected_machine(cx);
         if !machine.id().is_local() && !machine.status().is_usable() {
             let label = machine.label().to_owned();
             return div()

@@ -63,7 +63,7 @@ impl TerminalArea {
             MachineId::Remote(_) => self
                 .state
                 .read(cx)
-                .machine(machine)?
+                .machine(machine, cx)?
                 .attach_command(terminal_id, takeover)
                 .map(Ok),
         }
@@ -117,7 +117,7 @@ impl TerminalArea {
         let Some(snapshot) = self
             .state
             .read(cx)
-            .machine(machine)
+            .machine(machine, cx)
             .map(|m| m.snapshot().clone())
         else {
             return;
@@ -161,7 +161,7 @@ impl TerminalArea {
             let snapshot = self
                 .state
                 .read(cx)
-                .machine(&machine)
+                .machine(&machine, cx)
                 .map(|m| m.snapshot().clone());
             match snapshot {
                 None => self.terminals.forget_machine(&machine, cx),
@@ -210,9 +210,9 @@ impl TerminalArea {
         cx: &mut Context<Self>,
     ) {
         for pane_id in self.right_clicks.sync(machine, snapshot.panes.keys()) {
-            self.state
+            self.session
                 .read(cx)
-                .set_right_click(machine, &pane_id, RightClickTarget::Pane, cx)
+                .set_right_click(&pane_id, RightClickTarget::Pane, cx)
                 .detach_and_log_err(cx);
         }
     }

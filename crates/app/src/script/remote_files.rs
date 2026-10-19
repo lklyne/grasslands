@@ -106,7 +106,7 @@ impl Run {
         let api = self.read(cx, |area, cx| {
             area.state()
                 .read(cx)
-                .machine(id)?
+                .machine(id, cx)?
                 .snapshot()
                 .workspaces
                 .iter()
@@ -129,7 +129,7 @@ impl Run {
         let at_api = |cx: &App, state: &Entity<AppState>| {
             state
                 .read(cx)
-                .active_root()
+                .active_root(cx)
                 .is_some_and(|root| &root.machine == id && root.path == Path::new(API))
         };
         let mut rooted = self
@@ -142,7 +142,7 @@ impl Run {
                 .until(cx, Duration::from_secs(20), |_, _, cx| at_api(cx, &state))
                 .await;
         }
-        let root = self.read(cx, |area, cx| area.state().read(cx).active_root())?;
+        let root = self.read(cx, |area, cx| area.state().read(cx).active_root(cx))?;
         self.check(
             rooted,
             &format!("the root is {API} on dockerbox ({root:?})"),
@@ -497,7 +497,7 @@ impl Run {
 
     /// Types `cd <dir>` into the selected machine's focused pane.
     async fn cd_focused_pane(&self, cx: &mut Cx, state: &Entity<AppState>, dir: &str) {
-        let Ok(Some(pane)) = cx.update(|_, cx| state.read(cx).focused_pane().map(PaneId::from))
+        let Ok(Some(pane)) = cx.update(|_, cx| state.read(cx).focused_pane(cx).map(PaneId::from))
         else {
             return;
         };

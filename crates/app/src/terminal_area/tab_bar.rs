@@ -160,7 +160,7 @@ impl TerminalArea {
                 cx.listener(move |this, event: &MouseDownEvent, window, cx| {
                     this.context_menu(
                         MenuTarget::Tab {
-                            machine: this.state.read(cx).selected().clone(),
+                            machine: this.machine(cx),
                             tab_id: menu_id.clone(),
                         },
                         event.position,
@@ -203,10 +203,9 @@ impl TerminalArea {
                 let Some(from) = order.iter().position(|id| *id == dragged.tab_id) else {
                     return;
                 };
-                let machine = this.machine(cx);
-                this.state
+                this.session
                     .read(cx)
-                    .move_tab(&machine, &dragged.tab_id, tab_insert_index(from, index), cx)
+                    .move_tab(&dragged.tab_id, tab_insert_index(from, index), cx)
                     .detach_and_log_err(cx);
             }))
             .drag_over::<DraggedPane>(move |style, _, _, _| style.bg(drop))
@@ -244,10 +243,9 @@ impl TerminalArea {
             .on_click({
                 let workspace_id = workspace_id.clone();
                 cx.listener(move |this, _, _, cx| {
-                    let machine = this.machine(cx);
-                    this.state
+                    this.session
                         .read(cx)
-                        .new_tab(&machine, workspace_id.as_ref(), cx)
+                        .new_tab(workspace_id.as_ref(), cx)
                         .detach_and_log_err(cx);
                 })
             })
@@ -267,10 +265,9 @@ impl TerminalArea {
         destination: PaneMoveDestination,
         cx: &mut Context<Self>,
     ) {
-        let machine = self.machine(cx);
-        self.state
+        self.session
             .read(cx)
-            .move_pane(&machine, pane_id, destination, cx)
+            .move_pane(pane_id, destination, cx)
             .detach_and_log_err(cx);
     }
 
@@ -335,12 +332,11 @@ impl TerminalArea {
             .values()
             .filter(|pane| pane.tab_id == tab_id && status::is_busy(pane.agent_status))
             .count();
-        let state = self.state.clone();
-        let machine = self.machine(cx);
+        let session = self.session.clone();
         if busy == 0 {
-            state
+            session
                 .read(cx)
-                .close_tab(&machine, &tab_id, cx)
+                .close_tab(&tab_id, cx)
                 .detach_and_log_err(cx);
             return;
         }
@@ -355,9 +351,9 @@ impl TerminalArea {
                 confirm_label: "Close Tab".into(),
             };
             let on_confirm = move |_: &mut Window, cx: &mut App| {
-                state
+                session
                     .read(cx)
-                    .close_tab(&machine, &tab_id, cx)
+                    .close_tab(&tab_id, cx)
                     .detach_and_log_err(cx);
             };
             chrome.update(cx, |chrome, cx| {
@@ -374,7 +370,7 @@ impl TerminalArea {
         );
         cx.spawn(async move |_, cx| {
             if answer.await == Ok(0) {
-                let task = cx.update(|cx| state.read(cx).close_tab(&machine, &tab_id, cx));
+                let task = cx.update(|cx| session.read(cx).close_tab(&tab_id, cx));
                 if let Err(error) = task.await {
                     tracing::error!("close tab {tab_id}: {error}");
                 }

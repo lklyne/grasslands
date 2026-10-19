@@ -179,7 +179,7 @@ pub(crate) fn log(tag: &str, label: &str, window: &mut Window, cx: &mut App) {
         (window.has_active_dialog(cx), window.notifications(cx).len())
     };
     let capturing = overlay::get(window, cx).is_some_and(|o| o.read(cx).is_capturing());
-    let snapshot = state.read(cx).snapshot().clone();
+    let snapshot = state.read(cx).snapshot(cx).clone();
     let panes: Vec<&str> = snapshot.panes.keys().map(|id| id.as_str()).collect();
     let agents: Vec<String> = snapshot
         .agents

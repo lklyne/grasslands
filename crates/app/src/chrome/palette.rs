@@ -38,7 +38,7 @@ pub(super) fn open(
         let state = state.read(cx);
         let machine = state.selected().clone();
         let place = |info: &WorkspaceInfo| worktrees::placement(&machine, info, cx);
-        let groups: Vec<Group> = groups(state, &plugin_actions, place)
+        let groups: Vec<Group> = groups(state, &plugin_actions, place, cx)
             .into_iter()
             .filter(|g| !g.entries.is_empty())
             .collect();
@@ -83,8 +83,9 @@ fn groups(
     state: &AppState,
     plugin_actions: &[PluginActionInfo],
     place: impl Fn(&WorkspaceInfo) -> Option<Placement>,
+    cx: &App,
 ) -> Vec<Group> {
-    let snapshot = state.snapshot();
+    let snapshot = state.snapshot(cx);
     let machine = || state.selected().clone();
     let focused = snapshot.focused_pane();
 

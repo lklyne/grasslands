@@ -47,7 +47,7 @@ use crate::herdr::{Snapshot, WorkspaceId, WorkspaceInfo, WorktreeParams};
 use crate::machines::{self, MachineActions, MachineState, machine_header, ssh_config};
 use crate::prompt::NewWorktree;
 use crate::sidebar::INDENT;
-use crate::state::{AppEvent, AppState, Machine, MachineId, MachineTask, On};
+use crate::state::{AppEvent, AppState, MachineId, MachineTask, On, Session};
 use crate::status;
 use git::{Checkout, HeadWatcher, Placement, RemoteCheckouts, Repo};
 use groups::{Entry, Kind, Slot};
@@ -184,7 +184,7 @@ impl WorkspaceList {
         let observe = cx.observe(&state, |_, _, cx| cx.notify());
         let subscribe = cx.subscribe(&state, |this, _, event, cx| match event {
             // Local's cache can change while another machine is selected.
-            AppEvent::SnapshotReplaced
+            AppEvent::MachineSelected(_)
             | AppEvent::MachinesChanged
             | AppEvent::MachineSnapshot(_) => this.sync_checkouts(cx),
             // The focused pane moved to another checkout, or another machine
@@ -251,7 +251,7 @@ impl WorkspaceList {
     fn local_snapshot(&self, cx: &App) -> std::sync::Arc<Snapshot> {
         self.state
             .read(cx)
-            .machine(&MachineId::Local)
+            .machine(&MachineId::Local, cx)
             .map(|m| m.snapshot().clone())
             .unwrap_or_default()
     }
@@ -298,8 +298,8 @@ impl WorkspaceList {
     fn sync_remote_checkouts(&mut self, cx: &mut Context<Self>) {
         let state = self.state.read(cx);
         let wanted = state
-            .machines()
-            .filter(|m| !m.id().is_local() && state.fs_for(m.id()).is_some())
+            .machines(cx)
+            .filter(|m| !m.id().is_local() && state.fs_for(m.id(), cx).is_some())
             .flat_map(|m| {
                 let snapshot = m.snapshot();
                 snapshot
@@ -325,7 +325,7 @@ impl WorkspaceList {
         let state = self.state.read(cx);
         let reads: Vec<_> = dirs
             .into_iter()
-            .filter_map(|dir| Some((state.fs_for(&dir.0)?, dir)))
+            .filter_map(|dir| Some((state.fs_for(&dir.0, cx)?, dir)))
             .collect();
         if reads.is_empty() {
             return false;
@@ -448,7 +448,7 @@ impl WorkspaceList {
         info: &WorkspaceInfo,
         cx: &App,
     ) -> Option<Placement> {
-        let snapshot = self.state.read(cx).machine(machine)?.snapshot();
+        let snapshot = self.state.read(cx).machine(machine, cx)?.snapshot();
         self.placement(machine, snapshot, info)
     }
 
@@ -457,7 +457,7 @@ impl WorkspaceList {
     pub fn open_worktree(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let state = self.state.read(cx);
         let machine = state.selected().clone();
-        let Some(workspace_id) = state.snapshot().focused_workspace_id.clone() else {
+        let Some(workspace_id) = state.snapshot(cx).focused_workspace_id.clone() else {
             return;
         };
         let Some(chrome) = chrome::get(window, cx) else {
@@ -595,7 +595,7 @@ impl WorkspaceList {
         workspace_id: &WorkspaceId,
         cx: &App,
     ) -> Option<String> {
-        let snapshot = self.state.read(cx).machine(machine)?.snapshot().clone();
+        let snapshot = self.state.read(cx).machine(machine, cx)?.snapshot().clone();
         let info = &snapshot
             .workspaces
             .iter()
@@ -639,7 +639,7 @@ impl WorkspaceList {
         cx: &mut Context<Self>,
     ) {
         let state = self.state.read(cx);
-        let Some(snapshot) = state.machine(machine).map(Machine::snapshot) else {
+        let Some(snapshot) = state.machine(machine, cx).map(Session::snapshot) else {
             return;
         };
         let infos: Vec<&WorkspaceInfo> = snapshot.workspaces.iter().map(|w| &w.info).collect();
@@ -650,7 +650,9 @@ impl WorkspaceList {
         );
         if let Some(order) = groups::reordered(&entries, dragged, target) {
             state
-                .reorder_workspaces(machine, order, cx)
+                .on(machine, cx, |session, cx| {
+                    session.reorder_workspaces(order, cx)
+                })
                 .detach_and_log_err(cx);
         }
     }
@@ -699,9 +701,11 @@ impl WorkspaceList {
     ) {
         self.state.update(cx, |state, cx| {
             state.select_machine(machine, cx);
-            let cwd = state.active_worktree().cloned();
+            let cwd = state.active_worktree(cx).cloned();
             state
-                .new_workspace(machine, cwd, label, cx)
+                .on(machine, cx, |session, cx| {
+                    session.new_workspace(cwd, label, cx)
+                })
                 .detach_and_log_err(cx);
         });
     }
@@ -771,7 +775,7 @@ impl WorkspaceList {
             let params = WorktreeParams {
                 workspace_id: match repo_root {
                     Some(_) => None,
-                    None => state.snapshot().focused_workspace_id.clone(),
+                    None => state.snapshot(cx).focused_workspace_id.clone(),
                 },
                 cwd: repo_root.map(str::to_owned),
                 branch: Some(worktree.branch),
@@ -780,7 +784,9 @@ impl WorkspaceList {
                 focus: true,
                 ..Default::default()
             };
-            state.create_worktree(machine, params, cx)
+            state.on(machine, cx, |session, cx| {
+                session.create_worktree(params, cx)
+            })
         });
         cx.spawn_in(window, async move |_, cx| {
             let result = task.await;
@@ -810,7 +816,7 @@ impl WorkspaceList {
     fn render_space(
         &self,
         row: usize,
-        machine: &Machine,
+        machine: &Session,
         entry: &Entry,
         cx: &Context<Self>,
     ) -> AnyElement {
@@ -1039,7 +1045,7 @@ fn fold_cue(opened: bool) {
 
 impl WorkspaceList {
     /// A machine's group header. Local's has no menu.
-    fn render_header(&self, machine: &Machine, cx: &Context<Self>) -> AnyElement {
+    fn render_header(&self, machine: &Session, cx: &Context<Self>) -> AnyElement {
         let id = machine.id().clone();
         let (state, _) = MachineState::of(machine.status());
         let this = cx.entity().downgrade();
@@ -1087,7 +1093,7 @@ impl WorkspaceList {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(machine) = self.state.read(cx).machine(id) else {
+        let Some(machine) = self.state.read(cx).machine(id, cx) else {
             return;
         };
         let (status, _) = MachineState::of(machine.status());
@@ -1130,7 +1136,7 @@ impl WorkspaceList {
         MachineActions {
             on_reconnect: with(|state, id, cx| state.reconnect_machine(id, cx)),
             on_fix: with(|state, id, cx| {
-                if let Some(task) = state.machine(id).and_then(MachineTask::fix) {
+                if let Some(task) = state.machine(id, cx).and_then(MachineTask::fix) {
                     state.start_machine_run(task, cx);
                 }
             }),
@@ -1189,9 +1195,9 @@ impl WorkspaceList {
             list_command(&this, |this, window, cx| this.new_workspace(window, cx)),
         )];
         let state = self.state.read(cx);
-        if state.machines().count() > 1 {
+        if state.machines(cx).count() > 1 {
             let targets = state
-                .machines()
+                .machines(cx)
                 .filter(|m| m.id().is_local() || !MachineState::of(m.status()).0.is_dimmed())
                 .map(|m| {
                     let id = m.id().clone();
@@ -1357,14 +1363,14 @@ impl Panel for WorkspaceList {
     }
 
     fn toolbar_buttons(&mut self, _: &mut Window, cx: &mut Context<Self>) -> Option<Vec<Button>> {
-        let has_machines = self.state.read(cx).machines().count() > 1;
+        let has_machines = self.state.read(cx).machines(cx).count() > 1;
         Some(vec![
             Button::new("spaces-new")
                 .icon(IconName::Plus)
                 .tooltip(if has_machines { "New" } else { "New Workspace" })
                 .on_click(cx.listener(|this, event: &ClickEvent, window, cx| {
                     // With no saved machines it's one click, as before machines.
-                    if this.state.read(cx).machines().count() > 1 {
+                    if this.state.read(cx).machines(cx).count() > 1 {
                         this.open_new_menu(event.position(), window, cx)
                     } else {
                         this.new_workspace(window, cx)
@@ -1397,7 +1403,7 @@ impl WorkspaceList {
     /// note when a connected machine has no workspaces.
     fn render_machine_rows(
         &self,
-        machine: &Machine,
+        machine: &Session,
         first: usize,
         indent_empty: bool,
         cx: &Context<Self>,
@@ -1432,8 +1438,8 @@ impl Render for WorkspaceList {
         let state = state.read(cx);
         let mut rows: Vec<AnyElement> = Vec::new();
         // With no saved machines the list is Local's alone, without headers.
-        let grouped = state.machines().count() > 1;
-        for machine in state.machines() {
+        let grouped = state.machines(cx).count() > 1;
+        for machine in state.machines(cx) {
             if grouped {
                 rows.push(self.render_header(machine, cx));
                 if self.collapsed.contains(machine.id()) {

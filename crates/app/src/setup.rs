@@ -56,7 +56,8 @@ pub enum SetupEvent {
 }
 
 /// What Local's herdr needs before the app can use it, and the fix running.
-/// `AppState` owns it and starts Local's sync on [`SetupEvent::HerdrReady`];
+/// `AppState` owns it and starts Local's sync on [`SetupEvent::HerdrReady`]
+/// (Local's `Session` reads it for its status);
 /// the terminal area draws its screen and runs its fixes.
 pub struct Setup {
     /// Local's herdr; `None` when the endpoint was refused (nothing to check).
@@ -361,7 +362,7 @@ pub(crate) fn screen(
 /// "Can't reach herdr" while the first read hasn't arrived and the last
 /// attempt failed. Before that, the plain connecting message is enough.
 fn connection_problem(app: &AppState, cx: &App) -> Option<AnyElement> {
-    let local = app.machine(&MachineId::Local)?;
+    let local = app.machine(&MachineId::Local, cx)?;
     let Status::Offline {
         reason,
         retrying: true,

@@ -35,14 +35,14 @@ impl Workspace {
     /// The focused workspace's name; on a remote machine, "<name> — <machine>".
     pub(super) fn render_titlebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let state = self.state.read(cx);
-        let snapshot = state.snapshot();
+        let snapshot = state.snapshot(cx);
         let name = snapshot
             .focused_workspace_id
             .as_deref()
             .and_then(|id| snapshot.workspace(id))
             .map(|w| w.info.label.clone())
             .unwrap_or_default();
-        let machine = state.selected_machine();
+        let machine = state.selected_machine(cx);
         let machine = (!machine.id().is_local() && !name.is_empty())
             .then(|| format!("— {}", machine.label()));
         let theme = cx.theme();

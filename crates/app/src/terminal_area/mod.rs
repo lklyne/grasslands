@@ -1,7 +1,7 @@
 //! herdr's tab bar and the active tab's split tree of Ghostty terminals.
 //!
 //! herdr is the source of truth: the area renders the focused workspace's
-//! active tab from `AppState::snapshot` and turns every user action into a
+//! active tab from the selected machine's `Session` and turns every user action into a
 //! herdr call, then re-renders from the snapshot that follows. The only local
 //! state is a divider's ratio while it is being dragged (sent on release) and
 //! until herdr's layout reflects it. See
@@ -39,7 +39,7 @@ use crate::herdr::{
     PaneDirection, PaneId, Snapshot, SplitDirection, SplitTree, Tab, TabId, TerminalId, ZoomMode,
 };
 use crate::setup::{Setup, Stage};
-use crate::state::{AppEvent, AppState, MachineId, MachineTask, Status};
+use crate::state::{AppEvent, AppState, MachineId, MachineTask, Session, SessionEvent, Status};
 use crate::{label, status};
 
 use self::command_terminal::CommandTerminal;
@@ -132,6 +132,10 @@ fn record_bounds<K: Eq + std::hash::Hash + 'static>(
 
 pub struct TerminalArea {
     state: Entity<AppState>,
+    /// The selected machine's session, which the area shows; followed on
+    /// `MachineSelected`.
+    session: Entity<Session>,
+    _session: Subscription,
     /// How Local's terminals attach; `None` when the app refused its herdr
     /// endpoint, so a guarded build can never reach the wrong session.
     launch: Option<Launch>,
@@ -176,8 +180,8 @@ impl TerminalArea {
         let machine_terminal = crate::machines::run_terminal(&state, window, cx);
         // What render reads, and what announces each change (it doesn't
         // observe `AppState`, so another machine's snapshot doesn't wake it):
-        // - the selected machine's snapshot, id and focused pane:
-        //   `SnapshotReplaced` (which follows `MachineSelected`);
+        // - the selected machine's snapshot, id and focused pane: its
+        //   session's events, and `MachineSelected` for another session;
         // - the selected machine's label and status, Local's connection
         //   problem: `MachinesChanged`;
         // - the machine run and its machine: `MachineRunChanged`,
@@ -205,8 +209,12 @@ impl TerminalArea {
                 this.terminals.reload_all(cx);
             }),
         ];
+        let session = state.read(cx).selected_session().clone();
+        let session_events = Self::subscribe_session(&session, window, cx);
         let mut this = Self {
             state,
+            session,
+            _session: session_events,
             launch,
             terminals: Terminals::new(),
             focus: cx.focus_handle(),
@@ -266,17 +274,17 @@ impl TerminalArea {
     }
 
     fn snapshot(&self, cx: &App) -> std::sync::Arc<Snapshot> {
-        self.state.read(cx).snapshot().clone()
+        self.session.read(cx).snapshot().clone()
     }
 
     /// The machine on screen, which the area's commands act on.
     fn machine(&self, cx: &App) -> MachineId {
-        self.state.read(cx).selected().clone()
+        self.session.read(cx).id().clone()
     }
 
     fn on_app_event(&mut self, event: &AppEvent, window: &mut Window, cx: &mut Context<Self>) {
         match event {
-            AppEvent::SnapshotReplaced => self.sync_with_snapshot(window, cx),
+            AppEvent::MachineSelected(_) => self.follow_selection(window, cx),
             AppEvent::MachinesChanged => {
                 self.sync_other_machines(None, window, cx);
                 cx.notify();
@@ -290,14 +298,57 @@ impl TerminalArea {
                 self.sync_command_terminals(cx);
                 cx.notify();
             }
+            _ => {}
+        }
+    }
+
+    fn subscribe_session(
+        session: &Entity<Session>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Subscription {
+        cx.subscribe_in(session, window, |this, _, event, window, cx| {
+            this.on_session_event(event, window, cx);
+        })
+    }
+
+    fn on_session_event(
+        &mut self,
+        event: &SessionEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match event {
+            SessionEvent::SnapshotReplaced => self.sync_with_snapshot(window, cx),
             // Keyboard focus follows herdr's focus, but only if it is already
             // in the terminal area: an agent focusing a pane must not pull
             // typing out of the editor.
-            AppEvent::FocusedPaneChanged(Some(pane_id)) if self.owns_keyboard_focus(window, cx) => {
-                self.focus_terminal(pane_id, window, cx);
+            SessionEvent::FocusedPaneChanged(Some(pane_id)) => {
+                self.follow_focus(pane_id, window, cx);
             }
             _ => {}
         }
+    }
+
+    fn follow_focus(&mut self, pane_id: &PaneId, window: &mut Window, cx: &mut Context<Self>) {
+        if self.owns_keyboard_focus(window, cx) {
+            self.focus_terminal(pane_id, window, cx);
+        }
+    }
+
+    /// Another machine was selected: shows its session, as for a new
+    /// snapshot and focused pane.
+    fn follow_selection(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let session = self.state.read(cx).selected_session().clone();
+        if session != self.session {
+            self._session = Self::subscribe_session(&session, window, cx);
+            self.session = session;
+        }
+        self.sync_with_snapshot(window, cx);
+        if let Some(pane_id) = self.session.read(cx).focused_pane().map(PaneId::from) {
+            self.follow_focus(&pane_id, window, cx);
+        }
+        cx.notify();
     }
 
     fn owns_keyboard_focus(&self, window: &Window, cx: &App) -> bool {
@@ -438,10 +489,9 @@ impl TerminalArea {
 
     fn split(&mut self, direction: SplitDirection, cx: &mut Context<Self>) {
         let target = self.target_pane(cx);
-        let machine = self.machine(cx);
-        self.state
+        self.session
             .read(cx)
-            .split_pane(&machine, target.as_ref(), direction, cx)
+            .split_pane(target.as_ref(), direction, cx)
             .detach_and_log_err(cx);
     }
 
@@ -455,12 +505,11 @@ impl TerminalArea {
         let Some(pane) = snapshot.pane(&pane_id) else {
             return;
         };
-        let state = self.state.clone();
-        let machine = self.machine(cx);
+        let session = self.session.clone();
         if !status::is_busy(pane.agent_status) {
-            state
+            session
                 .read(cx)
-                .close_pane(&machine, &pane_id, cx)
+                .close_pane(&pane_id, cx)
                 .detach_and_log_err(cx);
             return;
         }
@@ -475,9 +524,9 @@ impl TerminalArea {
                 confirm_label: "Close Pane".into(),
             };
             let on_confirm = move |_: &mut Window, cx: &mut App| {
-                state
+                session
                     .read(cx)
-                    .close_pane(&machine, &pane_id, cx)
+                    .close_pane(&pane_id, cx)
                     .detach_and_log_err(cx);
             };
             chrome.update(cx, |chrome, cx| {
@@ -494,7 +543,7 @@ impl TerminalArea {
         );
         cx.spawn(async move |_, cx| {
             if answer.await == Ok(0) {
-                let task = cx.update(|cx| state.read(cx).close_pane(&machine, &pane_id, cx));
+                let task = cx.update(|cx| session.read(cx).close_pane(&pane_id, cx));
                 if let Err(error) = task.await {
                     tracing::error!("close pane {pane_id}: {error}");
                 }
@@ -514,9 +563,9 @@ impl TerminalArea {
                 chrome.new_tab(machine, workspace, window, cx);
             }),
             None => self
-                .state
+                .session
                 .read(cx)
-                .new_tab(&machine, workspace.as_ref(), cx)
+                .new_tab(workspace.as_ref(), cx)
                 .detach_and_log_err(cx),
         }
     }
@@ -559,10 +608,9 @@ impl TerminalArea {
         let Some(pane_id) = self.target_pane(cx) else {
             return;
         };
-        let machine = self.machine(cx);
-        self.state
+        self.session
             .read(cx)
-            .call(&machine, cx, move |client| {
+            .call(cx, move |client| {
                 client.pane_zoom(&pane_id, ZoomMode::Toggle)
             })
             .detach_and_log_err(cx);
@@ -571,10 +619,9 @@ impl TerminalArea {
     /// Records a divider position locally and sends it to herdr.
     fn commit_ratio(&mut self, key: SplitKey, ratio: f32, cx: &mut Context<Self>) {
         self.overrides.set(key.clone(), ratio, Instant::now());
-        let machine = self.machine(cx);
-        self.state
+        self.session
             .read(cx)
-            .set_split_ratio(&machine, &key.tab_id, key.path, ratio, cx)
+            .set_split_ratio(&key.tab_id, key.path, ratio, cx)
             .detach_and_log_err(cx);
         cx.notify();
     }
@@ -624,7 +671,7 @@ impl TerminalArea {
     /// screen, while it isn't connected. Its last snapshot is kept for when
     /// it comes back.
     fn render_machine_problem(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
-        let machine = self.state.read(cx).selected_machine();
+        let machine = self.session.read(cx);
         if machine.id().is_local() || machine.status().is_usable() {
             return None;
         }
@@ -656,7 +703,7 @@ impl TerminalArea {
     fn render_machine_run(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let state = self.state.read(cx);
         let run = state.machine_run()?;
-        let machine = run.machine.as_ref().and_then(|id| state.machine(id));
+        let machine = run.machine.as_ref().and_then(|id| state.machine(id, cx));
         let detail = machine.and_then(|m| crate::machines::MachineState::of(m.status()).1);
         let close_state = self.state.clone();
         let retry_state = self.state.clone();
@@ -710,7 +757,7 @@ impl TerminalArea {
     /// What the area says when there is no tab to show.
     fn empty_message(&self, snapshot: &Snapshot, cx: &App) -> String {
         let state = self.state.read(cx);
-        let machine = state.selected_machine();
+        let machine = state.selected_machine(cx);
         if !machine.id().is_local() {
             match machine.status() {
                 Status::Connected if snapshot.generation != 0 => {

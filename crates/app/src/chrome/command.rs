@@ -1,5 +1,5 @@
 //! herdr commands the chrome offers in menus and the palette, as data, so an
-//! entry can be confirmed before it runs. Each maps onto an `AppState` method.
+//! entry can be confirmed before it runs. Each maps onto a `Session` method.
 //! Every command names the machine it was built for: herdr ids repeat across
 //! machines, and the selection can move while a confirmation is open.
 
@@ -126,9 +126,9 @@ impl HerdrCommand {
                 pane_id,
                 direction,
             } => {
-                let task = state
-                    .read(cx)
-                    .split_pane(&machine, Some(&pane_id), direction, cx);
+                let task = state.read(cx).on(&machine, cx, |session, cx| {
+                    session.split_pane(Some(&pane_id), direction, cx)
+                });
                 cx.background_executor()
                     .spawn(async move { task.await.map(drop) })
             }
@@ -143,13 +143,17 @@ impl HerdrCommand {
                 .read(cx)
                 .call(&machine, cx, move |c| c.pane_rename(&pane_id, Some(&label))),
             Self::ClosePane { machine, pane_id } => {
-                state.read(cx).close_pane(&machine, &pane_id, cx)
+                state
+                    .read(cx)
+                    .on(&machine, cx, |session, cx| session.close_pane(&pane_id, cx))
             }
             Self::NewTab {
                 machine,
                 workspace_id,
             } => {
-                let task = state.read(cx).new_tab(&machine, Some(&workspace_id), cx);
+                let task = state.read(cx).on(&machine, cx, |session, cx| {
+                    session.new_tab(Some(&workspace_id), cx)
+                });
                 cx.background_executor()
                     .spawn(async move { task.await.map(drop) })
             }
@@ -157,21 +161,25 @@ impl HerdrCommand {
                 machine,
                 tab_id,
                 label,
-            } => state.read(cx).rename_tab(&machine, &tab_id, &label, cx),
-            Self::CloseTab { machine, tab_id } => state.read(cx).close_tab(&machine, &tab_id, cx),
+            } => state.read(cx).on(&machine, cx, |session, cx| {
+                session.rename_tab(&tab_id, &label, cx)
+            }),
+            Self::CloseTab { machine, tab_id } => state
+                .read(cx)
+                .on(&machine, cx, |session, cx| session.close_tab(&tab_id, cx)),
             Self::RenameWorkspace {
                 machine,
                 workspace_id,
                 label,
-            } => state
-                .read(cx)
-                .rename_workspace(&machine, &workspace_id, &label, cx),
+            } => state.read(cx).on(&machine, cx, |session, cx| {
+                session.rename_workspace(&workspace_id, &label, cx)
+            }),
             Self::CloseWorkspace {
                 machine,
                 workspace_id,
-            } => state
-                .read(cx)
-                .close_workspace(&machine, &workspace_id, false, cx),
+            } => state.read(cx).on(&machine, cx, |session, cx| {
+                session.close_workspace(&workspace_id, false, cx)
+            }),
             Self::CloseGroup {
                 machine,
                 workspace_id,
@@ -179,26 +187,30 @@ impl HerdrCommand {
                 ..
             } => {
                 let state = state.read(cx);
-                let herdr_group = state.machine(&machine).is_some_and(|m| {
+                let herdr_group = state.machine(&machine, cx).is_some_and(|m| {
                     let herdr = group_members(m.snapshot(), &workspace_id, herdr_placement);
                     herdr_closes_exactly(&members, &herdr)
                 });
                 if herdr_group {
-                    state.close_workspace(&machine, &workspace_id, true, cx)
+                    state.on(&machine, cx, |session, cx| {
+                        session.close_workspace(&workspace_id, true, cx)
+                    })
                 } else {
                     // The head last, as herdr closes a group.
                     members.retain(|id| id != &workspace_id);
                     members.push(workspace_id);
-                    state.close_workspaces(&machine, members, cx)
+                    state.on(&machine, cx, |session, cx| {
+                        session.close_workspaces(members, cx)
+                    })
                 }
             }
             Self::InvokePluginAction {
                 machine,
                 action,
                 context,
-            } => state
-                .read(cx)
-                .invoke_plugin_action(&machine, &action, *context, cx),
+            } => state.read(cx).on(&machine, cx, |session, cx| {
+                session.invoke_plugin_action(&action, *context, cx)
+            }),
         }
     }
 }

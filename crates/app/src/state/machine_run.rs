@@ -7,7 +7,7 @@ use std::ffi::OsString;
 use std::path::Path;
 
 use super::Status;
-use super::{Machine, MachineId};
+use super::{MachineId, Session};
 use crate::herdr::{FixCommand, MachineProfile, ProfileId};
 
 /// What a run is for.
@@ -25,7 +25,7 @@ impl MachineTask {
     /// What fixes a saved machine that can't connect: signing in when ssh
     /// refused (or the machine is unreachable, which a sign-in shows),
     /// herdr's setup when herdr there isn't ready.
-    pub fn fix(machine: &Machine) -> Option<Self> {
+    pub fn fix(machine: &Session) -> Option<Self> {
         let id = machine.id().clone();
         match machine.status() {
             _ if id.is_local() => None,
