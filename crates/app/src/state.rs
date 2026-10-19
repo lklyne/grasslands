@@ -60,10 +60,6 @@ pub enum AppEvent {
     SnapshotReplaced,
     /// The selected machine's focused pane changed.
     FocusedPaneChanged(Option<PaneId>),
-    /// A herdr event from the selected machine as it arrived, before the
-    /// cache re-read it triggers. For reactions the cache can't express
-    /// (toasts, "pane just created").
-    Herdr(Arc<herdr::Event>),
     /// A known agent's status changed between two caches (chrome toasts it).
     AgentStatusChanged {
         machine: MachineId,
@@ -1058,11 +1054,8 @@ impl AppState {
     fn apply(&mut self, machine: &MachineId, update: Update, cx: &mut Context<Self>) {
         match update {
             Update::State(snapshot) => self.apply_snapshot(machine, snapshot, cx),
-            Update::Event(event) => {
-                if machine == &self.selected {
-                    cx.emit(AppEvent::Herdr(Arc::from(event)));
-                }
-            }
+            // The re-read it triggers arrives as a `State`.
+            Update::Event { .. } => {}
             Update::Status(status) => {
                 let Some(target) = self.machine_mut(machine) else {
                     return;

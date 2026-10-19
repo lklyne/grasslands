@@ -1432,6 +1432,7 @@ impl Render for WorkspaceList {
 }
 
 /// Debug builds only: drives both panels from `RT_SIDEBAR_SCRIPT`.
+#[cfg(debug_assertions)]
 pub fn start_script(
     spaces: WeakEntity<WorkspaceList>,
     agents: WeakEntity<AgentList>,
@@ -1444,6 +1445,7 @@ pub fn start_script(
 mod agents;
 pub(crate) mod git;
 mod groups;
+#[cfg(debug_assertions)]
 mod script;
 #[cfg(test)]
 mod tests;

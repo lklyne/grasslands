@@ -370,7 +370,6 @@ fn already_exists(path: &[u8]) -> io::Error {
     )
 }
 
-
 /// One `ssh -s … sftp` process and the protocol state over its stdio.
 struct Session {
     /// The link connection this session was opened on.
@@ -709,7 +708,6 @@ fn read_packets(mut stdout: impl Read, tx: &mpsc::Sender<io::Result<Packet>>) {
         }
     }
 }
-
 
 fn drain_into(mut pipe: impl Read, sink: &Mutex<Vec<u8>>) {
     let mut buf = [0; 1024];

@@ -37,8 +37,7 @@ else in the module is yours.
   `ConnectionStatus`, `Config` = `Endpoint`, ...). `AppState::new` starts
   `SessionSync` and applies its updates on the foreground: `snapshot:
   Arc<Snapshot>` is replaced whole (`SnapshotReplaced`), `focused_pane` follows
-  (`FocusedPaneChanged`), raw events are re-emitted as `AppEvent::Herdr` and
-  `connection` tracks the status. Under `cargo test` it stays offline.
+  (`FocusedPaneChanged`) and `connection` tracks the status. Under `cargo test` it stays offline.
 - Commands to herdr go through methods on `AppState` (`focus_pane`, `split_pane`,
   `set_split_ratio`, `new_tab`, ..., or `call` for anything else; each returns a
   `Task<herdr::Result<T>>` to await or `.detach_and_log_err(cx)`), never straight from a view, so there is one place that talks

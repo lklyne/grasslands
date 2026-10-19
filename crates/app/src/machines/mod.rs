@@ -20,7 +20,9 @@ use gpui_kit::*;
 
 use crate::chrome::{self, Callback, Confirmation, MenuCommand, MenuEntry};
 
-pub use add_dialog::{open_add_machine, open_add_machine_with};
+#[cfg(debug_assertions)]
+pub use add_dialog::open_add_machine;
+pub use add_dialog::open_add_machine_with;
 pub use run::{RunCard, run_card};
 pub use ssh_config::SshHost;
 

@@ -48,6 +48,7 @@ impl SidebarPanels {
         let spaces = cx.new(|cx| workspaces::WorkspaceList::new(state.clone(), cx));
         let agents = cx.new(|cx| workspaces::AgentList::new(state.clone(), cx));
         let files = cx.new(|cx| files::FileTree::new(state, window, cx));
+        #[cfg(debug_assertions)]
         workspaces::start_script(spaces.downgrade(), agents.downgrade(), window, cx);
         let list = spaces.downgrade();
         crate::chrome::set_placements(

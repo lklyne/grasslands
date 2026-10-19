@@ -13,7 +13,7 @@ use std::thread;
 use herdr_client::*;
 use serde_json::{Value, json};
 
-use common::wait_for;
+use common::Watch;
 
 struct Fake {
     subscriptions: AtomicUsize,
@@ -105,21 +105,24 @@ fn events_lost_should_trigger_resubscribe_and_fresh_snapshot() {
         server_log: None,
     };
     let sync = SessionSync::start(endpoint).unwrap();
-    let updates = sync.updates();
+    let mut watch = Watch::new(&sync);
 
-    let reason = loop {
-        if let Update::Status(ConnectionStatus::Reconnecting { reason }) =
-            updates.recv_blocking().unwrap()
-        {
-            break reason;
-        }
+    let reconnecting = |w: &Watch| {
+        w.statuses.iter().find_map(|s| match s {
+            ConnectionStatus::Reconnecting { reason } => Some(reason.clone()),
+            _ => None,
+        })
     };
+    watch.wait("reconnecting", common::TIMEOUT, |w| {
+        reconnecting(w).is_some()
+    });
+    let reason = reconnecting(&watch).unwrap_or_default();
     assert!(reason.contains(EVENTS_LOST), "{reason}");
-    let state = wait_for(&sync, "re-read after events_lost", |s| {
+    let state = watch.wait_for("re-read after events_lost", |s| {
         s.workspace("w1").is_some_and(|w| w.info.label == "sub3")
     });
     assert_eq!(fake.subscriptions.load(Ordering::SeqCst), 3);
-    assert_eq!(sync.status(), ConnectionStatus::Connected);
+    assert_eq!(watch.status(), Some(&ConnectionStatus::Connected));
     assert_eq!(
         state.tab("w1:t1").and_then(|t| t.root.clone()),
         Some(SplitTree::Pane("w1:p1".into()))

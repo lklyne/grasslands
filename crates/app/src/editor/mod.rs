@@ -73,8 +73,11 @@ fn run_poll(jobs: Vec<PollJob>) -> Vec<Polled> {
     jobs.into_iter()
         .map(|job| {
             let check = poll::check(job.seen, &stamp(&job.fs, &job.key.1));
-            let text = matches!(check, Check::Read(_))
-                .then(|| job.fs.read_to_string(&job.key.1).map_err(|error| error.kind()));
+            let text = matches!(check, Check::Read(_)).then(|| {
+                job.fs
+                    .read_to_string(&job.key.1)
+                    .map_err(|error| error.kind())
+            });
             Polled {
                 key: job.key,
                 buffers: job.buffers,

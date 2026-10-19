@@ -14,6 +14,10 @@ use std::time::{Duration, Instant};
 
 use herdr_client::*;
 
+mod common;
+
+use common::Watch;
+
 const CONTAINER: &str = "herdr-remote-test";
 const LABEL: &str = "it-ssh";
 const TIMEOUT: Duration = Duration::from_secs(60);
@@ -40,14 +44,6 @@ fn wait_status(link: &MachineLink, what: &str, pred: impl Fn(&MachineStatus) -> 
             Instant::now() < deadline,
             "timed out waiting for {what}; status {status:?}"
         );
-        thread::sleep(Duration::from_millis(100));
-    }
-}
-
-fn wait_sync(sync: &SessionSync, what: &str, pred: impl Fn(&State) -> bool) {
-    let deadline = Instant::now() + TIMEOUT;
-    while !pred(&sync.state()) {
-        assert!(Instant::now() < deadline, "timed out waiting for {what}");
         thread::sleep(Duration::from_millis(100));
     }
 }
@@ -86,19 +82,20 @@ fn link_should_forward_remote_herdr_and_survive_a_restart() {
     eprintln!("attach: {attach}");
 
     let sync = SessionSync::start(endpoint.clone()).unwrap();
-    wait_sync(&sync, "api and infra workspaces", |s| {
-        let labels = labels(s);
+    let mut watch = Watch::new(&sync);
+    watch.wait("api and infra workspaces", TIMEOUT, |w| {
+        let labels = labels(&w.state);
         labels.iter().any(|l| l == "api") && labels.iter().any(|l| l == "infra")
     });
-    eprintln!("workspaces: {:?}", labels(&sync.state()));
+    eprintln!("workspaces: {:?}", labels(&watch.state));
 
     docker(&["stop", "-t", "1", CONTAINER]);
     wait_status(&link, "offline", |s| matches!(s, MachineStatus::Offline(_)));
-    wait_sync(&sync, "sync reconnecting", |_| {
-        sync.status() != ConnectionStatus::Connected
+    watch.wait("sync reconnecting", TIMEOUT, |w| {
+        w.status() != Some(&ConnectionStatus::Connected)
     });
 
-    let before = sync.state().generation;
+    let before = watch.state.generation;
 
     docker(&["start", CONTAINER]);
     wait_status(&link, "reachable again", |s| {
@@ -124,10 +121,10 @@ fn link_should_forward_remote_herdr_and_survive_a_restart() {
         link.reconnect();
     }
     wait_status(&link, "connected again", |s| *s == MachineStatus::Connected);
-    wait_sync(&sync, "sync recovered", |s| {
-        sync.status() == ConnectionStatus::Connected && s.generation > before
+    watch.wait("sync recovered", TIMEOUT, |w| {
+        w.status() == Some(&ConnectionStatus::Connected) && w.state.generation > before
     });
-    eprintln!("workspaces after restart: {:?}", labels(&sync.state()));
+    eprintln!("workspaces after restart: {:?}", labels(&watch.state));
     drop(sync);
 
     let seen: Vec<_> = std::iter::from_fn(|| statuses.try_recv().ok()).collect();
