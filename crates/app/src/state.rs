@@ -1975,7 +1975,7 @@ mod tests {
             state
                 .read(cx)
                 .fs_for(&MachineId::Local)
-                .map(|f| f.is_local())
+                .map(|f| f.machine().is_local())
         });
         assert_eq!(local, Some(true));
     }
