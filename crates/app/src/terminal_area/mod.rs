@@ -17,10 +17,10 @@
 
 pub mod command_terminal;
 mod drag;
+#[cfg(debug_assertions)]
+pub mod hooks;
 mod layout;
 mod reconcile;
-#[cfg(debug_assertions)]
-pub mod script;
 mod split_view;
 mod tab_bar;
 mod terminals;
@@ -226,10 +226,6 @@ impl TerminalArea {
         };
         this.sync_with_snapshot(window, cx);
         this.sync_command_terminals(cx);
-        #[cfg(debug_assertions)]
-        if let Some(scenario) = script::requested() {
-            script::start(scenario, cx.entity(), window, cx);
-        }
         this
     }
 

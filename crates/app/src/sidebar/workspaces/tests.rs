@@ -22,7 +22,7 @@ use super::groups::{Kind, Slot, entries, reordered};
 use super::{AgentList, AgentSort, WorkspaceList};
 use crate::actions::FocusPane;
 use crate::herdr::{Agent, AgentStatus, Snapshot, WorkspaceInfo};
-use crate::state::{AppState, offline_config};
+use crate::state::{AppState, MachineId, offline_config};
 
 fn agent(pane: &str, workspace: &str, status: AgentStatus) -> Agent {
     serde_json::from_value(json!({
@@ -428,4 +428,72 @@ fn new_menu_offers_workspace_worktree_and_machine_entries(cx: &mut TestAppContex
             "Add Machine…"
         ]
     );
+}
+
+// The flows the live step list drives (`crate::script::steps`), headless:
+// the spaces panel beside a chrome, which draws its prompts and
+// confirmations.
+
+struct WithChrome {
+    window: gpui_kit::AnyWindowHandle,
+    spaces: Entity<WorkspaceList>,
+}
+
+fn with_chrome(cx: &mut TestAppContext) -> WithChrome {
+    cx.update(gpui_kit::init);
+    let (window, spaces) = cx.update(|cx| {
+        let state = cx.new(|cx| AppState::new(Ok(offline_config()), cx));
+        let spaces = cx.new(|cx| WorkspaceList::new(state.clone(), cx));
+        let (window, _) =
+            gpui_kit::open_window(gpui_kit::WindowOptions::default(), cx, |window, cx| {
+                cx.new(|cx| crate::chrome::Chrome::new(state.clone(), window, cx))
+            })
+            .unwrap();
+        state.update(cx, |state, cx| state.replace_snapshot(snapshot(), cx));
+        (window, spaces)
+    });
+    cx.run_until_parked();
+    WithChrome { window, spaces }
+}
+
+fn asks(cx: &mut TestAppContext, f: &WithChrome) -> bool {
+    use gpui_kit::component::WindowExt as _;
+    cx.run_until_parked();
+    cx.update_window(f.window, |_, window, cx| window.has_active_dialog(cx))
+        .unwrap()
+}
+
+/// `new-worktree` (and `new-worktree-in <repo>`): the New Worktree prompt.
+#[gpui::test]
+fn new_worktree_asks_for_the_branch(cx: &mut TestAppContext) {
+    let f = with_chrome(cx);
+    cx.update_window(f.window, |_, window, cx| {
+        f.spaces
+            .update(cx, |spaces, cx| spaces.new_worktree(None, window, cx));
+    })
+    .unwrap();
+    assert!(asks(cx, &f));
+}
+
+/// `close <workspace>`: herdr's `ui.confirm_close` (on by default) asks
+/// before a workspace closes.
+#[gpui::test]
+fn closing_a_workspace_asks_first(cx: &mut TestAppContext) {
+    let f = with_chrome(cx);
+    cx.update_window(f.window, |_, window, cx| {
+        super::close_workspace(&MachineId::Local, &"w2".into(), window, cx);
+    })
+    .unwrap();
+    assert!(asks(cx, &f));
+}
+
+/// `rename <workspace>`: the chrome's rename dialog.
+#[gpui::test]
+fn renaming_a_workspace_opens_the_dialog(cx: &mut TestAppContext) {
+    let f = with_chrome(cx);
+    cx.update_window(f.window, |_, window, cx| {
+        super::rename_workspace(&MachineId::Local, &"w1".into(), window, cx);
+    })
+    .unwrap();
+    assert!(asks(cx, &f));
 }

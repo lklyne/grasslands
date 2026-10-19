@@ -18,7 +18,7 @@ use super::{Cx, Run};
 use crate::herdr::{PaneId, WorkspaceId};
 use crate::sounds;
 use crate::state::{AppState, MachineId, Status};
-use crate::terminal_area::TerminalArea;
+use crate::terminal_area::hooks::Hooks;
 
 const LABEL: &str = "dockerbox";
 const CONTAINER: &str = "herdr-remote-test";
@@ -27,7 +27,7 @@ const LOCAL_WORKSPACE: &str = "machines";
 impl Run {
     pub(super) async fn machines(&mut self, cx: &mut Cx) -> anyhow::Result<()> {
         eprintln!("script: machines");
-        let state = self.read(cx, |area, _| area.state.clone())?;
+        let state = self.read(cx, |area, _| area.state().clone())?;
         let local_up = self
             .until(cx, Duration::from_secs(30), |area, _, cx| {
                 area.snapshot(cx).generation > 0
@@ -36,7 +36,7 @@ impl Run {
         self.check(local_up, "Local connected");
         let created = self
             .read(cx, |area, cx| {
-                area.state.read(cx).new_workspace(
+                area.state().read(cx).new_workspace(
                     &MachineId::Local,
                     None,
                     Some(LOCAL_WORKSPACE.into()),
@@ -119,8 +119,8 @@ impl Run {
             .await;
         self.check(local, "Local again shows attached terminals");
         let kept = self.read(cx, |area, cx| {
-            area.terminals.detached_on(&id, cx).is_empty()
-                && area.terminals.other_machines().contains(&id)
+            area.terminals().detached_on(&id, cx).is_empty()
+                && area.terminals().other_machines().contains(&id)
         })?;
         self.check(
             kept,
@@ -141,7 +141,7 @@ impl Run {
         );
 
         // The connection drops.
-        let cues_before = sounds::played().len();
+        let cues_before = sounds::played::mark();
         docker(cx, &["stop", "-t", "1", CONTAINER]).await;
         let offline = self
             .until(cx, Duration::from_secs(60), |area, _, cx| {
@@ -154,14 +154,14 @@ impl Run {
             &format!("docker stop: {LABEL} goes offline ({status:?})"),
         );
         self.check(
-            sounds::played()[cues_before..].contains(&Cue::Warning),
+            sounds::played::since(cues_before).contains(&Cue::Warning),
             "going offline plays the warning cue",
         );
         Self::settle(cx).await;
         self.shoot(cx, "machines-offline");
 
         // It comes back.
-        let cues_before = sounds::played().len();
+        let cues_before = sounds::played::mark();
         docker(cx, &["start", CONTAINER]).await;
         let reachable = self
             .until(cx, Duration::from_secs(90), |area, _, cx| {
@@ -205,13 +205,13 @@ impl Run {
             .await;
         self.check(reconnected, "dockerbox connects again");
         self.check(
-            sounds::played()[cues_before..].contains(&Cue::Success),
+            sounds::played::since(cues_before).contains(&Cue::Success),
             "reconnecting plays the success cue",
         );
         let recovered = self
             .until(cx, Duration::from_secs(60), |area, _, cx| {
-                area.state.read(cx).selected() == &id
-                    && !area.drawn.borrow().panes.is_empty()
+                area.state().read(cx).selected() == &id
+                    && !area.drawn().panes.is_empty()
                     && all_attached(area, cx)
             })
             .await;
@@ -226,7 +226,7 @@ impl Run {
         focus(cx, &state, &MachineId::Local, &local_workspace)?;
         Self::settle(cx).await;
         let close = self.read(cx, |area, cx| {
-            area.state
+            area.state()
                 .read(cx)
                 .close_workspace(&MachineId::Local, &local_workspace, false, cx)
         })?;
@@ -240,7 +240,7 @@ impl Run {
     async fn type_in(&mut self, cx: &mut Cx, pane: &PaneId, text: &str, expect: &str) -> bool {
         cx.update(|window, cx| {
             self.area.update(cx, |area, cx| {
-                let machine = area.machine(cx);
+                let machine = area.hooks().machine(cx);
                 area.focus_pane(&machine, pane, window, cx);
             });
         })
@@ -257,8 +257,11 @@ impl Run {
     }
 }
 
-pub(super) fn remote<'a>(area: &TerminalArea, cx: &'a App) -> Option<&'a crate::state::Machine> {
-    area.state.read(cx).machines().find(|m| m.label() == LABEL)
+pub(super) fn remote<'a>(area: &Hooks, cx: &'a App) -> Option<&'a crate::state::Machine> {
+    area.state()
+        .read(cx)
+        .machines()
+        .find(|m| m.label() == LABEL)
 }
 
 pub(super) fn focus(
@@ -277,30 +280,30 @@ pub(super) fn focus(
 }
 
 /// Whether the area shows `workspace` on `machine`.
-pub(super) fn shows(area: &TerminalArea, cx: &App, machine: &MachineId, workspace: &str) -> bool {
-    area.state.read(cx).selected() == machine
-        && TerminalArea::active_tab(&area.snapshot(cx))
+pub(super) fn shows(area: &Hooks, cx: &App, machine: &MachineId, workspace: &str) -> bool {
+    area.state().read(cx).selected() == machine
+        && Hooks::active_tab(&area.snapshot(cx))
             .is_some_and(|tab| tab.info.workspace_id == workspace)
 }
 
 /// Every pane laid out has an attached terminal, and there is one.
-pub(super) fn all_attached(area: &TerminalArea, cx: &App) -> bool {
+pub(super) fn all_attached(area: &Hooks, cx: &App) -> bool {
     let snapshot = area.snapshot(cx);
-    let drawn = area.drawn.borrow();
+    let drawn = area.drawn();
     !drawn.panes.is_empty()
         && drawn.reattach.is_empty()
         && drawn.panes.keys().all(|pane| {
             snapshot
                 .pane(pane)
-                .is_some_and(|p| area.terminals.is_attached(&p.terminal_id, cx))
+                .is_some_and(|p| area.terminals().is_attached(&p.terminal_id, cx))
         })
 }
 
 /// The first laid-out pane and its terminal view's entity.
-fn first_view(area: &TerminalArea, cx: &App) -> Option<(PaneId, EntityId)> {
+fn first_view(area: &Hooks, cx: &App) -> Option<(PaneId, EntityId)> {
     let snapshot = area.snapshot(cx);
-    let pane = area.drawn.borrow().panes.keys().next().cloned()?;
-    let view = area.terminals.get(&snapshot.pane(&pane)?.terminal_id)?;
+    let pane = area.drawn().panes.keys().next().cloned()?;
+    let view = area.terminals().get(&snapshot.pane(&pane)?.terminal_id)?;
     Some((pane, view.terminal.entity_id()))
 }
 

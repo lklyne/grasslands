@@ -522,3 +522,166 @@ fn a_callback_entry_runs_through_the_chrome(cx: &mut TestAppContext) {
     .unwrap();
     assert_eq!(runs.get(), 1);
 }
+
+// The flows the live step list drives (`crate::script::steps`), headless.
+
+/// `menu tab <id>` and `menu workspace <id>`.
+#[gpui_kit::test]
+fn tab_and_workspace_menus_open(cx: &mut TestAppContext) {
+    let f = worktree_fixture(cx);
+    for target in [
+        MenuTarget::Tab {
+            machine: MachineId::Local,
+            tab_id: "w1:t1".into(),
+        },
+        MenuTarget::Workspace {
+            machine: MachineId::Local,
+            workspace_id: "w1".into(),
+        },
+    ] {
+        cx.update_window(f.window, |_, window, cx| {
+            f.chrome.update(cx, |chrome, cx| {
+                chrome.close_context_menu(window, cx);
+                chrome.context_menu(target.clone(), Point::default(), Vec::new(), window, cx);
+            });
+        })
+        .unwrap();
+        cx.run_until_parked();
+        // `Some(false)`: drawn in the window, as there is no overlay here.
+        let open = cx.update(|cx| f.chrome.read(cx).menu_open());
+        assert!(open.is_some(), "{target:?}");
+    }
+}
+
+fn run_menu_command(cx: &mut TestAppContext, f: &Fixture, command: MenuCommand) {
+    cx.update_window(f.window, |_, window, cx| {
+        f.chrome.update(cx, |chrome, cx| {
+            chrome.run_menu_command(command, window, cx)
+        });
+    })
+    .unwrap();
+    cx.run_until_parked();
+}
+
+/// `remove-worktree <workspace>`: nothing is removed before the person
+/// confirms.
+#[gpui_kit::test]
+fn removing_a_worktree_asks_first(cx: &mut TestAppContext) {
+    let f = worktree_fixture(cx);
+    let remove = super::WorktreeCommand::Remove {
+        machine: MachineId::Local,
+        workspace_id: "w3".into(),
+    };
+    run_menu_command(cx, &f, MenuCommand::Worktree(remove));
+    assert!(has_dialog(cx, &f));
+}
+
+/// `open-worktree <workspace>` then `query <text>`: herdr's list (here a
+/// fixture) shows in a picker that the query filters.
+#[gpui_kit::test]
+fn the_worktree_picker_filters_by_query(cx: &mut TestAppContext) {
+    let f = worktree_fixture(cx);
+    let list: herdr::WorktreeList = serde_json::from_value(serde_json::json!({
+        "source": {
+            "repo_key": "/r/.git",
+            "repo_name": "r",
+            "repo_root": "/r",
+            "source_checkout_path": "/r",
+        },
+        "worktrees": [
+            {"path": "/r", "label": "r", "is_bare": false, "is_detached": false,
+             "is_prunable": false, "is_linked_worktree": false, "branch": "main"},
+            {"path": "/w/feat", "label": "r", "is_bare": false, "is_detached": false,
+             "is_prunable": false, "is_linked_worktree": true, "branch": "feat"},
+        ],
+    }))
+    .unwrap();
+    cx.update(|cx| {
+        f.chrome.update(cx, |chrome, cx| {
+            chrome.show_worktree_picker(MachineId::Local, "w3".into(), list, cx)
+        });
+    });
+    assert!(has_dialog(cx, &f));
+    let picker = cx.update(|cx| f.chrome.read(cx).palette()).unwrap();
+    let all = cx.update(|cx| picker.read(cx).matched_count());
+    cx.update_window(f.window, |_, window, cx| {
+        picker.update(cx, |picker, cx| picker.set_query("feat", window, cx));
+    })
+    .unwrap();
+    cx.run_until_parked();
+    let matched = cx.update(|cx| picker.read(cx).matched_count());
+    assert_eq!((all, matched), (2, 1));
+}
+
+/// `type <text>` replaces the rename dialog's text, which starts as the
+/// current label.
+#[gpui_kit::test]
+fn the_rename_dialog_starts_from_the_label(cx: &mut TestAppContext) {
+    let f = worktree_fixture(cx);
+    let target = MenuTarget::Workspace {
+        machine: MachineId::Local,
+        workspace_id: "w2".into(),
+    };
+    run_menu_command(cx, &f, MenuCommand::Rename(target));
+    assert!(has_dialog(cx, &f));
+    let input = cx.update(|cx| f.chrome.read(cx).rename_input()).unwrap();
+    let value = cx.update(|cx| input.read(cx).value().to_string());
+    assert_eq!(value, "ws-w2");
+}
+
+/// `palette` then `query split`: with a focused pane, the split entries
+/// match.
+#[gpui_kit::test]
+fn the_palette_query_finds_the_splits(cx: &mut TestAppContext) {
+    let f = fixture(cx);
+    let pane: herdr::PaneInfo = serde_json::from_value(serde_json::json!({
+        "pane_id": "w1:p1", "terminal_id": "t", "workspace_id": "w1", "tab_id": "w1:t1",
+        "focused": true, "agent_status": "idle", "revision": 0,
+    }))
+    .unwrap();
+    let snapshot = Snapshot {
+        focused_pane_id: Some(pane.pane_id.clone()),
+        panes: [(pane.pane_id.clone(), pane)].into(),
+        ..Snapshot::default()
+    };
+    cx.update(|cx| {
+        f.state.update(cx, |state, cx| {
+            state.replace_snapshot(Arc::new(snapshot), cx)
+        });
+    });
+    cx.update_window(f.window, |_, window, cx| {
+        f.chrome
+            .update(cx, |chrome, cx| chrome.open_command_palette(window, cx));
+    })
+    .unwrap();
+    assert!(has_dialog(cx, &f));
+    let palette = cx.update(|cx| f.chrome.read(cx).palette()).unwrap();
+    cx.update_window(f.window, |_, window, cx| {
+        palette.update(cx, |palette, cx| palette.set_query("split", window, cx));
+    })
+    .unwrap();
+    cx.run_until_parked();
+    let matched = cx.update(|cx| palette.read(cx).matched_count());
+    assert!(matched >= 2, "{matched} matches");
+}
+
+/// `run close-group <workspace>`: closing a whole group asks first (herdr's
+/// `ui.confirm_close`, on by default).
+#[gpui_kit::test]
+fn closing_a_group_asks_first(cx: &mut TestAppContext) {
+    let f = worktree_fixture(cx);
+    infer_w1_w2(cx);
+    let close = cx
+        .update(|cx| {
+            f.chrome
+                .read(cx)
+                .group_close(&MachineId::Local, &"w1".into(), cx)
+        })
+        .unwrap();
+    cx.update_window(f.window, |_, window, cx| {
+        f.chrome
+            .update(cx, |chrome, cx| chrome.run(close, window, cx));
+    })
+    .unwrap();
+    assert!(has_dialog(cx, &f));
+}

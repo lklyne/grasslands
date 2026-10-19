@@ -16,7 +16,7 @@ pub fn init(cx: &mut App) {
     files::init(cx);
 }
 
-/// The spaces panel, for the terminal area's script hooks.
+/// The spaces panel, for the script hooks (`crate::script`).
 struct Spaces(WeakEntity<workspaces::WorkspaceList>);
 
 impl Global for Spaces {}
@@ -26,7 +26,17 @@ pub fn spaces(cx: &App) -> Option<Entity<workspaces::WorkspaceList>> {
     cx.try_global::<Spaces>()?.0.upgrade()
 }
 
-/// The files panel, for the terminal area's script hooks.
+/// The agents panel, for the script hooks.
+struct Agents(WeakEntity<workspaces::AgentList>);
+
+impl Global for Agents {}
+
+/// The agents panel, if one is open.
+pub fn agents(cx: &App) -> Option<Entity<workspaces::AgentList>> {
+    cx.try_global::<Agents>()?.0.upgrade()
+}
+
+/// The files panel, for the script hooks.
 struct Files(WeakEntity<files::FileTree>);
 
 impl Global for Files {}
@@ -48,8 +58,6 @@ impl SidebarPanels {
         let spaces = cx.new(|cx| workspaces::WorkspaceList::new(state.clone(), cx));
         let agents = cx.new(|cx| workspaces::AgentList::new(state.clone(), cx));
         let files = cx.new(|cx| files::FileTree::new(state, window, cx));
-        #[cfg(debug_assertions)]
-        workspaces::start_script(spaces.downgrade(), agents.downgrade(), window, cx);
         let list = spaces.downgrade();
         crate::chrome::set_placements(
             cx,
@@ -58,6 +66,7 @@ impl SidebarPanels {
             }),
         );
         cx.set_global(Spaces(spaces.downgrade()));
+        cx.set_global(Agents(agents.downgrade()));
         cx.set_global(Files(files.downgrade()));
         Self {
             spaces,

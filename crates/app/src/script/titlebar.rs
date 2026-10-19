@@ -19,8 +19,8 @@ use crate::actions::{OpenFile, ToggleTheme};
 use crate::editor::Answer;
 use crate::herdr::{PaneId, SplitDirection, SplitTree, protocol};
 use crate::overlay;
-use crate::terminal_area::TerminalArea;
-use crate::workspace::{self, MainTab, Workspace};
+use crate::terminal_area::hooks::Hooks;
+use crate::workspace::{MainTab, Workspace};
 
 impl Run {
     pub(super) async fn titlebar(&mut self, cx: &mut Cx) -> anyhow::Result<()> {
@@ -40,7 +40,7 @@ impl Run {
         // A workspace of our own with two terminals.
         let task = self.read(cx, |area, cx| {
             let home = std::env::var_os("HOME").map(PathBuf::from);
-            area.state.read(cx).new_workspace(
+            area.state().read(cx).new_workspace(
                 &area.machine(cx),
                 home,
                 Some("titlebar-script".to_owned()),
@@ -54,21 +54,21 @@ impl Run {
         task.await?;
         let shown = self
             .until(cx, Duration::from_secs(10), |area, _, cx| {
-                TerminalArea::active_tab(&area.snapshot(cx))
+                Hooks::active_tab(&area.snapshot(cx))
                     .is_some_and(|tab| tab.info.workspace_id == workspace_id)
-                    && area.drawn.borrow().panes.len() == 1
+                    && area.drawn().panes.len() == 1
             })
             .await;
         self.check(shown, "own workspace shows one terminal");
         let task = self.read(cx, |area, cx| {
-            area.state
+            area.state()
                 .read(cx)
                 .split_pane(&area.machine(cx), None, SplitDirection::Right, cx)
         })?;
         task.await?;
         let two = self
             .until(cx, Duration::from_secs(10), |area, _, _| {
-                area.drawn.borrow().panes.len() == 2
+                area.drawn().panes.len() == 2
             })
             .await;
         self.check(two, "split into two terminals");
@@ -257,25 +257,13 @@ impl Run {
         self.check_views(cx, "after closing every file");
 
         let task = self.read(cx, |area, cx| {
-            area.state
+            area.state()
                 .read(cx)
                 .close_workspace(&area.machine(cx), &workspace_id, false, cx)
         })?;
         task.await?;
         let _ = std::fs::remove_dir_all(&dir);
         Ok(())
-    }
-
-    pub(super) fn workspace<R>(
-        &self,
-        cx: &mut Cx,
-        f: impl FnOnce(&mut Workspace, &mut Window, &mut Context<Workspace>) -> R,
-    ) -> anyhow::Result<R> {
-        cx.update(|window, cx| {
-            let workspace =
-                workspace::get(window, cx).ok_or_else(|| anyhow::anyhow!("no workspace"))?;
-            Ok(workspace.update(cx, |ws, cx| f(ws, window, cx)))
-        })?
     }
 
     async fn click_tab(&mut self, cx: &mut Cx, index: usize) -> anyhow::Result<()> {

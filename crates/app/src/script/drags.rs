@@ -18,7 +18,7 @@ use gpui_kit::*;
 use super::{Cx, Run, center};
 use crate::herdr::{TabId, WorkspaceId};
 use crate::overlay;
-use crate::terminal_area::TerminalArea;
+use crate::terminal_area::hooks::Hooks;
 
 impl Run {
     pub(super) async fn drags(&mut self, cx: &mut Cx) -> anyhow::Result<()> {
@@ -38,7 +38,7 @@ impl Run {
         // A workspace of our own with three tabs.
         let task = self.read(cx, |area, cx| {
             let home = std::env::var_os("HOME").map(PathBuf::from);
-            area.state.read(cx).new_workspace(
+            area.state().read(cx).new_workspace(
                 &area.machine(cx),
                 home,
                 Some("drags-script".to_owned()),
@@ -52,7 +52,7 @@ impl Run {
         task.await?;
         for _ in 0..2 {
             let task = self.read(cx, |area, cx| {
-                area.state
+                area.state()
                     .read(cx)
                     .new_tab(&area.machine(cx), Some(&workspace_id), cx)
             })?;
@@ -61,9 +61,9 @@ impl Run {
         let three = self
             .until(cx, Duration::from_secs(10), |area, _, cx| {
                 let snapshot = area.snapshot(cx);
-                TerminalArea::active_tab(&snapshot)
+                Hooks::active_tab(&snapshot)
                     .is_some_and(|tab| tab.info.workspace_id == workspace_id)
-                    && area.drawn.borrow().tabs.len() == 3
+                    && area.drawn().tabs.len() == 3
             })
             .await;
         self.check(three, "own workspace shows three tabs");
@@ -110,7 +110,7 @@ impl Run {
             .await;
 
         let task = self.read(cx, |area, cx| {
-            area.state
+            area.state()
                 .read(cx)
                 .close_workspace(&area.machine(cx), &workspace_id, false, cx)
         })?;

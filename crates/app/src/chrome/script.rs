@@ -1,7 +1,7 @@
-//! Debug builds only: drive the chrome from `RT_CHROME_SCRIPT` so its flows
-//! can be checked live without synthetic OS input. Steps are `;`-separated:
+//! Debug builds only: the chrome's steps for the live step list
+//! (`crate::script::steps`, `RT_STEPS` or its older name
+//! `RT_CHROME_SCRIPT`):
 //!
-//! - `wait <ms>`
 //! - `menu pane|tab|workspace <id>`: open that context menu
 //! - `run close-pane|close-tab|close-workspace|close-group <id>`: `Chrome::run`
 //!   (`close-group` closes the group the spaces list shows, as its menu does)
@@ -11,20 +11,8 @@
 //!   `key enter` confirms)
 //! - `palette`, `query <text>`: open the palette, type into it
 //! - `type <text>`: replace the rename dialog's text
-//! - `key <keystroke>`: one key press (`down`, `enter`, `escape`, `cmd-a`, …)
-//! - `keys <text>`: type `text` one key press at a time
-//! - `scroll <x> <y> <dy>`: a wheel event at window point (x, y), straight
-//!   into GPUI (AppKit's native views and the overlay never see it)
-//! - `hover <x> <y>`: a mouse move to window point (x, y), the same way
-//!
-//! Key presses go to the window that owns the keyboard: the overlay while a
-//! menu, the palette or a dialog is open there, else the main window
-//! (`overlay::dispatch_keystroke`).
-//! - `log <label>`: print what is open and herdr's panes and agents to stderr
 //!
 //! e.g. `RT_CHROME_SCRIPT='menu pane w1:p1; wait 1500; key escape; log after'`.
-
-use std::time::Duration;
 
 use gpui_kit::component::WindowExt as _;
 use gpui_kit::*;
@@ -34,123 +22,34 @@ use crate::overlay;
 use crate::state::MachineId;
 use crate::{label, status};
 
-/// Pause between steps so each one renders (and can be screenshotted).
-const STEP: Duration = Duration::from_millis(400);
+const VERBS: &[&str] = &[
+    "menu",
+    "run",
+    "open-worktree",
+    "remove-worktree",
+    "palette",
+    "query",
+    "type",
+];
 
-pub(super) fn start(window: &mut Window, cx: &mut Context<Chrome>) {
-    let Ok(script) = std::env::var("RT_CHROME_SCRIPT") else {
-        return;
-    };
-    let steps: Vec<String> = script
-        .split(';')
-        .map(|s| s.trim().to_owned())
-        .filter(|s| !s.is_empty())
-        .collect();
-    cx.spawn_in(window, async move |this, cx| {
-        // Let the first snapshot arrive.
-        cx.background_executor().timer(Duration::from_secs(2)).await;
-        for step in steps {
-            eprintln!("[chrome-script] {step}");
-            if let Some(ms) = step.strip_prefix("wait ") {
-                let ms = ms.trim().parse().unwrap_or(0);
-                cx.background_executor()
-                    .timer(Duration::from_millis(ms))
-                    .await;
-                continue;
-            }
-            // Keys come from the window, like real input, not from inside the
-            // chrome: the overlay when something modal is open there.
-            let keys = match step.split_once(' ') {
-                Some(("key", key)) => Some(Keystroke::parse(key.trim()).map(|k| vec![k])),
-                Some(("keys", text)) => Some(Ok(overlay::keystrokes(text))),
-                _ => None,
-            };
-            if let Some(keys) = keys {
-                let keys = match keys {
-                    Ok(keys) => keys,
-                    Err(error) => {
-                        eprintln!("[chrome-script] {step}: {error}");
-                        continue;
-                    }
-                };
-                let sent = cx.update(|window, cx| {
-                    for key in keys {
-                        overlay::dispatch_keystroke(key, window, cx);
-                    }
-                });
-                if sent.is_err() {
-                    return;
-                }
-                cx.background_executor().timer(STEP).await;
-                continue;
-            }
-            let pointer = match step.split_once(' ') {
-                Some(("scroll", args)) => Some(wheel_event(args)),
-                Some(("hover", args)) => Some(move_event(args)),
-                _ => None,
-            };
-            if let Some(event) = pointer {
-                let Some(event) = event else {
-                    eprintln!("[chrome-script] {step}: bad coordinates");
-                    continue;
-                };
-                let handled = cx.update(|window, cx| window.dispatch_event(event, cx).propagate);
-                eprintln!("[chrome-script] {step}: propagated={handled:?}");
-                cx.background_executor().timer(STEP).await;
-                continue;
-            }
-            // With the main window named, not `update_in`: that picks the
-            // window the chrome was last used in, which is the overlay once
-            // a palette or prompt has run there.
-            let done = cx.update(|window, cx| {
-                this.update(cx, |chrome, cx| {
-                    if let Err(error) = run_step(chrome, &step, window, cx) {
-                        eprintln!("[chrome-script] {step}: {error}");
-                    }
-                })
-            });
-            let done = done.and_then(|done| done);
-            if done.is_err() {
-                return;
-            }
-            cx.background_executor().timer(STEP).await;
-        }
-        eprintln!("[chrome-script] end");
-    })
-    .detach();
-}
-
-fn numbers(args: &str) -> Option<Vec<f32>> {
-    args.split_whitespace()
-        .map(str::parse)
-        .collect::<Result<_, _>>()
-        .ok()
-}
-
-fn move_event(args: &str) -> Option<PlatformInput> {
-    let [x, y] = numbers(args)?[..] else {
+/// Runs `step` on the main window's chrome; `None` when it isn't one of the
+/// chrome's steps.
+pub(crate) fn run_step(
+    step: &str,
+    window: &mut Window,
+    cx: &mut App,
+) -> Option<Result<(), String>> {
+    let verb = step.split(' ').next().unwrap_or_default();
+    if !VERBS.contains(&verb) {
         return None;
+    }
+    let Some(chrome) = super::get(window, cx) else {
+        return Some(Err("no chrome in this window".into()));
     };
-    Some(PlatformInput::MouseMove(MouseMoveEvent {
-        position: point(px(x), px(y)),
-        pressed_button: None,
-        modifiers: Modifiers::none(),
-    }))
+    Some(chrome.update(cx, |chrome, cx| run(chrome, step, window, cx)))
 }
 
-fn wheel_event(args: &str) -> Option<PlatformInput> {
-    let [x, y, dy] = numbers(args)?[..] else {
-        return None;
-    };
-    Some(PlatformInput::ScrollWheel(ScrollWheelEvent {
-        position: point(px(x), px(y)),
-        delta: ScrollDelta::Pixels(point(px(0.), px(dy))),
-        modifiers: Modifiers::none(),
-        touch_phase: TouchPhase::Moved,
-    }))
-}
-
-fn run_step(
+fn run(
     chrome: &mut Chrome,
     step: &str,
     window: &mut Window,
@@ -162,59 +61,20 @@ fn run_step(
     let rest = words.next().unwrap_or_default();
     match verb {
         "menu" => {
-            let id = rest.to_owned();
-            let target = match first {
-                "pane" => MenuTarget::Pane {
-                    machine: MachineId::Local,
-                    pane_id: id.as_str().into(),
-                },
-                "tab" => MenuTarget::Tab {
-                    machine: MachineId::Local,
-                    tab_id: id.as_str().into(),
-                },
-                "workspace" => MenuTarget::Workspace {
-                    machine: MachineId::Local,
-                    workspace_id: id.as_str().into(),
-                },
-                other => return Err(format!("unknown menu target {other:?}")),
-            };
+            let target = menu_target(first, rest)?;
             chrome.context_menu(target, point(px(320.), px(200.)), Vec::new(), window, cx);
         }
         "run" => {
-            let id = rest.to_owned();
             let command = match first {
-                "close-pane" => HerdrCommand::ClosePane {
-                    machine: MachineId::Local,
-                    pane_id: id.as_str().into(),
-                },
-                "close-tab" => HerdrCommand::CloseTab {
-                    machine: MachineId::Local,
-                    tab_id: id.as_str().into(),
-                },
-                "close-workspace" => HerdrCommand::CloseWorkspace {
-                    machine: MachineId::Local,
-                    workspace_id: id.as_str().into(),
-                },
                 "close-group" => chrome
-                    .group_close(&MachineId::Local, &id.as_str().into(), cx)
-                    .ok_or_else(|| format!("{id} heads no worktree group"))?,
-                other => return Err(format!("unknown command {other:?}")),
+                    .group_close(&MachineId::Local, &rest.into(), cx)
+                    .ok_or_else(|| format!("{rest} heads no worktree group"))?,
+                other => herdr_command(other, rest)?,
             };
             chrome.run(command, window, cx);
         }
         "open-worktree" | "remove-worktree" => {
-            let (machine, workspace_id) = (MachineId::Local, first.into());
-            let command = if verb == "open-worktree" {
-                WorktreeCommand::Open {
-                    machine,
-                    workspace_id,
-                }
-            } else {
-                WorktreeCommand::Remove {
-                    machine,
-                    workspace_id,
-                }
-            };
+            let command = worktree_command(verb, first);
             chrome.run_menu_command(MenuCommand::Worktree(command), window, cx);
         }
         "palette" => chrome.open_command_palette(window, cx),
@@ -236,14 +96,79 @@ fn run_step(
                 .ok_or("no rename dialog open")?;
             input.update(cx, |input, cx| input.set_value(text, window, cx));
         }
-        "log" => log(chrome, first, window, cx),
         other => return Err(format!("unknown step {other:?}")),
     }
     Ok(())
 }
 
-fn log(chrome: &Chrome, label: &str, window: &mut Window, cx: &mut Context<Chrome>) {
-    let host = chrome.floating_window(window, cx);
+/// `menu <kind> <id>`'s target, on Local.
+fn menu_target(kind: &str, id: &str) -> Result<MenuTarget, String> {
+    let machine = MachineId::Local;
+    Ok(match kind {
+        "pane" => MenuTarget::Pane {
+            machine,
+            pane_id: id.into(),
+        },
+        "tab" => MenuTarget::Tab {
+            machine,
+            tab_id: id.into(),
+        },
+        "workspace" => MenuTarget::Workspace {
+            machine,
+            workspace_id: id.into(),
+        },
+        other => return Err(format!("unknown menu target {other:?}")),
+    })
+}
+
+/// `run <command> <id>`'s command, on Local (`close-group` aside, which
+/// needs the chrome).
+fn herdr_command(name: &str, id: &str) -> Result<HerdrCommand, String> {
+    let machine = MachineId::Local;
+    Ok(match name {
+        "close-pane" => HerdrCommand::ClosePane {
+            machine,
+            pane_id: id.into(),
+        },
+        "close-tab" => HerdrCommand::CloseTab {
+            machine,
+            tab_id: id.into(),
+        },
+        "close-workspace" => HerdrCommand::CloseWorkspace {
+            machine,
+            workspace_id: id.into(),
+        },
+        other => return Err(format!("unknown command {other:?}")),
+    })
+}
+
+fn worktree_command(verb: &str, workspace: &str) -> WorktreeCommand {
+    let (machine, workspace_id) = (MachineId::Local, workspace.into());
+    if verb == "open-worktree" {
+        WorktreeCommand::Open {
+            machine,
+            workspace_id,
+        }
+    } else {
+        WorktreeCommand::Remove {
+            machine,
+            workspace_id,
+        }
+    }
+}
+
+/// The `log` step's chrome half: what is open, and herdr's workspaces, tabs,
+/// panes and agents.
+pub(crate) fn log(tag: &str, label: &str, window: &mut Window, cx: &mut App) {
+    let Some(chrome) = super::get(window, cx) else {
+        eprintln!("[{tag}] log {label}: no chrome");
+        return;
+    };
+    let (host, menu_open, state) = {
+        let chrome = chrome.read(cx);
+        let host = chrome.floating_window(window, cx);
+        (host, chrome.open_menu.is_some(), chrome.state.clone())
+    };
     let in_overlay = host != window.window_handle();
     let (dialog, toasts) = if in_overlay {
         cx.update_window(host, |_, window, cx| {
@@ -254,7 +179,7 @@ fn log(chrome: &Chrome, label: &str, window: &mut Window, cx: &mut Context<Chrom
         (window.has_active_dialog(cx), window.notifications(cx).len())
     };
     let capturing = overlay::get(window, cx).is_some_and(|o| o.read(cx).is_capturing());
-    let snapshot = chrome.state.read(cx).snapshot();
+    let snapshot = state.read(cx).snapshot().clone();
     let panes: Vec<&str> = snapshot.panes.keys().map(|id| id.as_str()).collect();
     let agents: Vec<String> = snapshot
         .agents
@@ -263,7 +188,7 @@ fn log(chrome: &Chrome, label: &str, window: &mut Window, cx: &mut Context<Chrom
             format!(
                 "{}={}:{}",
                 a.pane_id,
-                label::agent(snapshot, a),
+                label::agent(&snapshot, a),
                 status::word(a.agent_status)
             )
         })
@@ -280,12 +205,33 @@ fn log(chrome: &Chrome, label: &str, window: &mut Window, cx: &mut Context<Chrom
         .map(|w| format!("{}={}", w.info.workspace_id, w.info.label))
         .collect();
     eprintln!(
-        "[chrome-script] log {label}: in_overlay={in_overlay} capturing={capturing} \
+        "[{tag}] log {label}: in_overlay={in_overlay} capturing={capturing} \
          menu_open={} dialog={} toasts={} focused={:?} \
          workspaces={workspaces:?} tabs={tabs:?} panes={panes:?} agents={agents:?}",
-        chrome.open_menu.is_some(),
-        dialog,
-        toasts,
-        snapshot.focused_pane_id,
+        menu_open, dialog, toasts, snapshot.focused_pane_id,
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{herdr_command, menu_target};
+    use crate::chrome::{HerdrCommand, MenuTarget};
+
+    #[test]
+    fn menu_steps_name_a_target_on_local() {
+        assert!(matches!(
+            menu_target("tab", "w1:t2"),
+            Ok(MenuTarget::Tab { tab_id, .. }) if tab_id == "w1:t2"
+        ));
+        assert!(menu_target("window", "w1").is_err());
+    }
+
+    #[test]
+    fn run_steps_name_a_herdr_command() {
+        assert!(matches!(
+            herdr_command("close-workspace", "w2"),
+            Ok(HerdrCommand::CloseWorkspace { workspace_id, .. }) if workspace_id == "w2"
+        ));
+        assert!(herdr_command("explode", "w2").is_err());
+    }
 }

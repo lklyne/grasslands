@@ -233,7 +233,7 @@ What the 54 checks cover:
 
 ## Verifying: `RT_SCRIPT=titlebar`
 
-Same harness (`terminal_area/script/titlebar.rs`): opens files, clicks the
+Same harness (`script/titlebar.rs`): opens files, clicks the
 titlebar tabs and close buttons with GPUI mouse events at their drawn bounds,
 presses ctrl-tab, ctrl-shift-tab, cmd-shift-[ and cmd-1, and checks that no
 native view is shown on a file tab, that views are back on their slots on the

@@ -32,6 +32,9 @@ pub use herdr_client::{
 pub type Config = herdr_client::Endpoint;
 
 /// herdr's methods typed both ways, for `Client::send`.
-pub use herdr_client::protocol::{self, ZoomMode, method};
+pub use herdr_client::protocol::ZoomMode;
+// Raw typed calls, for the script hooks.
+#[cfg(debug_assertions)]
+pub use herdr_client::protocol::{self, method};
 
 pub type Result<T> = herdr_client::Result<T>;

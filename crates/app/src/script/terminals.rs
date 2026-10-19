@@ -1,374 +1,32 @@
-//! `RT_SCRIPT=terminals`: drives the terminal area against the dev herdr
-//! session and checks it, printing `ok`/`FAIL` lines to stderr and saving
-//! screenshots of this app's own window to `target/script-shots/`.
+//! `RT_SCRIPT=terminals`: the terminal area against the dev herdr session.
+//! Typing, a file drop, splits, a key binding over a focused terminal,
+//! divider drags (views checked against their slots on every step), tabs,
+//! pane moves by command and by header drag, zoom, a takeover by another
+//! client and Reattach, overlay capture, theme reload and a real server
+//! restart.
 //!
 //! ```sh
 //! RT_SCRIPT=terminals scripts/dev-run cargo run -p app
 //! ```
 //!
-//! Input is dispatched inside the app (GPUI keystrokes, actions and mouse
-//! events), never through the OS. Each check reads state back: herdr's
-//! snapshot, the text herdr holds for a pane, and the frames of the native
-//! Ghostty views compared with the slots the layout drew. If the screen is
-//! locked GPUI stops drawing, so the script forces frames itself; screenshots
-//! then fail and are reported as skipped.
-//!
-//! The script creates its own workspace (`script`), works only inside it,
-//! and closes it at the end. It exits the app when done unless
-//! `RT_SCRIPT_KEEP=1`.
+//! It creates its own workspace (`script`), works only inside it, and
+//! closes it at the end.
 
 use std::collections::HashSet;
 use std::path::PathBuf;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use gpui_kit::*;
 
-mod chrome;
-mod drags;
-mod herdr_prefs;
-mod machines;
-mod remote;
-mod remote_files;
-mod remote_ui;
-mod settings;
-mod setup;
-mod titlebar;
-
-use super::{ClosePane, NewTab, SplitDown, SplitRight, TerminalArea};
-use crate::herdr::{PaneId, SplitDirection, SplitTree, TabId, TerminalId, method, protocol};
+use super::{Cx, Run, center, shell_quote};
+use crate::herdr::{PaneId, SplitDirection, SplitTree, TabId, TerminalId};
 use crate::overlay::{self, Capture};
-use crate::state::{AppState, MachineId};
-
-pub fn requested() -> Option<String> {
-    std::env::var("RT_SCRIPT").ok().filter(|s| !s.is_empty())
-}
-
-pub fn start(scenario: String, area: Entity<TerminalArea>, window: &mut Window, cx: &mut App) {
-    if ![
-        "terminals",
-        "chrome",
-        "titlebar",
-        "settings",
-        "herdr-prefs",
-        "drags",
-        "setup",
-        "machine-ui",
-        "machines",
-        "remote",
-        "remote-files",
-    ]
-    .contains(&scenario.as_str())
-    {
-        eprintln!("script: unknown scenario {scenario:?}");
-        return;
-    }
-    // herdr's `ui.prompt_new_tab_name` and `ui.prompt_new_workspace_name`
-    // would stop cmd-t and New Workspace at a name dialog; the scenarios
-    // check what follows. `herdr-prefs` checks the prefs themselves.
-    if scenario != "herdr-prefs" {
-        use crate::herdr::config::Edit;
-        crate::herdr_prefs::override_for_script(Edit::PromptNewTabName(false), cx);
-        crate::herdr_prefs::override_for_script(Edit::PromptNewWorkspaceName(false), cx);
-    }
-    window
-        .spawn(cx, async move |cx| {
-            let mut run = Run {
-                area,
-                failures: 0,
-                shot: 0,
-            };
-            let result = match scenario.as_str() {
-                "chrome" => run.chrome(cx).await,
-                "titlebar" => run.titlebar(cx).await,
-                "settings" => run.settings(cx).await,
-                "herdr-prefs" => run.herdr_prefs(cx).await,
-                "drags" => run.drags(cx).await,
-                "setup" => run.setup(cx).await,
-                "machine-ui" => run.machine_ui(cx).await,
-                "machines" => run.machines(cx).await,
-                "remote" => run.remote_ui(cx).await,
-                "remote-files" => run.remote_files(cx).await,
-                _ => run.terminals(cx).await,
-            };
-            if let Err(error) = result {
-                run.fail(&format!("script stopped: {error:#}"));
-            }
-            eprintln!(
-                "script: done, {} failure{}",
-                run.failures,
-                if run.failures == 1 { "" } else { "s" }
-            );
-            if std::env::var("RT_SCRIPT_KEEP").is_err() {
-                cx.update(|_, cx| cx.quit()).ok();
-            }
-        })
-        .detach();
-}
-
-struct Run {
-    area: Entity<TerminalArea>,
-    failures: usize,
-    shot: usize,
-}
-
-type Cx = AsyncWindowContext;
+use crate::state::MachineId;
+use crate::terminal_area::hooks::{self, GAP, Hooks, neighbor};
+use crate::terminal_area::{ClosePane, NewTab, NextTab, SplitDown, SplitRight};
 
 impl Run {
-    fn check(&mut self, ok: bool, what: &str) {
-        if ok {
-            eprintln!("ok   {what}");
-        } else {
-            self.fail(what);
-        }
-    }
-
-    fn fail(&mut self, what: &str) {
-        self.failures += 1;
-        eprintln!("FAIL {what}");
-    }
-
-    async fn sleep(cx: &mut Cx, millis: u64) {
-        cx.background_executor()
-            .timer(Duration::from_millis(millis))
-            .await;
-    }
-
-    /// Lets GPUI lay out and paint. A locked screen stops the display link,
-    /// so draw directly as well, the overlay window included (its hit tests
-    /// decide mouse capture).
-    async fn settle(cx: &mut Cx) {
-        for _ in 0..3 {
-            let overlay = cx
-                .update(|window, cx| {
-                    window.refresh();
-                    let _ = window.draw(cx);
-                    overlay::get(window, cx).map(|o| o.read(cx).window_handle())
-                })
-                .ok()
-                .flatten();
-            if let Some(overlay) = overlay {
-                cx.update_window(overlay, |_, window, cx| {
-                    window.refresh();
-                    let _ = window.draw(cx);
-                })
-                .ok();
-            }
-            Self::sleep(cx, 60).await;
-        }
-    }
-
-    /// Polls `test` until it holds or `timeout` passes.
-    async fn until(
-        &self,
-        cx: &mut Cx,
-        timeout: Duration,
-        mut test: impl FnMut(&TerminalArea, &Window, &App) -> bool,
-    ) -> bool {
-        let start = Instant::now();
-        loop {
-            Self::settle(cx).await;
-            let area = self.area.clone();
-            let done = cx
-                .update(|window, cx| {
-                    let area = area.read(cx);
-                    test(area, window, cx)
-                })
-                .unwrap_or(false);
-            if done {
-                return true;
-            }
-            if start.elapsed() > timeout {
-                return false;
-            }
-            Self::sleep(cx, 100).await;
-        }
-    }
-
-    fn read<R>(&self, cx: &mut Cx, f: impl FnOnce(&TerminalArea, &App) -> R) -> anyhow::Result<R> {
-        let area = self.area.clone();
-        cx.update(|_, cx| f(area.read(cx), cx))
-    }
-
-    /// Runs `f` on the app state with the selected machine, the one the
-    /// script drives.
-    fn on_state<R>(
-        &self,
-        cx: &mut Cx,
-        f: impl FnOnce(&mut AppState, &MachineId, &mut Context<AppState>) -> R,
-    ) -> anyhow::Result<R> {
-        let area = self.area.clone();
-        cx.update(|_, cx| {
-            let state = area.read(cx).state.clone();
-            state.update(cx, |state, cx| {
-                let machine = state.selected().clone();
-                f(state, &machine, cx)
-            })
-        })
-    }
-
-    /// Every screenshot goes through `scripts/capture-windows.swift`: this
-    /// app's windows only, whatever else is on screen.
-    fn shoot(&mut self, cx: &mut Cx, name: &str) {
-        self.shoot_with_overlay(cx, name);
-    }
-
-    /// Captures this app's main window composited with its overlay child
-    /// window, and nothing else: other apps' windows on top are left out (a
-    /// screen-region capture would show whatever is frontmost there).
-    fn shoot_with_overlay(&mut self, cx: &mut Cx, name: &str) {
-        self.shot += 1;
-        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
-        let dir = root.join("target/script-shots");
-        let _ = std::fs::create_dir_all(&dir);
-        let path = dir.join(format!("{:02}-{name}.png", self.shot));
-        let numbers = cx
-            .update(|window, cx| {
-                let main = overlay::ns_window(window)?.windowNumber();
-                let overlay = overlay::get(window, cx).and_then(|overlay| {
-                    let handle = overlay.read(cx).window_handle();
-                    cx.update_window(handle, |_, window, _| {
-                        overlay::ns_window(window).map(|w| w.windowNumber())
-                    })
-                    .ok()
-                    .flatten()
-                });
-                Some((main, overlay))
-            })
-            .ok()
-            .flatten();
-        let Some((main, overlay)) = numbers else {
-            eprintln!("shot {name} skipped: no window");
-            return;
-        };
-        let mut command = std::process::Command::new("swift");
-        command
-            .arg(root.join("scripts/capture-windows.swift"))
-            .arg(&path)
-            .arg(main.to_string());
-        if let Some(overlay) = overlay {
-            command.arg(overlay.to_string());
-        }
-        match capture(command, Duration::from_secs(20)) {
-            Ok(()) if path.exists() => eprintln!("shot {}", path.display()),
-            Ok(()) => eprintln!("shot {name} skipped: no file written"),
-            Err(error) => eprintln!("shot {name} skipped: {error}"),
-        }
-    }
-
-    /// Compares where the layout put each visible pane with the native views
-    /// on screen: every visible pane has a shown view at exactly its slot,
-    /// and no other view is shown.
-    fn views_match_layout(&self, cx: &mut Cx) -> Result<usize, String> {
-        cx.update(|window, cx| {
-            let area = self.area.read(cx);
-            // Detached panes show a Reattach button instead of a view.
-            let drawn = area.drawn.borrow();
-            let slots: Vec<Bounds<Pixels>> = drawn
-                .panes
-                .iter()
-                .filter(|(pane, _)| !drawn.reattach.contains_key(*pane))
-                .map(|(_, bounds)| *bounds)
-                .collect();
-            drop(drawn);
-            if let Some(tiny) = slots
-                .iter()
-                .find(|slot| slot.size.width < px(80.) || slot.size.height < px(60.))
-            {
-                return Err(format!("a pane slot is too small to use: {tiny:?}"));
-            }
-            let shown: Vec<Bounds<Pixels>> = overlay::native_subviews(window)
-                .into_iter()
-                .filter(|(_, hidden)| !hidden)
-                .map(|(bounds, _)| bounds)
-                .collect();
-            let near = |a: &Bounds<Pixels>, b: &Bounds<Pixels>| {
-                let d = |x: Pixels, y: Pixels| (f32::from(x) - f32::from(y)).abs() < 1.0;
-                d(a.origin.x, b.origin.x)
-                    && d(a.origin.y, b.origin.y)
-                    && d(a.size.width, b.size.width)
-                    && d(a.size.height, b.size.height)
-            };
-            let missing: Vec<_> = slots
-                .iter()
-                .filter(|slot| !shown.iter().any(|view| near(slot, view)))
-                .collect();
-            let extra: Vec<_> = shown
-                .iter()
-                .filter(|view| !slots.iter().any(|slot| near(slot, view)))
-                .collect();
-            if missing.is_empty() && extra.is_empty() {
-                Ok(slots.len())
-            } else {
-                Err(format!(
-                    "slots without a view: {missing:?}; views without a slot: {extra:?}"
-                ))
-            }
-        })
-        .map_err(|e| e.to_string())?
-    }
-
-    fn check_views(&mut self, cx: &mut Cx, what: &str) {
-        match self.views_match_layout(cx) {
-            Ok(count) => eprintln!("ok   {what}: {count} views on their slots"),
-            Err(error) => self.fail(&format!("{what}: {error}")),
-        }
-    }
-
-    /// Dispatches `action` where the keyboard is: the overlay while
-    /// something modal is open there, else the main window.
-    fn dispatch(&self, cx: &mut Cx, action: Box<dyn Action>) {
-        cx.update(|window, cx| overlay::dispatch_action(action, window, cx))
-            .ok();
-    }
-
-    /// Types `text` one key press at a time, where the keyboard is.
-    fn type_text(&self, cx: &mut Cx, text: &str) {
-        cx.update(|window, cx| {
-            for keystroke in overlay::keystrokes(text) {
-                overlay::dispatch_keystroke(keystroke, window, cx);
-            }
-        })
-        .ok();
-    }
-
-    fn mouse(&self, cx: &mut Cx, event: PlatformInput) {
-        cx.update(|window, cx| {
-            window.dispatch_event(event, cx);
-        })
-        .ok();
-    }
-
-    /// The tab the script works in and its tree.
-    fn tab(&self, cx: &mut Cx) -> anyhow::Result<Option<(TabId, SplitTree)>> {
-        self.read(cx, |area, cx| {
-            let snapshot = area.snapshot(cx);
-            TerminalArea::active_tab(&snapshot)
-                .and_then(|tab| Some((tab.info.tab_id.clone(), tab.root.clone()?)))
-        })
-    }
-
-    async fn read_pane_text(&self, cx: &mut Cx, pane_id: &PaneId) -> String {
-        let pane_id = pane_id.to_owned();
-        let Ok(task) = self.read(cx, |area, cx| {
-            area.state
-                .read(cx)
-                .call(&area.machine(cx), cx, move |client| {
-                    client.send::<method::PaneRead>(&protocol::PaneReadParams {
-                        pane_id,
-                        source: protocol::ReadSource::Recent,
-                        lines: Some(40),
-                    })
-                })
-        }) else {
-            return String::new();
-        };
-        match task.await {
-            Ok(read) => read.text,
-            Err(error) => format!("<{error}>"),
-        }
-    }
-
-    async fn terminals(&mut self, cx: &mut Cx) -> anyhow::Result<()> {
+    pub(super) async fn terminals(&mut self, cx: &mut Cx) -> anyhow::Result<()> {
         eprintln!("script: terminals");
         let connected = self
             .until(cx, Duration::from_secs(20), |area, _, cx| {
@@ -383,7 +41,7 @@ impl Run {
         // A workspace of our own, focused, with one pane.
         let task = self.read(cx, |area, cx| {
             let home = std::env::var_os("HOME").map(PathBuf::from);
-            area.state.read(cx).new_workspace(
+            area.state().read(cx).new_workspace(
                 &area.machine(cx),
                 home,
                 Some("script".to_owned()),
@@ -392,10 +50,9 @@ impl Run {
         })?;
         let workspace = task.await?;
         let workspace_id = workspace.workspace_id.clone();
-        let ours = |area: &TerminalArea, cx: &App| {
+        let ours = |area: &Hooks, cx: &App| {
             let snapshot = area.snapshot(cx);
-            TerminalArea::active_tab(&snapshot)
-                .is_some_and(|tab| tab.info.workspace_id == workspace_id)
+            Hooks::active_tab(&snapshot).is_some_and(|tab| tab.info.workspace_id == workspace_id)
         };
         let task = self.on_state(cx, |state, machine, cx| {
             state.focus_workspace(machine, &workspace_id, cx)
@@ -403,7 +60,7 @@ impl Run {
         task.await?;
         let shown = self
             .until(cx, Duration::from_secs(10), |area, _, cx| {
-                ours(area, cx) && area.drawn.borrow().panes.len() == 1
+                ours(area, cx) && area.drawn().panes.len() == 1
             })
             .await;
         self.check(shown, "new workspace shows one pane");
@@ -418,7 +75,7 @@ impl Run {
         };
         cx.update(|window, cx| {
             self.area.update(cx, |area, cx| {
-                let machine = area.machine(cx);
+                let machine = area.hooks().machine(cx);
                 area.focus_pane(&machine, &first, window, cx);
             });
         })
@@ -441,7 +98,7 @@ impl Run {
         // A file dropped from Finder pastes its shell-escaped path.
         self.type_text(cx, "echo dropped:");
         let center = self.read(cx, |area, _| {
-            area.drawn.borrow().panes.get(&first).map(|b| b.center())
+            area.drawn().panes.get(&first).map(|b| b.center())
         })?;
         if let Some(position) = center {
             let paths = ExternalPaths(vec![PathBuf::from("/tmp/drop me (1).png")].into());
@@ -474,7 +131,7 @@ impl Run {
         self.dispatch(cx, Box::new(SplitRight));
         let two = self
             .until(cx, Duration::from_secs(10), |area, _, _| {
-                area.drawn.borrow().panes.len() == 2
+                area.drawn().panes.len() == 2
             })
             .await;
         self.check(two, "cmd-d action splits right (2 panes)");
@@ -484,7 +141,7 @@ impl Run {
         self.dispatch(cx, Box::new(SplitDown));
         let three = self
             .until(cx, Duration::from_secs(10), |area, _, _| {
-                area.drawn.borrow().panes.len() == 3
+                area.drawn().panes.len() == 3
             })
             .await;
         self.check(three, "split down (3 panes)");
@@ -503,7 +160,14 @@ impl Run {
             SplitTree::Pane(_) => 0.5,
         };
         let terminal_focused = cx
-            .update(|window, cx| self.area.read(cx).terminals.focused(window, cx).is_some())
+            .update(|window, cx| {
+                self.area
+                    .read(cx)
+                    .hooks()
+                    .terminals()
+                    .focused(window, cx)
+                    .is_some()
+            })
             .unwrap_or(false);
         self.check(terminal_focused, "a terminal has keyboard focus");
         cx.update(|window, cx| {
@@ -528,11 +192,8 @@ impl Run {
 
         // Drag the root divider with in-app mouse events; check the views
         // follow on every step, then that herdr got the ratio on release.
-        let key = super::SplitKey {
-            tab_id: tab_id.clone(),
-            path: Vec::new(),
-        };
-        let split = self.read(cx, |area, _| area.drawn.borrow().splits.get(&key).copied())?;
+        let root_split = (tab_id.clone(), Vec::new());
+        let split = self.read(cx, |area, _| area.drawn().splits.get(&root_split).copied())?;
         if let Some(bounds) = split {
             let ratio_now = self.read(cx, |area, cx| {
                 area.with_overrides(
@@ -549,7 +210,7 @@ impl Run {
             };
             let x = f32::from(bounds.origin.x)
                 + f32::from(bounds.size.width) * ratio_now
-                + f32::from(super::GAP) * (0.5 - ratio_now);
+                + f32::from(GAP) * (0.5 - ratio_now);
             let y = f32::from(bounds.origin.y) + f32::from(bounds.size.height) / 2.;
             let start = point(px(x), px(y));
             self.mouse(
@@ -594,7 +255,7 @@ impl Run {
                 }
             }
             self.check(lockstep, "views stay on their slots on every drag step");
-            let local = self.read(cx, |area, _| area.overrides.get(&key).map(|o| o.ratio))?;
+            let local = self.read(cx, |area, _| area.override_ratio(&tab_id, &[]))?;
             self.check(
                 local.is_some_and(|r| (r - 0.3).abs() < 0.03),
                 &format!("divider follows the pointer locally (ratio {local:?})"),
@@ -629,13 +290,12 @@ impl Run {
         }
 
         // A second tab: the first tab's views hide, the new one shows.
-        let before: HashSet<PaneId> = self.read(cx, |area, _| {
-            area.drawn.borrow().panes.keys().cloned().collect()
-        })?;
+        let before: HashSet<PaneId> =
+            self.read(cx, |area, _| area.drawn().panes.keys().cloned().collect())?;
         self.dispatch(cx, Box::new(NewTab));
         let switched = self
             .until(cx, Duration::from_secs(10), |area, _, _| {
-                let panes = area.drawn.borrow();
+                let panes = area.drawn();
                 panes.panes.len() == 1 && !panes.panes.keys().any(|p| before.contains(p))
             })
             .await;
@@ -655,12 +315,12 @@ impl Run {
             let terminal_id = snapshot.pane(&moving).map(|p| p.terminal_id.clone());
             let view = terminal_id
                 .as_ref()
-                .and_then(|id| area.terminals.get(id))
+                .and_then(|id| area.terminals().get(id))
                 .map(|v| v.terminal.entity_id());
             (terminal_id, view)
         })?;
         let task = self.read(cx, |area, cx| {
-            area.state.read(cx).move_pane(
+            area.state().read(cx).move_pane(
                 &area.machine(cx),
                 &moving,
                 crate::herdr::PaneMoveDestination::Tab {
@@ -686,7 +346,7 @@ impl Run {
                     .any(|p| Some(&p.terminal_id) == terminal_id.as_ref() && p.tab_id == tab_id);
                 let view = terminal_id
                     .as_ref()
-                    .and_then(|id| area.terminals.get(id))
+                    .and_then(|id| area.terminals().get(id))
                     .map(|v| v.terminal.entity_id());
                 in_first && view.is_some() && view == view_before
             })
@@ -694,7 +354,7 @@ impl Run {
         self.check(kept, "moved pane keeps its Ghostty view (no restart)");
         let four = self
             .until(cx, Duration::from_secs(10), |area, _, _| {
-                area.drawn.borrow().panes.len() == 4
+                area.drawn().panes.len() == 4
             })
             .await;
         self.check(four, "first tab now shows 4 panes");
@@ -708,15 +368,15 @@ impl Run {
             let terminal = area
                 .target_pane(cx)
                 .and_then(|p| snapshot.pane(&p).map(|p| p.terminal_id.clone()));
-            (area.terminals.len(), terminal)
+            (area.terminals().len(), terminal)
         })?;
         self.dispatch(cx, Box::new(ClosePane));
         let closed = self
             .until(cx, Duration::from_secs(10), |area, _, _| {
-                area.terminals.len() + 1 == count_before
+                area.terminals().len() + 1 == count_before
                     && closing_terminal
                         .as_ref()
-                        .is_some_and(|id| area.terminals.get(id).is_none())
+                        .is_some_and(|id| area.terminals().get(id).is_none())
             })
             .await;
         self.check(closed, "cmd-w closes the focused pane and drops its view");
@@ -798,7 +458,7 @@ impl Run {
 
         // Clean up: close the script's workspace.
         let task = self.read(cx, |area, cx| {
-            area.state.read(cx).close_workspace(
+            area.state().read(cx).close_workspace(
                 &area.machine(cx),
                 &workspace.workspace_id,
                 false,
@@ -811,137 +471,7 @@ impl Run {
     }
 }
 
-/// Runs the capture helper, giving up after `timeout`: ScreenCaptureKit can
-/// hang (seen with several captures queued machine-wide), and the script
-/// must not stall on a screenshot.
-fn capture(mut command: std::process::Command, timeout: Duration) -> Result<(), String> {
-    use std::os::unix::process::CommandExt as _;
-    let mut child = command
-        // Its own process group: `swift` runs the script in a child
-        // `swift-frontend`, which a timeout must stop too.
-        .process_group(0)
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .map_err(|error| error.to_string())?;
-    let start = Instant::now();
-    loop {
-        match child.try_wait() {
-            Ok(Some(status)) if status.success() => return Ok(()),
-            Ok(Some(_)) => {
-                let mut stderr = String::new();
-                if let Some(mut pipe) = child.stderr.take() {
-                    std::io::Read::read_to_string(&mut pipe, &mut stderr).ok();
-                }
-                return Err(stderr.trim().to_owned());
-            }
-            Ok(None) if start.elapsed() > timeout => {
-                // Our own child's group, nothing else.
-                std::process::Command::new("kill")
-                    .arg("-KILL")
-                    .arg(format!("-{}", child.id()))
-                    .status()
-                    .ok();
-                child.wait().ok();
-                return Err(format!("capture timed out after {timeout:?}"));
-            }
-            Ok(None) => std::thread::sleep(Duration::from_millis(50)),
-            Err(error) => return Err(error.to_string()),
-        }
-    }
-}
-
-fn shell_quote(value: &str) -> String {
-    format!("'{}'", value.replace('\'', r"'\''"))
-}
-
-fn center(bounds: Bounds<Pixels>) -> Point<Pixels> {
-    bounds.origin + point(bounds.size.width / 2., bounds.size.height / 2.)
-}
-
 impl Run {
-    fn press(&self, cx: &mut Cx, at: Point<Pixels>) {
-        self.mouse(
-            cx,
-            PlatformInput::MouseMove(MouseMoveEvent {
-                position: at,
-                pressed_button: None,
-                modifiers: Modifiers::default(),
-            }),
-        );
-        self.mouse(
-            cx,
-            PlatformInput::MouseDown(MouseDownEvent {
-                button: MouseButton::Left,
-                position: at,
-                modifiers: Modifiers::default(),
-                click_count: 1,
-                first_mouse: false,
-            }),
-        );
-    }
-
-    fn release(&self, cx: &mut Cx, at: Point<Pixels>) {
-        self.mouse(
-            cx,
-            PlatformInput::MouseUp(MouseUpEvent {
-                button: MouseButton::Left,
-                position: at,
-                modifiers: Modifiers::default(),
-                click_count: 1,
-            }),
-        );
-    }
-
-    async fn click(&self, cx: &mut Cx, at: Point<Pixels>) {
-        self.press(cx, at);
-        Self::settle(cx).await;
-        self.release(cx, at);
-        Self::settle(cx).await;
-    }
-
-    /// Drags with the left button from `from` to `to` in `steps` frames;
-    /// `during` runs at the halfway step, while the button is still down.
-    async fn drag(
-        &mut self,
-        cx: &mut Cx,
-        from: Point<Pixels>,
-        to: Point<Pixels>,
-        steps: usize,
-        mut during: impl FnMut(&mut Self, &mut Cx),
-    ) {
-        self.press(cx, from);
-        Self::settle(cx).await;
-        for step in 1..=steps {
-            let t = step as f32 / steps as f32;
-            let position = from + point((to.x - from.x) * t, (to.y - from.y) * t);
-            self.mouse(
-                cx,
-                PlatformInput::MouseMove(MouseMoveEvent {
-                    position,
-                    pressed_button: Some(MouseButton::Left),
-                    modifiers: Modifiers::default(),
-                }),
-            );
-            Self::settle(cx).await;
-            if step == steps / 2 {
-                during(self, cx);
-            }
-        }
-        self.release(cx, to);
-        Self::settle(cx).await;
-    }
-
-    fn drawn<R>(&self, cx: &mut Cx, f: impl FnOnce(&super::Drawn) -> R) -> anyhow::Result<R> {
-        self.read(cx, |area, _| f(&area.drawn.borrow()))
-    }
-
-    fn focused_pane(&self, cx: &mut Cx) -> Option<PaneId> {
-        self.read(cx, |area, cx| area.snapshot(cx).focused_pane_id.clone())
-            .ok()
-            .flatten()
-    }
-
     /// cmd-alt-arrows move herdr's focus to the pane next to the focused one.
     async fn focus_moves(&mut self, cx: &mut Cx) -> anyhow::Result<()> {
         // Start from the leftmost pane.
@@ -957,7 +487,7 @@ impl Run {
         };
         cx.update(|window, cx| {
             self.area.update(cx, |area, cx| {
-                let machine = area.machine(cx);
+                let machine = area.hooks().machine(cx);
                 area.focus_pane(&machine, &leftmost, window, cx);
             });
         })
@@ -969,8 +499,7 @@ impl Run {
             .await;
         self.check(on_left, "focus starts on the leftmost pane");
         let expected = self.drawn(cx, |d| {
-            super::layout::neighbor(&leftmost, crate::herdr::PaneDirection::Right, &d.panes)
-                .cloned()
+            neighbor(&leftmost, crate::herdr::PaneDirection::Right, &d.panes).cloned()
         })?;
         cx.update(|window, cx| {
             window.dispatch_keystroke(Keystroke::parse("cmd-alt-right").unwrap_or_default(), cx);
@@ -987,13 +516,13 @@ impl Run {
         );
         let terminal_follows = cx
             .update(|window, cx| {
-                let area = self.area.read(cx);
+                let area = self.area.read(cx).hooks();
                 let snapshot = area.snapshot(cx);
                 let want = expected
                     .as_deref()
                     .and_then(|p| snapshot.pane(p))
                     .map(|p| p.terminal_id.clone());
-                area.terminals.focused(window, cx).cloned() == want
+                area.terminals().focused(window, cx).cloned() == want
             })
             .unwrap_or(false);
         self.check(
@@ -1017,12 +546,12 @@ impl Run {
     /// Switching tabs moves keyboard focus to the new tab's terminal, so
     /// typing goes there without a click.
     async fn tab_switch_focus(&mut self, cx: &mut Cx, first_tab: &TabId) -> anyhow::Result<()> {
-        let typing_in_active_tab = |area: &TerminalArea, window: &Window, cx: &App| {
+        let typing_in_active_tab = |area: &Hooks, window: &Window, cx: &App| {
             let snapshot = area.snapshot(cx);
             let want = area
                 .target_pane(cx)
                 .and_then(|p| snapshot.pane(&p).map(|p| p.terminal_id.clone()));
-            want.is_some() && area.terminals.focused(window, cx).cloned() == want
+            want.is_some() && area.terminals().focused(window, cx).cloned() == want
         };
         let on_new = self
             .until(cx, Duration::from_secs(5), typing_in_active_tab)
@@ -1038,18 +567,16 @@ impl Run {
         self.click(cx, center(first_strip)).await;
         let clicked = self
             .until(cx, Duration::from_secs(5), |area, window, cx| {
-                TerminalArea::active_tab(&area.snapshot(cx))
-                    .is_some_and(|t| &t.info.tab_id == first_tab)
+                Hooks::active_tab(&area.snapshot(cx)).is_some_and(|t| &t.info.tab_id == first_tab)
                     && typing_in_active_tab(area, window, cx)
             })
             .await;
         self.check(clicked, "clicking a tab focuses its terminal");
 
-        self.dispatch(cx, Box::new(super::NextTab));
+        self.dispatch(cx, Box::new(NextTab));
         let cycled = self
             .until(cx, Duration::from_secs(5), |area, window, cx| {
-                TerminalArea::active_tab(&area.snapshot(cx)).map(|t| &t.info.tab_id)
-                    == second_tab.as_ref()
+                Hooks::active_tab(&area.snapshot(cx)).map(|t| &t.info.tab_id) == second_tab.as_ref()
                     && typing_in_active_tab(area, window, cx)
             })
             .await;
@@ -1083,7 +610,7 @@ impl Run {
             12,
             |run, cx| {
                 chip_shown = run
-                    .read(cx, |area, _| area.pane_drag.is_some())
+                    .read(cx, |area, _| area.pane_dragging())
                     .unwrap_or(false);
                 run.shoot_with_overlay(cx, "dragging-header-over-terminal");
             },
@@ -1093,7 +620,7 @@ impl Run {
             chip_shown,
             "the drag preview is an overlay layer while dragging",
         );
-        let gone = self.read(cx, |area, _| area.pane_drag.is_none())?;
+        let gone = self.read(cx, |area, _| !area.pane_dragging())?;
         self.check(gone, "the drag preview is removed on drop");
         let swapped = self
             .until(cx, Duration::from_secs(5), |area, _, cx| {
@@ -1120,8 +647,8 @@ impl Run {
         let second = self
             .until(cx, Duration::from_secs(10), |area, _, cx| {
                 let snapshot = area.snapshot(cx);
-                TerminalArea::active_tab(&snapshot).is_some_and(|t| &t.info.tab_id != first_tab)
-                    && area.drawn.borrow().panes.len() == 1
+                Hooks::active_tab(&snapshot).is_some_and(|t| &t.info.tab_id != first_tab)
+                    && area.drawn().panes.len() == 1
             })
             .await;
         self.check(second, "a second tab to move from");
@@ -1144,7 +671,7 @@ impl Run {
         let view_before = self.read(cx, |area, _| {
             terminal
                 .as_ref()
-                .and_then(|t| area.terminals.get(t))
+                .and_then(|t| area.terminals().get(t))
                 .map(|v| v.terminal.entity_id())
         })?;
         self.drag(cx, center(header), center(tab), 10, |_, _| {})
@@ -1158,7 +685,7 @@ impl Run {
                     .any(|p| Some(&p.terminal_id) == terminal.as_ref() && &p.tab_id == first_tab);
                 let view = terminal
                     .as_ref()
-                    .and_then(|t| area.terminals.get(t))
+                    .and_then(|t| area.terminals().get(t))
                     .map(|v| v.terminal.entity_id());
                 in_first && view.is_some() && view == view_before
             })
@@ -1174,7 +701,7 @@ impl Run {
         task.await.ok();
         let four = self
             .until(cx, Duration::from_secs(10), |area, _, _| {
-                area.drawn.borrow().panes.len() == 4
+                area.drawn().panes.len() == 4
             })
             .await;
         self.check(four, "the first tab shows the moved pane (4 panes)");
@@ -1195,7 +722,7 @@ impl Run {
         let zoomed = self
             .until(cx, Duration::from_secs(5), |area, _, cx| {
                 area.snapshot(cx).tab(tab_id).is_some_and(|t| t.zoomed)
-                    && area.drawn.borrow().panes.len() == 1
+                    && area.drawn().panes.len() == 1
             })
             .await;
         self.check(zoomed, "cmd-shift-enter zooms the focused pane (pane.zoom)");
@@ -1209,7 +736,7 @@ impl Run {
         .ok();
         let unzoomed = self
             .until(cx, Duration::from_secs(5), |area, _, _| {
-                area.drawn.borrow().panes.len() == panes
+                area.drawn().panes.len() == panes
             })
             .await;
         self.check(unzoomed, "cmd-shift-enter again restores the split");
@@ -1224,12 +751,12 @@ impl Run {
     async fn detach_and_reattach(&mut self, cx: &mut Cx) -> anyhow::Result<()> {
         let (pane, terminal, config) = self.read(cx, |area, cx| {
             let snapshot = area.snapshot(cx);
-            let pane = area.drawn.borrow().panes.keys().next().cloned();
+            let pane = area.drawn().panes.keys().next().cloned();
             let terminal = pane
                 .as_deref()
                 .and_then(|p| snapshot.pane(p))
                 .map(|p| p.terminal_id.clone());
-            (pane, terminal, area.state.read(cx).herdr_config.clone())
+            (pane, terminal, area.state().read(cx).herdr_config.clone())
         })?;
         let (Some(pane), Some(terminal), Some(config)) = (pane, terminal, config) else {
             self.fail("detach: no pane or herdr config");
@@ -1263,8 +790,8 @@ impl Run {
         };
         let detached = self
             .until(cx, Duration::from_secs(10), |area, _, cx| {
-                !area.terminals.is_attached(&terminal, cx)
-                    && area.drawn.borrow().reattach.contains_key(&pane)
+                !area.terminals().is_attached(&terminal, cx)
+                    && area.drawn().reattach.contains_key(&pane)
             })
             .await;
         self.check(
@@ -1279,13 +806,13 @@ impl Run {
         // terminal with the other client: herdr refuses a plain attach.
         cx.update(|window, cx| {
             self.area.update(cx, |area, cx| {
-                area.reattach_machine(&MachineId::Local, window, cx);
+                hooks::reattach_machine(area, &MachineId::Local, window, cx);
             });
         })
         .ok();
         Self::sleep(cx, 2000).await;
         let still_detached =
-            self.read(cx, |area, cx| !area.terminals.is_attached(&terminal, cx))?;
+            self.read(cx, |area, cx| !area.terminals().is_attached(&terminal, cx))?;
         let other_kept = matches!(other.try_wait(), Ok(None));
         self.check(
             still_detached && other_kept,
@@ -1302,8 +829,8 @@ impl Run {
         self.click(cx, center(button)).await;
         let back = self
             .until(cx, Duration::from_secs(10), |area, _, cx| {
-                area.terminals.is_attached(&terminal, cx)
-                    && !area.drawn.borrow().reattach.contains_key(&pane)
+                area.terminals().is_attached(&terminal, cx)
+                    && !area.drawn().reattach.contains_key(&pane)
             })
             .await;
         self.check(back, "clicking Reattach attaches the terminal again");
@@ -1312,7 +839,7 @@ impl Run {
         self.check_views(cx, "reattached");
         cx.update(|window, cx| {
             self.area.update(cx, |area, cx| {
-                let machine = area.machine(cx);
+                let machine = area.hooks().machine(cx);
                 area.focus_pane(&machine, &pane, window, cx);
             });
         })
@@ -1335,8 +862,8 @@ impl Run {
     /// Toggling light/dark rewrites every terminal's config file and
     /// reloads it in place.
     async fn theme_reload(&mut self, cx: &mut Cx) -> anyhow::Result<()> {
-        let read_config = |area: &TerminalArea| {
-            area.terminals
+        let read_config = |area: &Hooks| {
+            area.terminals()
                 .iter()
                 .next()
                 .and_then(|(_, view)| std::fs::read_to_string(view.config_path()).ok())
@@ -1365,8 +892,8 @@ impl Run {
     async fn server_restart(&mut self, cx: &mut Cx, label: &str) -> anyhow::Result<()> {
         let (before, config) = self.read(cx, |area, cx| {
             let ids: HashSet<TerminalId> =
-                area.terminals.iter().map(|(id, _)| id.clone()).collect();
-            (ids, area.state.read(cx).herdr_config.clone())
+                area.terminals().iter().map(|(id, _)| id.clone()).collect();
+            (ids, area.state().read(cx).herdr_config.clone())
         })?;
         let Some(config) = config else {
             self.fail("server restart: herdr is disconnected");
@@ -1388,11 +915,12 @@ impl Run {
                 let snapshot = area.snapshot(cx);
                 let live: HashSet<&TerminalId> =
                     snapshot.panes.values().map(|p| &p.terminal_id).collect();
-                let views: HashSet<&TerminalId> = area.terminals.iter().map(|(id, _)| id).collect();
+                let views: HashSet<&TerminalId> =
+                    area.terminals().iter().map(|(id, _)| id).collect();
                 !live.is_empty()
                     && live.iter().all(|id| !before.contains(*id))
                     && live == views
-                    && live.iter().all(|id| area.terminals.is_attached(id, cx))
+                    && live.iter().all(|id| area.terminals().is_attached(id, cx))
             })
             .await;
         self.check(

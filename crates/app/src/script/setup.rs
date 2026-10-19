@@ -29,10 +29,10 @@ impl Run {
     pub(super) async fn setup(&mut self, cx: &mut Cx) -> anyhow::Result<()> {
         let expect = std::env::var("RT_SETUP_EXPECT").unwrap_or_else(|_| "ready".into());
         eprintln!("script: setup, expecting {expect}");
-        let state = self.read(cx, |area, _| area.state.clone())?;
+        let state = self.read(cx, |area, _| area.state().clone())?;
         let settled = self
             .until(cx, Duration::from_secs(20), |area, _, cx| {
-                let app = area.state.read(cx);
+                let app = area.state().read(cx);
                 match expect.as_str() {
                     "unreachable" => app.machine(&MachineId::Local).is_some_and(|local| {
                         matches!(local.status(), Status::Offline { retrying: true, .. })
@@ -65,7 +65,7 @@ impl Run {
         );
         let drawn = self
             .until(cx, Duration::from_secs(2), |area, _, cx| {
-                let app = area.state.read(cx);
+                let app = area.state().read(cx);
                 crate::setup::render(app.setup(), app, None, cx).is_some() == (expect != "ready")
             })
             .await;
@@ -89,7 +89,7 @@ impl Run {
         cx.update(|_, cx| setup.update(cx, |setup, cx| setup.run_fix(fix, cx)))?;
         let showing = self
             .until(cx, Duration::from_secs(10), |area, _, cx| {
-                area.setup_terminal.read(cx).terminal().is_some()
+                area.setup_terminal().read(cx).terminal().is_some()
             })
             .await;
         self.check(showing, "the fix runs in a terminal beside the screen");
@@ -99,7 +99,7 @@ impl Run {
             let failed = self
                 .until(cx, Duration::from_secs(60), |area, _, cx| {
                     matches!(
-                        area.state.read(cx).setup().read(cx).stage(),
+                        area.state().read(cx).setup().read(cx).stage(),
                         Stage::Needed(_)
                     )
                 })
@@ -110,7 +110,7 @@ impl Run {
         }
         let done = self
             .until(cx, Duration::from_secs(120), |area, _, cx| {
-                *area.state.read(cx).setup().read(cx).stage() == Stage::Done
+                *area.state().read(cx).setup().read(cx).stage() == Stage::Done
             })
             .await;
         self.check(done, "a fix that worked offers Finish Setup");
@@ -118,10 +118,10 @@ impl Run {
         cx.update(|_, cx| setup.update(cx, |setup, cx| setup.finish_setup(cx)))?;
         let connected = self
             .until(cx, Duration::from_secs(30), |area, _, cx| {
-                let app = area.state.read(cx);
+                let app = area.state().read(cx);
                 app.setup().read(cx).is_ready()
                     && app.snapshot().generation > 0
-                    && area.setup_terminal.read(cx).terminal().is_none()
+                    && area.setup_terminal().read(cx).terminal().is_none()
             })
             .await;
         self.check(

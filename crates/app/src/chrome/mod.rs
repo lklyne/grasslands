@@ -11,7 +11,7 @@ mod confirm;
 mod dock;
 mod palette;
 #[cfg(debug_assertions)]
-mod script;
+pub(crate) mod script;
 mod worktrees;
 
 use std::collections::HashMap;
@@ -225,8 +225,6 @@ impl Chrome {
             _subscriptions: vec![events],
         };
         chrome.refresh_plugin_actions(cx);
-        #[cfg(debug_assertions)]
-        script::start(window, cx);
         chrome
     }
 
