@@ -63,6 +63,49 @@ impl FakeFs {
         Ok(())
     }
 
+    pub fn create_file(&self, path: &Path) -> io::Result<()> {
+        let modified = self.tick();
+        let mut files = self.files()?;
+        if files.contains_key(path) {
+            return Err(io::ErrorKind::AlreadyExists.into());
+        }
+        files.insert(path.to_path_buf(), (String::new(), modified));
+        Ok(())
+    }
+
+    /// Refuses to overwrite `to`; moves everything below a folder `from`.
+    pub fn rename(&self, from: &Path, to: &Path) -> io::Result<()> {
+        let mut files = self.files()?;
+        if files.keys().any(|path| path.starts_with(to)) {
+            return Err(io::ErrorKind::AlreadyExists.into());
+        }
+        let moved: Vec<PathBuf> = files
+            .keys()
+            .filter(|path| path.starts_with(from))
+            .cloned()
+            .collect();
+        if moved.is_empty() {
+            return Err(io::ErrorKind::NotFound.into());
+        }
+        for path in moved {
+            let file = files.remove(&path).expect("listed above");
+            let rest = path.strip_prefix(from).expect("filtered above");
+            files.insert(to.join(rest), file);
+        }
+        Ok(())
+    }
+
+    /// Removes `path` and everything below it.
+    pub fn remove_all(&self, path: &Path) -> io::Result<()> {
+        let mut files = self.files()?;
+        let before = files.len();
+        files.retain(|file, _| !file.starts_with(path));
+        if files.len() == before {
+            return Err(io::ErrorKind::NotFound.into());
+        }
+        Ok(())
+    }
+
     pub fn metadata(&self, path: &Path) -> io::Result<super::Metadata> {
         let files = self.files()?;
         let (text, modified) = files.get(path).ok_or(io::ErrorKind::NotFound)?;

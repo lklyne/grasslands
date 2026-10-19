@@ -99,11 +99,24 @@ pub struct FileTree {
     _remote_poll: Task<()>,
 }
 
+/// Where a tree action runs: the root and machine it was chosen on, with
+/// that machine's files. Captured when the user picks the action, so a root
+/// that moves meanwhile (an agent `cd`s, focus goes to another machine)
+/// can't redirect it; `run_fs` refuses once the tree has left it.
+#[derive(Clone)]
+struct Scope {
+    machine: MachineId,
+    root: PathBuf,
+    fs: Fs,
+}
+
 /// A file or folder being dragged to another folder.
 #[derive(Clone)]
 pub struct DraggedPath {
     pub path: PathBuf,
     name: SharedString,
+    /// Where the drag started; `None` if that machine was offline.
+    scope: Option<Scope>,
 }
 
 impl Render for DraggedPath {
@@ -268,7 +281,10 @@ impl FileTree {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.create(dir, name, false, window, cx);
+        match self.scope(cx) {
+            Ok(scope) => self.create(&scope, dir, name, false, window, cx),
+            Err(message) => error(message, window, cx),
+        }
     }
 
     pub fn rename_to(
@@ -278,20 +294,43 @@ impl FileTree {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.rename(path, name, window, cx);
+        match self.scope(cx) {
+            Ok(scope) => self.rename(&scope, path, name, window, cx),
+            Err(message) => error(message, window, cx),
+        }
     }
 
     pub fn ask_to_remove(&mut self, path: &Path, window: &mut Window, cx: &mut Context<Self>) {
-        if self.machine.is_local() {
-            self.remove(path, window, cx);
-        } else {
-            self.confirm_remove(path, window, cx);
+        match self.scope(cx) {
+            Ok(scope) => self.ask_remove(&scope, path, window, cx),
+            Err(message) => error(message, window, cx),
         }
     }
 
     /// The root's files; `None` while its machine is offline.
     fn fs(&self, cx: &App) -> Option<Fs> {
         self.state.read(cx).fs_for(&self.machine)
+    }
+
+    /// The root as it is now, for an action being chosen; the error says why
+    /// there's nothing to act on.
+    fn scope(&self, cx: &App) -> Result<Scope, String> {
+        let root = self.root().ok_or("No worktree")?.to_path_buf();
+        let fs = self
+            .fs(cx)
+            .ok_or_else(|| format!("{} is offline", self.machine_label(&self.machine, cx)))?;
+        Ok(Scope {
+            machine: self.machine.clone(),
+            root,
+            fs,
+        })
+    }
+
+    fn machine_label(&self, machine: &MachineId, cx: &App) -> String {
+        self.state
+            .read(cx)
+            .machine(machine)
+            .map_or_else(|| machine.to_string(), |m| m.label().to_owned())
     }
 
     fn set_root(&mut self, root: Option<ActiveRoot>, cx: &mut Context<Self>) {
@@ -530,24 +569,29 @@ impl FileTree {
     // root's file system, then re-lists the affected folder right away
     // rather than waiting for the watcher or the poll.
 
-    /// Runs `op` on the root's files off the main thread, then `done` here;
-    /// a failure toasts `failed`'s wording.
+    /// Runs `op` on `scope`'s files off the main thread, then `done` here;
+    /// a failure toasts `failed`'s wording. Refuses if the tree has left
+    /// `scope` since the action was chosen.
     fn run_fs<T: Send + 'static>(
         &self,
+        scope: &Scope,
         op: impl FnOnce(&Fs) -> io::Result<T> + Send + 'static,
         done: impl FnOnce(&mut Self, T, &mut Window, &mut Context<Self>) + 'static,
         failed: impl FnOnce(io::Error) -> String + 'static,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(fs) = self.fs(cx) else {
-            let label = self
-                .state
-                .read(cx)
-                .machine(&self.machine)
-                .map_or_else(|| self.machine.to_string(), |m| m.label().to_owned());
-            return error(format!("{label} is offline"), window, cx);
-        };
+        if !self.is_root(&scope.machine, &scope.root) {
+            return error(
+                format!(
+                    "The file tree moved off {}; nothing was changed",
+                    scope.root.display()
+                ),
+                window,
+                cx,
+            );
+        }
+        let fs = scope.fs.clone();
         let task = cx.background_executor().spawn(async move { op(&fs) });
         cx.spawn_in(window, async move |this, cx| {
             let result = task.await;
@@ -562,6 +606,7 @@ impl FileTree {
 
     fn create(
         &mut self,
+        scope: &Scope,
         dir: PathBuf,
         name: &str,
         folder: bool,
@@ -573,7 +618,9 @@ impl FileTree {
             Err(message) => return error(message, window, cx),
         };
         let shown = path.display().to_string();
+        let (here, machine) = (scope.clone(), scope.machine.clone());
         self.run_fs(
+            scope,
             {
                 let path = path.clone();
                 move |fs| {
@@ -585,13 +632,15 @@ impl FileTree {
                 }
             },
             move |this, (), window, cx| {
-                if let Some(model) = this.model.as_mut()
-                    && model.root() != dir
-                {
-                    model.set_expanded(&dir, true);
-                }
                 crate::sounds::play(cues::Cue::Tap, crate::sounds::subtle());
-                this.load(vec![dir], cx);
+                if this.is_root(&here.machine, &here.root) {
+                    if let Some(model) = this.model.as_mut()
+                        && model.root() != dir
+                    {
+                        model.set_expanded(&dir, true);
+                    }
+                    this.load(vec![dir], cx);
+                }
                 if folder {
                     return;
                 }
@@ -599,7 +648,6 @@ impl FileTree {
                 // layer, outside `Workspace`: an action dispatched there never
                 // reaches the editor. Focus the tree (inside `Workspace`) and
                 // dispatch from there.
-                let machine = this.machine.clone();
                 cx.defer_in(window, move |this, window, cx| {
                     this.tree.update(cx, |tree, cx| tree.focus(window, cx));
                     window.dispatch_action(Box::new(OpenFile { path, machine }), cx);
@@ -611,7 +659,14 @@ impl FileTree {
         );
     }
 
-    fn rename(&mut self, path: &Path, name: &str, window: &mut Window, cx: &mut Context<Self>) {
+    fn rename(
+        &mut self,
+        scope: &Scope,
+        path: &Path,
+        name: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let target = match valid_name(name) {
             Ok(name) => path.with_file_name(name),
             Err(message) => return error(message, window, cx),
@@ -621,7 +676,9 @@ impl FileTree {
         }
         let from = path.to_path_buf();
         let shown = (from.display().to_string(), target.display().to_string());
+        let here = scope.clone();
         self.run_fs(
+            scope,
             {
                 let (from, target) = (from.clone(), target.clone());
                 move |fs| fs.rename(&from, &target)
@@ -629,8 +686,8 @@ impl FileTree {
             move |this, (), _, cx| {
                 crate::sounds::play(cues::Cue::Tap, crate::sounds::subtle());
                 let parent = from.parent().map(Path::to_path_buf);
-                this.moved(from, target, cx);
-                this.load(parent.into_iter().collect(), cx);
+                this.moved(&here, from, target, cx);
+                this.reload_in(&here, parent.into_iter().collect(), cx);
             },
             move |err| move_error("rename", &shown.0, &shown.1, &err),
             window,
@@ -639,7 +696,14 @@ impl FileTree {
     }
 
     /// Moves `path` into `dir`, keeping its name.
-    fn move_into(&mut self, path: &Path, dir: &Path, window: &mut Window, cx: &mut Context<Self>) {
+    fn move_into(
+        &mut self,
+        scope: &Scope,
+        path: &Path,
+        dir: &Path,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let Some(name) = path.file_name() else { return };
         if path.parent() == Some(dir) {
             return;
@@ -654,7 +718,9 @@ impl FileTree {
         let (from, dir) = (path.to_path_buf(), dir.to_path_buf());
         let target = dir.join(name);
         let shown = (from.display().to_string(), target.display().to_string());
+        let here = scope.clone();
         self.run_fs(
+            scope,
             {
                 let (from, target) = (from.clone(), target.clone());
                 move |fs| fs.rename(&from, &target)
@@ -667,13 +733,14 @@ impl FileTree {
                     .chain([dir.as_path()])
                     .map(Path::to_path_buf)
                     .collect();
-                this.moved(from, target, cx);
-                if let Some(model) = this.model.as_mut()
+                this.moved(&here, from, target, cx);
+                if this.is_root(&here.machine, &here.root)
+                    && let Some(model) = this.model.as_mut()
                     && model.root() != dir
                 {
                     model.set_expanded(&dir, true);
                 }
-                this.load(dirs, cx);
+                this.reload_in(&here, dirs, cx);
             },
             move |err| move_error("move", &shown.0, &shown.1, &err),
             window,
@@ -681,20 +748,58 @@ impl FileTree {
         );
     }
 
-    /// Tells open editor tabs to follow a move.
-    fn moved(&self, from: PathBuf, to: PathBuf, cx: &mut Context<Self>) {
-        let machine = self.machine.clone();
+    /// Moves a dragged row into `dir`, on the machine the drag started on.
+    fn drop_into(
+        &mut self,
+        dragged: &DraggedPath,
+        dir: &Path,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(scope) = &dragged.scope else {
+            return error("That machine is offline", window, cx);
+        };
+        self.move_into(scope, &dragged.path, dir, window, cx);
+    }
+
+    /// Tells open editor tabs on `scope`'s machine to follow a move.
+    fn moved(&self, scope: &Scope, from: PathBuf, to: PathBuf, cx: &mut Context<Self>) {
+        let machine = scope.machine.clone();
         self.state
             .update(cx, |state, cx| state.file_moved(machine, from, to, cx));
     }
 
-    /// Local moves to the Trash, so a slip is recoverable. A saved machine
-    /// has no trash, so it asks first (`confirm_remove`).
-    fn remove(&mut self, path: &Path, window: &mut Window, cx: &mut Context<Self>) {
+    /// Re-lists `dirs` after an operation in `scope`, unless the tree has
+    /// left it meanwhile.
+    fn reload_in(&self, scope: &Scope, dirs: Vec<PathBuf>, cx: &mut Context<Self>) {
+        if self.is_root(&scope.machine, &scope.root) {
+            self.load(dirs, cx);
+        }
+    }
+
+    /// Local moves to the Trash at once, so a slip is recoverable. A saved
+    /// machine has no trash, so it asks first. Which one is `scope`'s.
+    fn ask_remove(
+        &mut self,
+        scope: &Scope,
+        path: &Path,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if scope.fs.is_local() {
+            self.remove(scope, path, window, cx);
+        } else {
+            self.confirm_remove(scope, path, window, cx);
+        }
+    }
+
+    fn remove(&mut self, scope: &Scope, path: &Path, window: &mut Window, cx: &mut Context<Self>) {
         let removed = path.to_path_buf();
         let shown = removed.display().to_string();
-        let is_local = self.machine.is_local();
+        let is_local = scope.fs.is_local();
+        let here = scope.clone();
         self.run_fs(
+            scope,
             {
                 let path = removed.clone();
                 move |fs| fs.remove(&path)
@@ -702,10 +807,10 @@ impl FileTree {
             move |this, _: Removal, _, cx| {
                 crate::sounds::play(cues::Cue::Close, crate::sounds::strong());
                 let parent = removed.parent().map(Path::to_path_buf);
-                let machine = this.machine.clone();
+                let machine = here.machine.clone();
                 this.state
                     .update(cx, |state, cx| state.file_removed(machine, removed, cx));
-                this.load(parent.into_iter().collect(), cx);
+                this.reload_in(&here, parent.into_iter().collect(), cx);
             },
             move |err| {
                 if is_local {
@@ -720,7 +825,13 @@ impl FileTree {
     }
 
     /// Asks before deleting on a saved machine, where it is permanent.
-    fn confirm_remove(&mut self, path: &Path, window: &mut Window, cx: &mut Context<Self>) {
+    fn confirm_remove(
+        &mut self,
+        scope: &Scope,
+        path: &Path,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let Some(chrome) = crate::chrome::get(window, cx) else {
             tracing::warn!("files: no chrome to confirm deleting {}", path.display());
             return;
@@ -729,11 +840,7 @@ impl FileTree {
             || path.display().to_string(),
             |n| n.to_string_lossy().into_owned(),
         );
-        let label = self
-            .state
-            .read(cx)
-            .machine(&self.machine)
-            .map_or_else(|| self.machine.to_string(), |m| m.label().to_owned());
+        let label = self.machine_label(&scope.machine, cx);
         let confirmation = Confirmation {
             title: "Delete permanently?".into(),
             message: format!(
@@ -741,18 +848,19 @@ impl FileTree {
             ),
             confirm_label: "Delete".into(),
         };
-        let (this, main, path) = (
+        let (this, main, path, scope) = (
             cx.entity().downgrade(),
             window.window_handle(),
             path.to_path_buf(),
+            scope.clone(),
         );
         // The dialog calls back in the overlay; delete from the main window,
         // where failures toast.
         let on_confirm = move |_: &mut Window, cx: &mut App| {
-            let (this, path) = (this.clone(), path.clone());
+            let (this, path, scope) = (this.clone(), path.clone(), scope.clone());
             cx.defer(move |cx| {
                 cx.update_window(main, |_, window, cx| {
-                    this.update(cx, |this, cx| this.remove(&path, window, cx))
+                    this.update(cx, |this, cx| this.remove(&scope, &path, window, cx))
                         .ok();
                 })
                 .ok();
@@ -796,16 +904,18 @@ impl FileTree {
         );
     }
 
+    /// `scope` is the root as the menu opened; every item acts there.
     fn context_menu(
         this: &WeakEntity<Self>,
-        is_local: bool,
+        scope: Option<&Scope>,
         entry: &TreeEntry,
         menu: PopupMenu,
     ) -> PopupMenu {
         let id = entry.item().id.as_ref();
-        if model::is_placeholder(id) {
+        let Some(scope) = scope.filter(|_| !model::is_placeholder(id)) else {
             return menu;
-        }
+        };
+        let is_local = scope.fs.is_local();
         let path = PathBuf::from(id);
         let dir = if entry.is_folder() {
             path.clone()
@@ -822,17 +932,17 @@ impl FileTree {
             })
         };
         let new_in = |folder: bool| {
-            let dir = dir.clone();
+            let (dir, scope) = (dir.clone(), scope.clone());
             Rc::new(
                 move |this: &mut Self, window: &mut Window, cx: &mut Context<Self>| {
-                    let dir = dir.clone();
+                    let (dir, scope) = (dir.clone(), scope.clone());
                     let title = if folder { "New Folder" } else { "New File" };
                     this.prompt(
                         title,
                         "Create",
                         "",
                         move |this, name, window, cx| {
-                            this.create(dir.clone(), name, folder, window, cx)
+                            this.create(&scope, dir.clone(), name, folder, window, cx)
                         },
                         window,
                         cx,
@@ -841,15 +951,15 @@ impl FileTree {
             ) as TreeOp
         };
         let rename = {
-            let path = path.clone();
+            let (path, scope) = (path.clone(), scope.clone());
             Rc::new(
                 move |this: &mut Self, window: &mut Window, cx: &mut Context<Self>| {
-                    let path = path.clone();
+                    let (path, scope) = (path.clone(), scope.clone());
                     this.prompt(
                         "Rename",
                         "Rename",
                         &name,
-                        move |this, name, window, cx| this.rename(&path, name, window, cx),
+                        move |this, name, window, cx| this.rename(&scope, &path, name, window, cx),
                         window,
                         cx,
                     );
@@ -857,14 +967,10 @@ impl FileTree {
             )
         };
         let remove = {
-            let path = path.clone();
+            let (path, scope) = (path.clone(), scope.clone());
             Rc::new(
                 move |this: &mut Self, window: &mut Window, cx: &mut Context<Self>| {
-                    if is_local {
-                        this.remove(&path, window, cx);
-                    } else {
-                        this.confirm_remove(&path, window, cx);
-                    }
+                    this.ask_remove(&scope, &path, window, cx)
                 },
             )
         };
@@ -902,9 +1008,11 @@ impl FileTree {
     /// Asks for a name, then creates a file (or folder) in the selected
     /// folder, the selected file's folder, or the root.
     fn new_in_selected(&mut self, folder: bool, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(root) = self.root().map(Path::to_path_buf) else {
-            return;
+        let scope = match self.scope(cx) {
+            Ok(scope) => scope,
+            Err(message) => return error(message, window, cx),
         };
+        let root = scope.root.clone();
         let selected = self.tree.read(cx).selected_entry().and_then(|entry| {
             let id = entry.item().id.as_ref();
             if model::is_placeholder(id) {
@@ -925,7 +1033,9 @@ impl FileTree {
             title,
             "Create",
             "",
-            move |this, name, window, cx| this.create(dir.clone(), name, folder, window, cx),
+            move |this, name, window, cx| {
+                this.create(&scope, dir.clone(), name, folder, window, cx)
+            },
             window,
             cx,
         );
@@ -938,6 +1048,7 @@ fn render_row(
     ix: usize,
     entry: &TreeEntry,
     this: &WeakEntity<FileTree>,
+    scope: Option<&Scope>,
     machine: &MachineId,
     git: Option<&git::Summary>,
     cx: &App,
@@ -1000,6 +1111,7 @@ fn render_row(
             DraggedPath {
                 path: path.clone(),
                 name: item.label.clone(),
+                scope: scope.cloned(),
             },
             |dragged, _, _, cx| {
                 crate::workspace::keep_terminals_during_drag(cx);
@@ -1011,7 +1123,7 @@ fn render_row(
             let this = this.clone();
             move |dragged: &DraggedPath, window, cx| {
                 let _ = this.update(cx, |this, cx| {
-                    this.move_into(&dragged.path, &drop_dir, window, cx)
+                    this.drop_into(dragged, &drop_dir, window, cx)
                 });
             }
         });
@@ -1325,7 +1437,8 @@ impl Render for FileTree {
             (None, None) => {
                 let rows = this.clone();
                 let machine = self.machine.clone();
-                let is_local = machine.is_local();
+                let scope = self.scope(cx).ok();
+                let menu_scope = scope.clone();
                 let git = self.git.clone();
                 let menu = this.clone();
                 let root = self.root().map(Path::to_path_buf);
@@ -1337,19 +1450,18 @@ impl Render for FileTree {
                     .drag_over::<DraggedPath>(move |style, _, _, _| style.bg(drop_bg))
                     .on_drop(move |dragged: &DraggedPath, window, cx| {
                         let Some(root) = &root else { return };
-                        let _ = this.update(cx, |this, cx| {
-                            this.move_into(&dragged.path, root, window, cx)
-                        });
+                        let _ =
+                            this.update(cx, |this, cx| this.drop_into(dragged, root, window, cx));
                     })
                     .child(
                         tree(&self.tree, move |ix, entry, _selected, _window, cx| {
-                            render_row(ix, entry, &rows, &machine, git.as_ref(), cx)
+                            render_row(ix, entry, &rows, scope.as_ref(), &machine, git.as_ref(), cx)
                         })
                         .size_full()
                         .p_1()
                         .context_menu(
                             move |_ix, entry, popup, _window, _cx| {
-                                Self::context_menu(&menu, is_local, entry, popup)
+                                Self::context_menu(&menu, menu_scope.as_ref(), entry, popup)
                             },
                         ),
                     )

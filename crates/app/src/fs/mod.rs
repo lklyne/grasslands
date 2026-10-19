@@ -56,7 +56,8 @@ pub enum Fs {
         label: String,
         files: Arc<herdr_client::RemoteFs>,
     },
-    /// An in-memory remote machine: files only, no git or search.
+    /// An in-memory remote machine: files only (folders exist only through
+    /// the files in them), no git or search.
     #[cfg(test)]
     Fake(Arc<fake::FakeFs>),
 }
@@ -137,7 +138,7 @@ impl Fs {
             Self::Local => local::create_file(path),
             Self::Remote { files, .. } => files.create_file(path),
             #[cfg(test)]
-            Self::Fake(_) => Err(io::ErrorKind::Unsupported.into()),
+            Self::Fake(fake) => fake.create_file(path),
         }
     }
 
@@ -156,7 +157,7 @@ impl Fs {
             Self::Local => local::rename(from, to),
             Self::Remote { files, .. } => files.rename(from, to),
             #[cfg(test)]
-            Self::Fake(_) => Err(io::ErrorKind::Unsupported.into()),
+            Self::Fake(fake) => fake.rename(from, to),
         }
     }
 
@@ -165,7 +166,7 @@ impl Fs {
             Self::Local => local::trash(path).map(|()| Removal::Trashed),
             Self::Remote { files, .. } => files.remove(path).map(|()| Removal::Deleted),
             #[cfg(test)]
-            Self::Fake(_) => Err(io::ErrorKind::Unsupported.into()),
+            Self::Fake(fake) => fake.remove_all(path).map(|()| Removal::Deleted),
         }
     }
 
