@@ -2,8 +2,10 @@
 //! its own, so it never sits under the main window's native terminal views.
 //! One window at a time; opening it again brings the open one forward.
 //!
-//! Appearance and Sounds are grasslands' own (`settings.json`); the herdr
-//! page shows and edits herdr's `config.toml` (`crate::herdr_prefs`).
+//! Appearance and Sounds are grasslands' own (`settings.json`); Updates is
+//! Sparkle's (`crate::updates`, which keeps its choice in the app's
+//! defaults); the herdr page shows and edits herdr's `config.toml`
+//! (`crate::herdr_prefs`).
 
 use gpui_kit::component::button::Button;
 use gpui_kit::component::setting::{
@@ -23,6 +25,7 @@ use crate::herdr::config::{
 use crate::herdr_prefs::{self, HerdrPrefs};
 use crate::sounds;
 use crate::theme::{self, Appearance};
+use crate::updates;
 
 /// The open Settings window, if any.
 #[derive(Default)]
@@ -113,6 +116,7 @@ impl Render for SettingsView {
                         .sidebar_width(px(180.))
                         .page(appearance_page(cx))
                         .page(sounds_page())
+                        .page(updates_page())
                         .page(herdr_page(cx)),
                 ),
             )
@@ -219,6 +223,69 @@ fn sounds_page() -> SettingPage {
                     ),
                 )
                 .description("Percent."),
+            ),
+    )
+}
+
+fn updates_page() -> SettingPage {
+    let available = updates::available();
+    SettingPage::new("Updates").icon(IconName::ArrowDown).group(
+        SettingGroup::new()
+            .title("Updates")
+            .description(if available {
+                "grasslands checks GitHub for a newer release about once a day and offers to \
+                 install it. Nothing else is sent."
+            } else {
+                "This build has no updater: only the grasslands app from GitHub or Homebrew \
+                 updates itself."
+            })
+            .item(
+                SettingItem::new(
+                    "Version",
+                    SettingField::render(move |_, _, cx| {
+                        h_flex()
+                            .gap_3()
+                            .child(
+                                div()
+                                    .text_sm()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child(format!("grasslands {}", updates::VERSION)),
+                            )
+                            .child(
+                                Button::new("updates-check")
+                                    .small()
+                                    .label("Check for Updates")
+                                    .disabled(!available)
+                                    .on_click(|_, _, cx| {
+                                        sounds::play(cues::Cue::Tap, cues::PlayOptions::default());
+                                        updates::check(cx);
+                                    }),
+                            )
+                    }),
+                )
+                .description("Sparkle shows what it finds in a window of its own."),
+            )
+            .item(
+                SettingItem::new(
+                    "Check automatically",
+                    SettingField::switch(
+                        |_| updates::automatic_checks().unwrap_or(false),
+                        |on, _| {
+                            updates::set_automatic_checks(on);
+                            let direction = if on {
+                                cues::Direction::Forward
+                            } else {
+                                cues::Direction::Back
+                            };
+                            sounds::play(
+                                cues::Cue::Toggle,
+                                cues::PlayOptions::default().direction(direction),
+                            );
+                        },
+                    ),
+                )
+                .disabled(!available)
+                .description("Look for a new release on launch and every day after."),
             ),
     )
 }

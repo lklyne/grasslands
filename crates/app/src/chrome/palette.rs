@@ -10,7 +10,7 @@ use gpui_kit::*;
 
 use super::worktrees::{self, WorktreeCommand};
 use super::{Chrome, HerdrCommand, MenuCommand, MenuTarget, pane_context, update_later};
-use crate::actions::{FocusPane, OpenChanges, OpenSettings, Quit, ToggleTheme};
+use crate::actions::{CheckForUpdates, FocusPane, OpenChanges, OpenSettings, Quit, ToggleTheme};
 use crate::herdr::{PluginActionInfo, PluginInvocationContext, SplitDirection, WorkspaceInfo};
 use crate::state::AppState;
 use crate::worktree::Placement;
@@ -205,6 +205,10 @@ fn groups(
     app.push((
         "Settings…".into(),
         MenuCommand::Action(Rc::new(OpenSettings)),
+    ));
+    app.push((
+        "Check for Updates…".into(),
+        MenuCommand::Action(Rc::new(CheckForUpdates)),
     ));
     app.push(("Quit grasslands".into(), MenuCommand::Action(Rc::new(Quit))));
 

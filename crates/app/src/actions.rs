@@ -18,6 +18,8 @@ actions!(
         ToggleTheme,
         CommandPalette,
         OpenSettings,
+        /// Ask Sparkle to check for a newer grasslands now (`crate::updates`).
+        CheckForUpdates,
         /// Show the active worktree's diff in the Changes tab. Sent by the
         /// file tree's git footer.
         OpenChanges
@@ -76,6 +78,8 @@ pub fn init(cx: &mut App) {
         Menu {
             name: "grasslands".into(),
             items: vec![
+                MenuItem::action("Check for Updates…", CheckForUpdates),
+                MenuItem::separator(),
                 MenuItem::action("Settings…", OpenSettings),
                 MenuItem::action("Command Palette", CommandPalette),
                 MenuItem::separator(),
