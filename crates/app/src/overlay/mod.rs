@@ -29,12 +29,13 @@
 mod native;
 
 use std::cell::Cell;
-use std::collections::HashMap;
 use std::rc::Rc;
 
 use gpui_kit::base::Root;
 use gpui_kit::component::{ActiveTheme as _, WindowExt as _};
 use gpui_kit::*;
+
+use crate::window_registry;
 
 pub use native::{app_is_active, ns_window, subviews as native_subviews};
 
@@ -91,28 +92,20 @@ pub struct Overlay {
     _subscriptions: Vec<Subscription>,
 }
 
-#[derive(Default)]
-struct Overlays(HashMap<WindowId, Entity<Overlay>>);
-
-impl Global for Overlays {}
-
 /// The overlay for the main window `window`, opening it on first use.
 pub fn get_or_open(window: &mut Window, cx: &mut App) -> anyhow::Result<Entity<Overlay>> {
-    let id = window.window_handle().window_id();
-    if let Some(overlay) = cx.try_global::<Overlays>().and_then(|o| o.0.get(&id)) {
-        return Ok(overlay.clone());
+    if let Some(overlay) = get(window, cx) {
+        return Ok(overlay);
     }
     let overlay = Overlay::open(window, cx)?;
-    cx.default_global::<Overlays>()
-        .0
-        .insert(id, overlay.clone());
+    // Held strongly: nothing else owns the overlay entity.
+    window_registry::insert(window, overlay.clone(), cx);
     Ok(overlay)
 }
 
 /// The overlay for `window` if one is open.
 pub fn get(window: &Window, cx: &App) -> Option<Entity<Overlay>> {
-    let id = window.window_handle().window_id();
-    cx.try_global::<Overlays>()?.0.get(&id).cloned()
+    window_registry::get(window, cx)
 }
 
 /// Feeds the main window's pointer position to its overlay, so the overlay

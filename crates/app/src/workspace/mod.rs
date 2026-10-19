@@ -10,7 +10,6 @@ mod main_area;
 mod titlebar;
 
 use std::cell::RefCell;
-use std::collections::HashMap;
 use std::rc::Rc;
 
 use gpui_kit::component::{ActiveTheme as _, v_flex};
@@ -27,6 +26,7 @@ use crate::changes::Changes;
 use crate::chrome::Chrome;
 use crate::editor::{Editor, EditorEvent};
 use crate::overlay;
+use crate::window_registry;
 use crate::sidebar::SidebarPanels;
 use crate::state::AppState;
 use crate::terminal_area::TerminalArea;
@@ -56,12 +56,6 @@ pub enum MainTab {
     Changes,
 }
 
-/// Each main window's workspace, for the script hooks: see [`get`].
-#[derive(Default)]
-struct Workspaces(HashMap<WindowId, WeakEntity<Workspace>>);
-
-impl Global for Workspaces {}
-
 /// Set when the active drag can leave the terminals on screen: its drop
 /// targets aren't under them, unlike a dock panel's. Cleared when it ends.
 #[derive(Default)]
@@ -75,10 +69,10 @@ pub fn keep_terminals_during_drag(cx: &mut App) {
     cx.set_global(KeepTerminalsDuringDrag(true));
 }
 
-/// The workspace of the main window `window`, if it has one.
+/// The workspace of the main window `window`, if it has one (for the
+/// script hooks).
 pub fn get(window: &Window, cx: &App) -> Option<Entity<Workspace>> {
-    let id = window.window_handle().window_id();
-    cx.try_global::<Workspaces>()?.0.get(&id)?.upgrade()
+    window_registry::upgrade(window, cx)
 }
 
 pub struct Workspace {
@@ -121,9 +115,8 @@ impl Workspace {
                 cx.notify();
             }),
         ];
-        let id = window.window_handle().window_id();
         let this = cx.entity().downgrade();
-        cx.default_global::<Workspaces>().0.insert(id, this.clone());
+        window_registry::insert(window, this.clone(), cx);
         let terminal_area = cx.new(|cx| TerminalArea::new(state.clone(), window, cx));
         let main_area = cx.new(|_| MainArea::new(this));
         let main_panel = cx.new(|cx| {

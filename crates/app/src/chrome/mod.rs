@@ -14,7 +14,6 @@ mod palette;
 mod script;
 mod worktrees;
 
-use std::collections::HashMap;
 use std::rc::Rc;
 
 use gpui_kit::component::WindowExt as _;
@@ -34,6 +33,7 @@ use crate::overlay::{self, Capture, LayerId, Overlay};
 use crate::sounds;
 use crate::state::{AppEvent, AppState, MachineId};
 use crate::status;
+use crate::window_registry;
 
 pub use command::HerdrCommand;
 pub use confirm::Confirmation;
@@ -152,17 +152,10 @@ impl Render for MenuLayer {
 /// replaces the older.
 struct AgentToast;
 
-/// Each main window's chrome, so views that only have the window (the
-/// terminal area) can reach it: see [`get`].
-#[derive(Default)]
-struct Chromes(HashMap<WindowId, WeakEntity<Chrome>>);
-
-impl Global for Chromes {}
-
-/// The chrome of the main window `window`, if it has one.
+/// The chrome of the main window `window`, if it has one, for views that
+/// only have the window (the terminal area).
 pub fn get(window: &Window, cx: &App) -> Option<Entity<Chrome>> {
-    let id = window.window_handle().window_id();
-    cx.try_global::<Chromes>()?.0.get(&id)?.upgrade()
+    window_registry::upgrade(window, cx)
 }
 
 pub struct Chrome {
@@ -196,10 +189,7 @@ impl Chrome {
             }
         });
         let main_window = window.window_handle();
-        let weak = cx.entity().downgrade();
-        cx.default_global::<Chromes>()
-            .0
-            .insert(main_window.window_id(), weak);
+        window_registry::insert(window, cx.entity().downgrade(), cx);
         let mut chrome = Self {
             state,
             main_window,
