@@ -10,6 +10,12 @@ terminal area, before the app connects.
   one call (`herdr_client::setup`, `Endpoint::check`). The sync thread starts
   only once the check passes. A herdr without `status --json` falls back to
   `herdr --version`.
+- **`Setup` is its own entity** (`crate::setup::Setup`), owned by
+  `AppState`: the check, the fixes, the stage and the once-per-version
+  old-server check live there. It emits `SetupEvent::HerdrReady` (AppState
+  starts Local's sync) and `SetupEvent::StageChanged` (Local's machine status
+  follows `needs_setup`). `AppState::new` has no side effects; `main` calls
+  `AppState::start`, which runs the first check and the machine-list poll.
 - **Outcomes:** missing, can't run, binary older than 0.9.5, server older
   than 0.9.5 (or incompatible), ready. A snapshot from a server older than
   0.9.5 runs the check again, for a server started outside the app.

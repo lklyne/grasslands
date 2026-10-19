@@ -24,9 +24,9 @@ use gpui_kit::*;
 use super::remote::{all_attached, docker, focus, remote, shows};
 use super::{Cx, Run};
 use crate::chrome::HerdrCommand;
-use crate::herdr::{MachineStatus, WorkspaceId};
+use crate::herdr::WorkspaceId;
 use crate::sidebar;
-use crate::state::{MachineId, MachineTask, RunStage};
+use crate::state::{MachineId, MachineTask, RunStage, Status};
 use crate::terminal_area::TerminalArea;
 
 const CONTAINER: &str = "herdr-remote-test";
@@ -40,9 +40,8 @@ impl Run {
         let connected = self
             .until(cx, Duration::from_secs(60), |area, _, cx| {
                 area.snapshot(cx).generation > 0
-                    && remote(area, cx).is_some_and(|m| {
-                        m.status() == &MachineStatus::Connected && m.snapshot().generation > 0
-                    })
+                    && remote(area, cx)
+                        .is_some_and(|m| m.status().is_usable() && m.snapshot().generation > 0)
             })
             .await;
         self.check(connected, "Local and dockerbox connected");
@@ -238,7 +237,7 @@ impl Run {
         docker(cx, &["stop", "-t", "1", CONTAINER]).await;
         let offline = self
             .until(cx, Duration::from_secs(60), |area, _, cx| {
-                remote(area, cx).is_some_and(|m| matches!(m.status(), MachineStatus::Offline(_)))
+                remote(area, cx).is_some_and(|m| matches!(m.status(), Status::Offline { .. }))
             })
             .await;
         self.check(offline, "docker stop: dockerbox goes offline");
@@ -248,16 +247,13 @@ impl Run {
         let reachable = self
             .until(cx, Duration::from_secs(90), |area, _, cx| {
                 remote(area, cx).is_some_and(|m| {
-                    matches!(
-                        m.status(),
-                        MachineStatus::Connected | MachineStatus::NeedsSetup(_)
-                    )
+                    matches!(m.status(), Status::Connected | Status::NeedsSetup(_))
                 })
             })
             .await;
         self.check(reachable, "docker start: dockerbox is reachable again");
         let needs_server = self.read(cx, |area, cx| {
-            remote(area, cx).is_some_and(|m| matches!(m.status(), MachineStatus::NeedsSetup(_)))
+            remote(area, cx).is_some_and(|m| matches!(m.status(), Status::NeedsSetup(_)))
         })?;
         if needs_server {
             // The container boots sshd only; grasslands never starts a
@@ -285,7 +281,7 @@ impl Run {
         }
         let back = self
             .until(cx, Duration::from_secs(90), |area, _, cx| {
-                remote(area, cx).is_some_and(|m| m.status() == &MachineStatus::Connected)
+                remote(area, cx).is_some_and(|m| m.status().is_usable())
                     && area.state.read(cx).selected() == &id
                     && !area.drawn.borrow().panes.is_empty()
                     && all_attached(area, cx)
@@ -373,7 +369,7 @@ impl Run {
                 area.state
                     .read(cx)
                     .machine(&added)
-                    .is_some_and(|m| m.status() == &MachineStatus::Connected)
+                    .is_some_and(|m| m.status().is_usable())
             })
             .await;
         self.check(connected, &format!("{label} is connected"));
@@ -424,11 +420,7 @@ impl Run {
     fn paste_machine_terminal(&self, cx: &mut Cx, text: &str) -> anyhow::Result<()> {
         let area = self.area.clone();
         cx.update(|_, cx| {
-            let terminal = area
-                .read(cx)
-                .machine_terminal
-                .as_ref()
-                .map(|t| t.terminal.clone());
+            let terminal = area.read(cx).machine_terminal.read(cx).terminal().cloned();
             if let Some(terminal) = terminal {
                 terminal.update(cx, |terminal, _| terminal.paste_text(text));
             }

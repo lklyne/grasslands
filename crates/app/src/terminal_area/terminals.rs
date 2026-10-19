@@ -22,16 +22,9 @@ use crate::state::{MachineId, On};
 
 gpui_libghostty::bind_gpui!(gpui_kit);
 
-/// The setup terminal's name for its config file; herdr's terminal ids all
-/// start with `term_`.
-const SETUP_TERMINAL: &str = "setup-terminal";
-
-/// A terminal running a fix for the setup screen; see [`Terminals::spawn_setup`].
-pub struct SetupTerminal {
-    /// The [`crate::setup::FixRun`] it runs.
-    pub run: u64,
-    pub terminal: Entity<Terminal>,
-}
+/// The command terminals' name for their config file; herdr's terminal ids
+/// all start with `term_`.
+const COMMAND_TERMINAL: &str = "setup-terminal";
 
 pub struct TerminalView {
     pub terminal: Entity<Terminal>,
@@ -125,9 +118,7 @@ pub struct Reconciled {
 
 impl Terminals {
     pub fn new() -> Self {
-        let config_dir = std::env::temp_dir()
-            .join(format!("grasslands-{}", std::process::id()))
-            .join("ghostty");
+        let config_dir = config_dir();
         Self {
             selected: MachineId::Local,
             views: HashMap::new(),
@@ -380,25 +371,6 @@ impl Terminals {
         })
     }
 
-    /// A terminal running `command` for the setup screen, outside herdr.
-    /// It keeps its output on screen after the command ends.
-    pub fn spawn_setup<T: 'static>(
-        &self,
-        command: String,
-        window: &mut Window,
-        cx: &mut Context<T>,
-    ) -> anyhow::Result<Entity<Terminal>> {
-        let mut config = self.config(None, cx)?;
-        config.push_str("wait-after-command = true\n");
-        let path = self.config_dir.join(format!("{SETUP_TERMINAL}.ghostty"));
-        std::fs::write(&path, config)?;
-        let cwd = std::env::var_os("HOME").map_or_else(|| PathBuf::from("/"), PathBuf::from);
-        let mut options = TerminalOptions::new(command, cwd);
-        options.configuration = TerminalConfiguration::File(path);
-        options.quiet_login = true;
-        Terminal::spawn(options, window, cx).map_err(anyhow::Error::msg)
-    }
-
     /// Shows exactly the terminals in `visible` and hides the rest. A native
     /// view that drops out of the layout keeps its last frame, so it has to be
     /// hidden explicitly; a shown one appears at its next prepaint.
@@ -474,13 +446,7 @@ impl Terminals {
     }
 
     fn config(&self, key: Option<&TerminalKey>, cx: &App) -> anyhow::Result<String> {
-        std::fs::create_dir_all(&self.config_dir)?;
-        let mut contents = String::new();
-        if let Some(user) = user_config_path().filter(|path| path.is_file()) {
-            contents.push_str(&std::fs::read_to_string(&user)?);
-            contents.push('\n');
-        }
-        contents.push_str(&theme_config(cx));
+        let mut contents = base_config(&self.config_dir, cx)?;
         if let Some(extra) = key.and_then(|key| self.overrides.get(key)) {
             contents.push_str(extra);
             contents.push('\n');
@@ -493,6 +459,46 @@ impl Drop for Terminals {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.config_dir);
     }
+}
+
+/// Where the app writes its terminals' Ghostty config files, for this
+/// process.
+fn config_dir() -> PathBuf {
+    std::env::temp_dir()
+        .join(format!("grasslands-{}", std::process::id()))
+        .join("ghostty")
+}
+
+/// The user's Ghostty settings, then the theme's.
+fn base_config(config_dir: &Path, cx: &App) -> anyhow::Result<String> {
+    std::fs::create_dir_all(config_dir)?;
+    let mut contents = String::new();
+    if let Some(user) = user_config_path().filter(|path| path.is_file()) {
+        contents.push_str(&std::fs::read_to_string(&user)?);
+        contents.push('\n');
+    }
+    contents.push_str(&theme_config(cx));
+    Ok(contents)
+}
+
+/// A terminal running `command` outside herdr (a setup fix, a machine
+/// sign-in), themed like the panes. It keeps its output on screen after the
+/// command ends.
+pub fn spawn_command<T: 'static>(
+    command: String,
+    window: &mut Window,
+    cx: &mut Context<T>,
+) -> anyhow::Result<Entity<Terminal>> {
+    let dir = config_dir();
+    let mut config = base_config(&dir, cx)?;
+    config.push_str("wait-after-command = true\n");
+    let path = dir.join(format!("{COMMAND_TERMINAL}.ghostty"));
+    std::fs::write(&path, config)?;
+    let cwd = std::env::var_os("HOME").map_or_else(|| PathBuf::from("/"), PathBuf::from);
+    let mut options = TerminalOptions::new(command, cwd);
+    options.configuration = TerminalConfiguration::File(path);
+    options.quiet_login = true;
+    Terminal::spawn(options, window, cx).map_err(anyhow::Error::msg)
 }
 
 fn sanitize(id: &str) -> String {

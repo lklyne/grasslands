@@ -15,7 +15,6 @@ use gpui_kit::component::diff::{Diff, DiffFile, DiffMode, DiffState};
 use gpui_kit::component::{ActiveTheme as _, Sizable as _, h_flex, v_flex};
 use gpui_kit::*;
 
-use crate::herdr::MachineStatus;
 use crate::state::{ActiveRoot, AppEvent, AppState};
 
 const REFRESH: Duration = Duration::from_secs(3);
@@ -170,7 +169,7 @@ impl Render for Changes {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // An offline machine's files can't be read, like the file panel's.
         let machine = self.state.read(cx).selected_machine();
-        if !machine.id().is_local() && *machine.status() != MachineStatus::Connected {
+        if !machine.id().is_local() && !machine.status().is_usable() {
             let label = machine.label().to_owned();
             return div()
                 .size_full()

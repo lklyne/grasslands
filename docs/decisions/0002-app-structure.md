@@ -28,16 +28,28 @@ else in the module is yours.
 - `AppState` (one `Entity`, created in `main`) holds the herdr config, the
   connection status, the snapshot cache, the focused pane and the active
   worktree. Views hold the entity and read it in `render`.
-- Redraw on any change: `cx.observe(&state, |_, _, cx| cx.notify())`.
-- React to discrete changes: `cx.subscribe(&state, ...)` on `AppEvent`
-  (`ActiveRootChanged(Option<ActiveRoot>)`, `SnapshotReplaced`; add variants
-  as needed).
+- Every change is announced as an `AppEvent`. A view that shows one machine
+  subscribes (`cx.subscribe(&state, ...)`) to the events for exactly what its
+  render reads and calls `cx.notify()` itself, so another machine's traffic
+  doesn't wake it: `SnapshotReplaced` (the selected machine's cache; it also
+  follows `MachineSelected`), `MachineSnapshot(machine)` (any machine's
+  cache), `MachinesChanged` (the list, a label or a status),
+  `ActiveRootChanged`, `FocusedPaneChanged`, `MachineRunChanged`, ... Write
+  the list of what render reads next to the subscription (`TerminalArea`
+  does), and add a variant when something it reads has none: a missed event
+  is stale UI.
+- Only views that list every machine (the sidebar's workspace and agent
+  lists) redraw on any change, with `cx.observe(&state, ...)`.
+- Local's herdr setup is its own entity (`AppState::setup`, decision 0018);
+  the terminal area observes it for the setup screen.
 - `crate::herdr` re-exports `herdr-client` types under the names views use
   (`Snapshot` = `herdr_client::State`, `Agent`, `AgentStatus`, `SplitTree`,
-  `ConnectionStatus`, `Config` = `Endpoint`, ...). `AppState::new` starts
-  `SessionSync` and applies its updates on the foreground: `snapshot:
-  Arc<Snapshot>` is replaced whole (`SnapshotReplaced`), `focused_pane` follows
-  (`FocusedPaneChanged`) and `connection` tracks the status. Under `cargo test` it stays offline.
+  `ConnectionStatus`, `Config` = `Endpoint`, ...). `AppState::start` starts
+  `SessionSync` (once setup passes) and applies its updates on the
+  foreground: `snapshot: Arc<Snapshot>` is replaced whole
+  (`SnapshotReplaced`), `focused_pane` follows (`FocusedPaneChanged`) and
+  each machine's `status()` (`state::Status`, decision 0019) says whether
+  it can be used. Tests never call `start`, so they stay offline.
 - Commands to herdr go through methods on `AppState` (`focus_pane`, `split_pane`,
   `set_split_ratio`, `new_tab`, ..., or `call` for anything else; each returns a
   `Task<herdr::Result<T>>` to await or `.detach_and_log_err(cx)`), never straight from a view, so there is one place that talks

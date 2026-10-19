@@ -178,10 +178,14 @@ fn checkout_dir(snapshot: &Snapshot, info: &WorkspaceInfo) -> Option<PathBuf> {
 
 impl WorkspaceList {
     pub fn new(state: Entity<AppState>, cx: &mut Context<Self>) -> Self {
+        // It lists every machine's workspaces and statuses, so any change
+        // redraws it.
         let observe = cx.observe(&state, |_, _, cx| cx.notify());
         let subscribe = cx.subscribe(&state, |this, _, event, cx| match event {
             // Local's cache can change while another machine is selected.
-            AppEvent::SnapshotReplaced | AppEvent::MachinesChanged => this.sync_checkouts(cx),
+            AppEvent::SnapshotReplaced
+            | AppEvent::MachinesChanged
+            | AppEvent::MachineSnapshot(_) => this.sync_checkouts(cx),
             // The focused pane moved to another checkout, or another machine
             // was selected; catch up on any branch change the watcher could
             // have missed (saved machines have no watcher).
