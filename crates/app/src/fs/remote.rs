@@ -247,6 +247,7 @@ mod tests {
                 let e = e.unwrap();
                 RemoteEntry {
                     name: e.file_name().to_string_lossy().into_owned(),
+                    file_name: e.file_name(),
                     is_dir: e.path().is_dir(),
                     is_symlink: false,
                     len: 0,

@@ -11,9 +11,9 @@
 //! [`MachineLink`]: crate::MachineLink
 
 use std::collections::{BTreeMap, HashMap, VecDeque};
-use std::ffi::OsStr;
+use std::ffi::{OsStr, OsString};
 use std::io::{self, Read, Write};
-use std::os::unix::ffi::OsStrExt;
+use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ExitStatus, Stdio};
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -24,10 +24,18 @@ use std::time::{Duration, SystemTime};
 
 use crate::machines::{LinkAccess, lock, shell_quote};
 
+mod codec;
+
+use codec::*;
+
 /// One entry of a remote folder listing.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RemoteEntry {
+    /// For display: [`file_name`](Self::file_name) with invalid UTF-8
+    /// replaced. Join paths with `file_name`, not this.
     pub name: String,
+    /// The name's exact bytes.
+    pub file_name: OsString,
     pub is_dir: bool,
     /// Follows symlinks: a link to a folder is a folder.
     pub is_symlink: bool,
@@ -55,8 +63,6 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
 const CHUNK: u32 = 64 * 1024;
 /// READ or WRITE requests in flight at once.
 const WINDOW: usize = 16;
-/// Larger replies are a broken stream, not a real packet.
-const MAX_PACKET: usize = 16 * 1024 * 1024;
 const REMOVE_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// A machine's files. Cheap to share (`Arc`); one SFTP session inside,
@@ -102,13 +108,7 @@ impl RemoteFs {
                     } else {
                         attrs
                     };
-                    Ok(RemoteEntry {
-                        name: String::from_utf8_lossy(&name).into_owned(),
-                        is_dir: attrs.is_dir(),
-                        is_symlink,
-                        len: attrs.size.unwrap_or(0),
-                        modified: attrs.modified(),
-                    })
+                    Ok(entry(name, is_symlink, attrs))
                 })
                 .collect()
         })
@@ -136,11 +136,23 @@ impl RemoteFs {
         })
     }
 
-    /// Atomic: writes a sibling temp file, keeps the old file's permissions,
-    /// then renames over `path`.
+    /// Atomic: writes a sibling temp file and renames it over `path`, so no
+    /// one reads half a file. The new file keeps the old one's permission
+    /// bits but not its owner, group or extended attributes, and hard links
+    /// to the old file keep the old contents.
+    ///
+    /// Fails with `PermissionDenied` if `path` exists but we couldn't write
+    /// it in place, as a local write would, and with `Unsupported` if the
+    /// server can't rename over a file atomically (no posix-rename).
     pub fn write(&self, path: &Path, contents: &[u8]) -> io::Result<()> {
         let n = self.temp.fetch_add(1, Ordering::Relaxed);
         self.with_session(|s| {
+            if !s.posix_rename {
+                return Err(io::Error::new(
+                    io::ErrorKind::Unsupported,
+                    "the machine's SFTP server can't replace files atomically",
+                ));
+            }
             let path = bytes(path);
             // Write through a symlink, not over it.
             let target = match s.stat(path, LSTAT) {
@@ -148,7 +160,12 @@ impl RemoteFs {
                 _ => path.to_vec(),
             };
             let perms = match s.stat(&target, STAT) {
-                Ok(attrs) => attrs.permissions.map(|mode| mode & 0o7777),
+                Ok(attrs) => {
+                    if attrs.is_file() {
+                        s.check_writable(&target)?;
+                    }
+                    attrs.permissions.map(|mode| mode & 0o7777)
+                }
                 Err(err) if err.kind() == io::ErrorKind::NotFound => None,
                 Err(err) => return Err(err),
             };
@@ -219,8 +236,8 @@ impl RemoteFs {
             return Ok(());
         }
         // One `rm -rf` instead of a request per file.
-        let path = path.to_string_lossy();
-        let out = self.exec(&["rm", "-rf", "--", &path], None, REMOVE_TIMEOUT)?;
+        let path = utf8(path)?;
+        let out = self.exec(&["rm", "-rf", "--", path], None, REMOVE_TIMEOUT)?;
         if out.status.success() {
             Ok(())
         } else {
@@ -232,15 +249,18 @@ impl RemoteFs {
     }
 
     /// Runs `argv` on the machine (each word shell-quoted for the remote
-    /// shell), in `cwd` if given, killed after `timeout`.
+    /// shell), in `cwd` if given, killed after `timeout`. Fails with
+    /// `InvalidInput` if `cwd` isn't UTF-8, rather than run in a different
+    /// folder.
     pub fn exec(
         &self,
         argv: &[&str],
         cwd: Option<&Path>,
         timeout: Duration,
     ) -> io::Result<ExecOutput> {
+        let command = exec_command(argv, cwd)?;
         self.link.connection().ok_or_else(not_connected)?;
-        let out = self.link.run(&exec_command(argv, cwd), timeout)?;
+        let out = self.link.run(&command, timeout)?;
         // 255 is ssh's own failure; if the link went down, say so.
         if out.status.code() == Some(255) && self.link.connection().is_none() {
             return Err(not_connected());
@@ -264,7 +284,11 @@ impl RemoteFs {
         let Some(session) = slot.as_mut() else {
             return Err(not_connected());
         };
+        session.call_start = session.next_id;
         let result = f(session);
+        // A call that failed partway leaves replies in flight; no later call
+        // asks for their ids, so don't keep the ones that already arrived.
+        session.early.clear();
         if session.broken {
             *slot = None;
         }
@@ -273,16 +297,38 @@ impl RemoteFs {
 }
 
 /// `[cd <cwd> && ]<argv…>`, every word quoted for the remote shell.
-fn exec_command(argv: &[&str], cwd: Option<&Path>) -> String {
+fn exec_command(argv: &[&str], cwd: Option<&Path>) -> io::Result<String> {
     let command = argv
         .iter()
         .map(|word| shell_quote(word))
         .collect::<Vec<_>>()
         .join(" ");
-    match cwd {
-        Some(cwd) => format!("cd {} && {command}", shell_quote(&cwd.to_string_lossy())),
+    Ok(match cwd {
+        Some(cwd) => format!("cd {} && {command}", shell_quote(utf8(cwd)?)),
         None => command,
+    })
+}
+
+/// A listing entry from a READDIR name and its (followed) attributes.
+fn entry(name: Vec<u8>, is_symlink: bool, attrs: Attrs) -> RemoteEntry {
+    RemoteEntry {
+        name: String::from_utf8_lossy(&name).into_owned(),
+        file_name: OsString::from_vec(name),
+        is_dir: attrs.is_dir(),
+        is_symlink,
+        len: attrs.size.unwrap_or(0),
+        modified: attrs.modified(),
     }
+}
+
+/// `path` as a shell word; a lossy one would name a different file.
+fn utf8(path: &Path) -> io::Result<&str> {
+    path.to_str().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("{} isn't valid UTF-8", path.display()),
+        )
+    })
 }
 
 /// `<dir>/.<name>.grasslands-<pid>-<n>.tmp`, next to `path`.
@@ -324,230 +370,6 @@ fn already_exists(path: &[u8]) -> io::Error {
     )
 }
 
-// SFTP v3 packet types (draft-ietf-secsh-filexfer-02).
-const INIT: u8 = 1;
-const VERSION: u8 = 2;
-const OPEN: u8 = 3;
-const CLOSE: u8 = 4;
-const READ: u8 = 5;
-const WRITE: u8 = 6;
-const LSTAT: u8 = 7;
-const FSETSTAT: u8 = 10;
-const OPENDIR: u8 = 11;
-const READDIR: u8 = 12;
-const REMOVE: u8 = 13;
-const MKDIR: u8 = 14;
-const REALPATH: u8 = 16;
-const STAT: u8 = 17;
-const RENAME: u8 = 18;
-const STATUS: u8 = 101;
-const HANDLE: u8 = 102;
-const DATA: u8 = 103;
-const NAME: u8 = 104;
-const ATTRS: u8 = 105;
-const EXTENDED: u8 = 200;
-
-const FXF_READ: u32 = 0x01;
-const FXF_WRITE: u32 = 0x02;
-const FXF_CREAT: u32 = 0x08;
-const FXF_EXCL: u32 = 0x20;
-
-const FX_OK: u32 = 0;
-const FX_EOF: u32 = 1;
-const FX_NO_SUCH_FILE: u32 = 2;
-const FX_PERMISSION_DENIED: u32 = 3;
-const FX_BAD_MESSAGE: u32 = 5;
-const FX_NO_CONNECTION: u32 = 6;
-const FX_CONNECTION_LOST: u32 = 7;
-const FX_OP_UNSUPPORTED: u32 = 8;
-
-const ATTR_SIZE: u32 = 0x01;
-const ATTR_UIDGID: u32 = 0x02;
-const ATTR_PERMISSIONS: u32 = 0x04;
-const ATTR_ACMODTIME: u32 = 0x08;
-const ATTR_EXTENDED: u32 = 0x8000_0000;
-
-const S_IFMT: u32 = 0o170_000;
-const S_IFDIR: u32 = 0o040_000;
-const S_IFLNK: u32 = 0o120_000;
-
-/// A reply: its type, request id (the version, for VERSION) and the rest.
-#[derive(Debug)]
-struct Packet {
-    kind: u8,
-    id: u32,
-    body: Vec<u8>,
-}
-
-impl Packet {
-    /// The status code and message, if this is a STATUS reply.
-    fn status(&self) -> io::Result<Option<(u32, String)>> {
-        if self.kind != STATUS {
-            return Ok(None);
-        }
-        let mut r = Reader(&self.body);
-        let code = r.u32()?;
-        // OpenSSH always sends a message; very old servers may not.
-        let message = r.bytes().map(|m| String::from_utf8_lossy(m).into_owned());
-        Ok(Some((code, message.unwrap_or_default())))
-    }
-
-    /// The body of a reply of type `kind`; a STATUS becomes its error.
-    fn expect(&self, kind: u8) -> io::Result<Reader<'_>> {
-        if self.kind == kind {
-            return Ok(Reader(&self.body));
-        }
-        match self.status()? {
-            Some((code, message)) => Err(status_error(code, message)),
-            None => Err(bad_message(format!("unexpected reply type {}", self.kind))),
-        }
-    }
-
-    fn expect_ok(&self) -> io::Result<()> {
-        match self.status()? {
-            Some((FX_OK, _)) => Ok(()),
-            Some((code, message)) => Err(status_error(code, message)),
-            None => Err(bad_message(format!("unexpected reply type {}", self.kind))),
-        }
-    }
-}
-
-fn status_error(code: u32, message: String) -> io::Error {
-    let kind = match code {
-        FX_EOF => io::ErrorKind::UnexpectedEof,
-        FX_NO_SUCH_FILE => io::ErrorKind::NotFound,
-        FX_PERMISSION_DENIED => io::ErrorKind::PermissionDenied,
-        FX_BAD_MESSAGE => io::ErrorKind::InvalidData,
-        FX_NO_CONNECTION | FX_CONNECTION_LOST => io::ErrorKind::NotConnected,
-        FX_OP_UNSUPPORTED => io::ErrorKind::Unsupported,
-        _ => io::ErrorKind::Other,
-    };
-    let message = if message.is_empty() {
-        format!("sftp error {code}")
-    } else {
-        message
-    };
-    io::Error::new(kind, message)
-}
-
-fn bad_message(message: String) -> io::Error {
-    io::Error::new(io::ErrorKind::InvalidData, format!("sftp: {message}"))
-}
-
-/// An outgoing packet body, big-endian with u32-length strings.
-struct Body(Vec<u8>);
-
-impl Body {
-    fn new() -> Self {
-        Self(Vec::new())
-    }
-
-    fn u32(mut self, value: u32) -> Self {
-        self.0.extend_from_slice(&value.to_be_bytes());
-        self
-    }
-
-    fn u64(mut self, value: u64) -> Self {
-        self.0.extend_from_slice(&value.to_be_bytes());
-        self
-    }
-
-    fn bytes(self, value: &[u8]) -> Self {
-        let len = u32::try_from(value.len()).unwrap_or(u32::MAX);
-        let mut body = self.u32(len);
-        body.0.extend_from_slice(value);
-        body
-    }
-
-    /// Attributes with only the permissions, when given.
-    fn mode(self, mode: Option<u32>) -> Self {
-        match mode {
-            Some(mode) => self.u32(ATTR_PERMISSIONS).u32(mode),
-            None => self.u32(0),
-        }
-    }
-}
-
-struct Reader<'a>(&'a [u8]);
-
-impl<'a> Reader<'a> {
-    fn take(&mut self, n: usize) -> io::Result<&'a [u8]> {
-        if self.0.len() < n {
-            return Err(bad_message("short packet".to_owned()));
-        }
-        let (head, rest) = self.0.split_at(n);
-        self.0 = rest;
-        Ok(head)
-    }
-
-    fn u32(&mut self) -> io::Result<u32> {
-        let mut buf = [0; 4];
-        buf.copy_from_slice(self.take(4)?);
-        Ok(u32::from_be_bytes(buf))
-    }
-
-    fn u64(&mut self) -> io::Result<u64> {
-        let mut buf = [0; 8];
-        buf.copy_from_slice(self.take(8)?);
-        Ok(u64::from_be_bytes(buf))
-    }
-
-    fn bytes(&mut self) -> io::Result<&'a [u8]> {
-        let len = self.u32()? as usize;
-        self.take(len)
-    }
-
-    fn attrs(&mut self) -> io::Result<Attrs> {
-        let flags = self.u32()?;
-        let mut attrs = Attrs::default();
-        if flags & ATTR_SIZE != 0 {
-            attrs.size = Some(self.u64()?);
-        }
-        if flags & ATTR_UIDGID != 0 {
-            self.take(8)?;
-        }
-        if flags & ATTR_PERMISSIONS != 0 {
-            attrs.permissions = Some(self.u32()?);
-        }
-        if flags & ATTR_ACMODTIME != 0 {
-            let _atime = self.u32()?;
-            attrs.mtime = Some(self.u32()?);
-        }
-        if flags & ATTR_EXTENDED != 0 {
-            for _ in 0..self.u32()? {
-                self.bytes()?;
-                self.bytes()?;
-            }
-        }
-        Ok(attrs)
-    }
-}
-
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-struct Attrs {
-    size: Option<u64>,
-    permissions: Option<u32>,
-    mtime: Option<u32>,
-}
-
-impl Attrs {
-    fn file_type(&self) -> Option<u32> {
-        self.permissions.map(|mode| mode & S_IFMT)
-    }
-
-    fn is_dir(&self) -> bool {
-        self.file_type() == Some(S_IFDIR)
-    }
-
-    fn is_symlink(&self) -> bool {
-        self.file_type() == Some(S_IFLNK)
-    }
-
-    fn modified(&self) -> Option<SystemTime> {
-        self.mtime
-            .map(|secs| SystemTime::UNIX_EPOCH + Duration::from_secs(secs.into()))
-    }
-}
 
 /// One `ssh -s … sftp` process and the protocol state over its stdio.
 struct Session {
@@ -558,6 +380,8 @@ struct Session {
     replies: Receiver<io::Result<Packet>>,
     /// Replies that arrived while waiting for another id.
     early: HashMap<u32, Packet>,
+    /// The first request id of the current top-level call.
+    call_start: u32,
     stderr: Arc<Mutex<Vec<u8>>>,
     next_id: u32,
     /// The stream failed or timed out; the session is dropped after the call.
@@ -603,6 +427,7 @@ impl Session {
             stdin,
             replies,
             early: HashMap::new(),
+            call_start: 0,
             stderr,
             next_id: 0,
             broken: false,
@@ -675,7 +500,10 @@ impl Session {
             if packet.id == id {
                 return Ok(packet);
             }
-            self.early.insert(packet.id, packet);
+            // Ids sent before this call are a failed call's leftovers.
+            if sent_since(packet.id, self.call_start, self.next_id) {
+                self.early.insert(packet.id, packet);
+            }
         }
     }
 
@@ -828,21 +656,31 @@ impl Session {
         self.status_request(EXTENDED, &body)
     }
 
-    /// Renames `from` over `to`: atomic with posix-rename, else remove first.
+    /// Renames `from` over `to` atomically (posix-rename; check it first).
     fn replace(&mut self, from: &[u8], to: &[u8]) -> io::Result<()> {
-        if self.posix_rename {
-            let body = Body::new()
-                .bytes(b"posix-rename@openssh.com")
-                .bytes(from)
-                .bytes(to)
-                .0;
-            return self.status_request(EXTENDED, &body);
-        }
-        match self.status_request(REMOVE, &Body::new().bytes(to).0) {
-            Err(err) if err.kind() != io::ErrorKind::NotFound => return Err(err),
-            _ => {}
-        }
-        self.status_request(RENAME, &Body::new().bytes(from).bytes(to).0)
+        let body = Body::new()
+            .bytes(b"posix-rename@openssh.com")
+            .bytes(from)
+            .bytes(to)
+            .0;
+        self.status_request(EXTENDED, &body)
+    }
+
+    /// Opens `path` for writing without truncating it, then closes it: the
+    /// server's own answer to "could we write this in place", which covers
+    /// root, groups and ACLs that mode bits alone don't.
+    fn check_writable(&mut self, path: &[u8]) -> io::Result<()> {
+        let handle = self.open(path, FXF_WRITE, None).map_err(|err| {
+            if err.kind() == io::ErrorKind::PermissionDenied {
+                io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    format!("{} is read-only", String::from_utf8_lossy(path)),
+                )
+            } else {
+                err
+            }
+        })?;
+        self.close(&handle)
     }
 
     /// SFTP v3 reports "exists" as a bare failure; check and say so.
@@ -853,6 +691,12 @@ impl Session {
             err
         }
     }
+}
+
+/// Whether `id` is one of the ids from `start` up to (not including) `next`,
+/// across the u32 wrap.
+fn sent_since(id: u32, start: u32, next: u32) -> bool {
+    id.wrapping_sub(start) < next.wrapping_sub(start)
 }
 
 /// Splits the server's stdout into packets until it ends.
@@ -866,23 +710,6 @@ fn read_packets(mut stdout: impl Read, tx: &mpsc::Sender<io::Result<Packet>>) {
     }
 }
 
-fn read_packet(stdout: &mut impl Read) -> io::Result<Packet> {
-    let mut head = [0; 4];
-    stdout.read_exact(&mut head)?;
-    let len = u32::from_be_bytes(head) as usize;
-    if !(5..=MAX_PACKET).contains(&len) {
-        return Err(bad_message(format!("bad packet length {len}")));
-    }
-    let mut buf = vec![0; len];
-    stdout.read_exact(&mut buf)?;
-    let mut id = [0; 4];
-    id.copy_from_slice(&buf[1..5]);
-    Ok(Packet {
-        kind: buf[0],
-        id: u32::from_be_bytes(id),
-        body: buf.split_off(5),
-    })
-}
 
 fn drain_into(mut pipe: impl Read, sink: &Mutex<Vec<u8>>) {
     let mut buf = [0; 1024];
@@ -900,13 +727,27 @@ mod tests {
         let cmd = exec_command(
             &["git", "log", "--format=%s", "it's"],
             Some(Path::new("/a b")),
-        );
+        )
+        .unwrap();
         assert_eq!(cmd, r"cd '/a b' && git log '--format=%s' 'it'\''s'");
     }
 
     #[test]
     fn exec_command_should_quote_empty_words() {
-        assert_eq!(exec_command(&["printf", ""], None), "printf ''");
+        assert_eq!(exec_command(&["printf", ""], None).unwrap(), "printf ''");
+    }
+
+    #[test]
+    fn exec_command_should_refuse_a_cwd_that_isnt_utf8() {
+        let cwd = Path::new(OsStr::from_bytes(b"/srv/caf\xe9"));
+        let err = exec_command(&["true"], Some(cwd)).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+    }
+
+    #[test]
+    fn entry_should_keep_the_exact_bytes_of_a_name_that_isnt_utf8() {
+        let entry = entry(b"caf\xe9".to_vec(), false, Attrs::default());
+        assert_eq!(entry.file_name.as_bytes(), b"caf\xe9");
     }
 
     #[test]
@@ -926,56 +767,12 @@ mod tests {
     }
 
     #[test]
-    fn attrs_should_read_every_field_and_skip_extended() {
-        let body = Body::new()
-            .u32(ATTR_SIZE | ATTR_UIDGID | ATTR_PERMISSIONS | ATTR_ACMODTIME | ATTR_EXTENDED)
-            .u64(42)
-            .u32(1000)
-            .u32(1000)
-            .u32(S_IFDIR | 0o755)
-            .u32(1)
-            .u32(1_700_000_000)
-            .u32(1)
-            .bytes(b"k")
-            .bytes(b"v")
-            .u32(99)
-            .0;
-        let mut r = Reader(&body);
-        let attrs = r.attrs().unwrap();
-        assert_eq!(
-            (attrs.size, attrs.is_dir(), attrs.mtime, r.u32().unwrap()),
-            (Some(42), true, Some(1_700_000_000), 99)
-        );
+    fn sent_since_should_drop_ids_from_before_the_call() {
+        assert!(!sent_since(4, 5, 9));
     }
 
     #[test]
-    fn attrs_should_see_symlinks() {
-        let attrs = Attrs {
-            permissions: Some(S_IFLNK | 0o777),
-            ..Attrs::default()
-        };
-        assert!(attrs.is_symlink() && !attrs.is_dir());
-    }
-
-    #[test]
-    fn status_should_map_no_such_file_to_not_found() {
-        let err = status_error(FX_NO_SUCH_FILE, "No such file".to_owned());
-        assert_eq!(err.kind(), io::ErrorKind::NotFound);
-    }
-
-    #[test]
-    fn reader_should_refuse_short_packets() {
-        let mut r = Reader(&[0, 0, 0, 9, 1]);
-        assert!(r.bytes().is_err());
-    }
-
-    #[test]
-    fn read_packet_should_split_type_id_and_body() {
-        let mut wire: &[u8] = &[0, 0, 0, 7, HANDLE, 0, 0, 0, 5, 0xAB, 0xCD];
-        let packet = read_packet(&mut wire).unwrap();
-        assert_eq!(
-            (packet.kind, packet.id, packet.body),
-            (HANDLE, 5, vec![0xAB, 0xCD])
-        );
+    fn sent_since_should_keep_ids_of_the_call_across_the_wrap() {
+        assert!(sent_since(1, u32::MAX - 1, 3));
     }
 }
