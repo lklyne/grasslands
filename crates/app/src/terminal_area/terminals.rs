@@ -63,19 +63,20 @@ impl Launch {
         }
     }
 
-    pub fn attach_command(&self, terminal_id: &str) -> String {
+    /// Without `takeover`, herdr refuses a terminal another client has
+    /// attached; with it, that client is detached instead.
+    pub fn attach_command(&self, terminal_id: &str, takeover: bool) -> String {
         let bin = shell_quote(&self.bin.to_string_lossy());
-        match &self.session {
-            Some(session) => format!(
-                "{bin} --session {} terminal attach {} --takeover",
-                shell_quote(session),
-                shell_quote(terminal_id)
-            ),
-            None => format!(
-                "{bin} terminal attach {} --takeover",
-                shell_quote(terminal_id)
-            ),
-        }
+        let session = self
+            .session
+            .as_deref()
+            .map(|session| format!(" --session {}", shell_quote(session)))
+            .unwrap_or_default();
+        let takeover = if takeover { " --takeover" } else { "" };
+        format!(
+            "{bin}{session} terminal attach {}{takeover}",
+            shell_quote(terminal_id)
+        )
     }
 }
 
@@ -565,8 +566,20 @@ mod tests {
             session: Some("dev-x".to_owned()),
         };
         assert_eq!(
-            launch.attach_command("term_1"),
-            "/opt/herdr/herdr --session dev-x terminal attach term_1 --takeover"
+            launch.attach_command("term_1", false),
+            "/opt/herdr/herdr --session dev-x terminal attach term_1"
+        );
+    }
+
+    #[test]
+    fn attach_command_takes_over_only_when_asked() {
+        let launch = Launch {
+            bin: PathBuf::from("/opt/herdr/herdr"),
+            session: None,
+        };
+        assert_eq!(
+            launch.attach_command("term_1", true),
+            "/opt/herdr/herdr terminal attach term_1 --takeover"
         );
     }
 
@@ -577,8 +590,8 @@ mod tests {
             session: None,
         };
         assert_eq!(
-            launch.attach_command("term_1"),
-            "'/Applications/My Tools/herdr' terminal attach term_1 --takeover"
+            launch.attach_command("term_1", false),
+            "'/Applications/My Tools/herdr' terminal attach term_1"
         );
     }
 

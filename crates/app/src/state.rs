@@ -188,8 +188,9 @@ impl Machine {
 
     /// The shell command that attaches a terminal surface to `terminal_id`
     /// on this machine. `None` until a remote machine's herdr is found.
-    pub fn attach_command(&self, terminal_id: &str) -> Option<String> {
-        self.link.as_ref()?.attach_command(terminal_id)
+    /// `takeover` replaces another client attached to it.
+    pub fn attach_command(&self, terminal_id: &str, takeover: bool) -> Option<String> {
+        self.link.as_ref()?.attach_command(terminal_id, takeover)
     }
 }
 
@@ -491,6 +492,7 @@ impl AppState {
     }
 
     fn start_machine(&self, profile: MachineProfile, cx: &mut Context<Self>) -> Option<Machine> {
+        let bin = self.herdr_config.as_ref()?.bin.clone();
         let Some(dir) = machines::socket_dir() else {
             tracing::warn!(
                 "machine {}: no socket directory (HOME unset)",
@@ -500,7 +502,7 @@ impl AppState {
         };
         let id = MachineId::Remote(profile.id.clone());
         let label = profile.label.clone();
-        let link = MachineLink::start(profile, dir);
+        let link = MachineLink::start(profile, dir, bin);
         let mut machine = Machine::new(id.clone(), label, link.status());
         let statuses = link.statuses();
         machine._statuses = Some(cx.spawn(async move |this, cx| {

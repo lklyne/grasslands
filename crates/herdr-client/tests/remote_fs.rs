@@ -18,6 +18,8 @@ use std::time::{Duration, Instant};
 
 use herdr_client::*;
 
+mod support;
+
 const CONTAINER: &str = "herdr-remote-test";
 const LABEL: &str = "it-rfs";
 const TIMEOUT: Duration = Duration::from_secs(60);
@@ -109,13 +111,18 @@ fn remote_fs_should_read_write_exec_and_survive_a_restart() {
     // set before any thread of ours reads it.
     unsafe { env::set_var(DEV_MACHINES_ENV, LABEL) };
     let profile = MachineProfile {
-        id: "4f5e0000feedbeef".into(),
+        id: "4f5e0000feedbeef0000000000000000".into(),
         label: LABEL.into(),
         target,
         session: "default".into(),
         enabled: true,
     };
-    let link = MachineLink::start(profile, socket_dir().expect("socket dir"));
+    support::herdr_knows(std::slice::from_ref(&profile));
+    let link = MachineLink::start(
+        profile,
+        socket_dir().expect("socket dir"),
+        support::herdr_bin(),
+    );
     assert!(link.remote_fs().is_none(), "no files before connecting");
     connect(&link);
     let fs = link.remote_fs().expect("remote fs once connected");
