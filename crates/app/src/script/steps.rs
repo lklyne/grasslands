@@ -32,7 +32,7 @@
 //!   the release). The overlay is drawn at each step, as a toast or tooltip
 //!   would; after the release nothing is drawn on the script's behalf.
 //!
-//! e.g. `RT_STEPS='menu pane w1:p1; wait 1500; key escape; log after'`.
+//! e.g. `RT_STEPS='wait 2000; menu pane w1:p1; wait 1500; key escape; log after'`.
 
 use std::time::Duration;
 

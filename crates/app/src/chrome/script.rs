@@ -12,7 +12,7 @@
 //! - `palette`, `query <text>`: open the palette, type into it
 //! - `type <text>`: replace the rename dialog's text
 //!
-//! e.g. `RT_CHROME_SCRIPT='menu pane w1:p1; wait 1500; key escape; log after'`.
+//! e.g. `RT_CHROME_SCRIPT='wait 2000; menu pane w1:p1; wait 1500; key escape; log after'`.
 
 use gpui_kit::component::WindowExt as _;
 use gpui_kit::*;

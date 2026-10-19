@@ -130,7 +130,7 @@ Every scenario but `herdr-prefs` turns herdr's `prompt_new_tab_name` and `prompt
 `RT_STEPS` runs `;`-separated steps after startup, for poking at one flow by hand: open a menu, press keys, drag a sidebar row, log what's open. The steps are listed at the top of `crates/app/src/script/steps.rs`; the chrome's and the sidebar's own are in `chrome/script.rs` and `sidebar/workspaces/script.rs`. `RT_CHROME_SCRIPT` and `RT_SIDEBAR_SCRIPT` are older names for the same language. They keep their pacing (a 2 s start and 400 ms between steps for the chrome's, none for the sidebar's) and their log prefixes.
 
 ```sh
-RT_STEPS='menu pane w1:p1; wait 1500; key escape; log after' scripts/dev-run cargo run -p app
+RT_STEPS='wait 2000; menu pane w1:p1; wait 1500; key escape; log after' scripts/dev-run cargo run -p app
 RT_SIDEBAR_SCRIPT='wait 2000; focus w2; wait 800; log after' scripts/dev-run cargo run -p app
 ```
 
