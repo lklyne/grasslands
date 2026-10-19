@@ -149,16 +149,27 @@ fn parse_ignored(stdout: &[u8]) -> Vec<HashSet<String>> {
 }
 
 /// `$1` is the query, `$2` is `-i` or empty (smart case). Prints matching
-/// paths one per line, an empty NUL-terminated record, then grep's matches.
+/// paths one per line, an empty NUL-terminated record, then grep's matches
+/// in files up to Local's 1 MiB cap (`MAX_FILE_BYTES`). Runs in C.UTF-8 where
+/// the machine has it, so `-i` folds more than ASCII; C otherwise.
 const SEARCH: &str = r#"q=$1; i=$2
+if locale -a 2>/dev/null | grep -qixE 'c\.utf-?8'; then LC_ALL=C.UTF-8; else LC_ALL=C; fi
+export LC_ALL
+small() {
+  xargs -0 -r sh -c 'for f do shift; set -- "$@" "./$f"; done
+    find "$@" -prune -type f -size -1048577c -print0' sh 2>/dev/null
+}
+matches() {
+  xargs -0 -r grep -n -H --null -I -F -m 21 $i -e "$q" -- 2>/dev/null | head -n 2000
+}
 if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
   git ls-files -z -co --exclude-standard | tr '\0' '\n' | grep -F $i -e "$q" | head -n 101
   printf '\0'
-  git -c core.quotePath=false grep -n -z -I -F --untracked -m 21 $i -e "$q" | head -n 2000
+  git ls-files -z -co --exclude-standard | small | matches
 else
   find . -name .git -prune -o -type f -print | sed 's|^\./||' | grep -F $i -e "$q" | head -n 101
   printf '\0'
-  grep -rIn --null -F -m 21 --exclude-dir=.git $i -e "$q" . | head -n 2000
+  find . -name .git -prune -o -type f -size -1048577c -print0 | matches
 fi"#;
 
 /// Names and contents below `root` matching `query`, with Local's caps and
@@ -169,7 +180,8 @@ pub(super) fn search(
     query: &str,
     cancel: &AtomicBool,
 ) -> SearchResults {
-    if query.is_empty() {
+    // No line or name holds a line break, so Local finds nothing either.
+    if query.is_empty() || query.contains(['\n', '\r']) {
         return SearchResults::default();
     }
     let mut collector = Collector::new(query);
@@ -217,9 +229,8 @@ fn split_search_output(stdout: &[u8]) -> (Vec<String>, Vec<FileLines>) {
     (names, parse_grep(grep))
 }
 
-/// `git grep -n -z` (`path\0line\0text`) or `grep -n --null`
-/// (`./path\0line:text`)
-/// output, one match per line.
+/// `grep -n --null` (`./path\0line:text`) or `git grep -n -z`
+/// (`path\0line\0text`) output, one match per line.
 fn parse_grep(output: &[u8]) -> Vec<FileLines> {
     let mut files: Vec<FileLines> = Vec::new();
     for record in output.split(|b| *b == b'\n').take(MAX_GREP_LINES) {
@@ -448,6 +459,25 @@ mod tests {
             search(&local_run, &dir, "Needle", &cancel),
             super::super::local::search(&dir, "Needle", &cancel)
         );
+    }
+
+    #[test]
+    fn search_should_match_large_files_by_name_only_like_local() {
+        let dir = search_repo("large");
+        let big = "needle\n".repeat(160_000);
+        std::fs::write(dir.join("big-needle.txt"), big).unwrap();
+        let cancel = AtomicBool::new(false);
+        assert_eq!(
+            search(&local_run, &dir, "needle", &cancel),
+            super::super::local::search(&dir, "needle", &cancel)
+        );
+    }
+
+    #[test]
+    fn search_should_find_nothing_for_a_query_with_a_line_break() {
+        let dir = search_repo("newline");
+        let results = search(&local_run, &dir, "one\nthree", &AtomicBool::new(false));
+        assert_eq!(results, SearchResults::default());
     }
 
     #[test]
