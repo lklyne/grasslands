@@ -8,6 +8,7 @@
 //! docs/decisions/0008-terminal-area-and-overlay.md.
 
 mod layout;
+#[cfg(debug_assertions)]
 pub mod script;
 mod terminals;
 
@@ -302,6 +303,7 @@ impl TerminalArea {
             _liveness: Self::watch_liveness(cx),
         };
         this.sync_with_snapshot(window, cx);
+        #[cfg(debug_assertions)]
         if let Some(scenario) = script::requested() {
             script::start(scenario, cx.entity(), window, cx);
         }

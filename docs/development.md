@@ -105,7 +105,7 @@ Terminal bindings work while you type in a terminal. Everything else, ctrl keys 
 
 ## Script check modes
 
-Debug builds have two self-driving check modes. They run inside the app and send input through GPUI, never through the OS, so they don't touch whatever window has focus. Run them against the dev session only. The terminal script refuses when `HERDR_SESSION` is unset.
+Debug builds have three self-driving check modes. They run inside the app and send input through GPUI, never through the OS, so they don't touch whatever window has focus. Run them against the dev session only. The terminal script refuses when `HERDR_SESSION` is unset. Release builds don't compile them (`#[cfg(debug_assertions)]`), so `RT_SCRIPT`, `RT_CHROME_SCRIPT` and `RT_SIDEBAR_SCRIPT` do nothing there.
 
 `RT_SCRIPT=terminals` creates a `script` workspace, runs 32 checks on the terminal area (typing, splits, divider drags, moves, hiding, a real server restart), saves window screenshots to `target/script-shots/`, cleans up and quits. `RT_SCRIPT_KEEP=1` leaves the app open afterwards.
 
@@ -117,6 +117,12 @@ RT_SCRIPT=terminals scripts/dev-run cargo run -p app
 
 ```sh
 RT_CHROME_SCRIPT='menu pane w1:p1; wait 1500; key escape; log after' scripts/dev-run cargo run -p app
+```
+
+`RT_SIDEBAR_SCRIPT` does the same for the workspace and agent panels. Its steps are at the top of `crates/app/src/sidebar/workspaces/script.rs`.
+
+```sh
+RT_SIDEBAR_SCRIPT='wait 2000; focus w2; wait 800; log after' scripts/dev-run cargo run -p app
 ```
 
 ## Known gaps

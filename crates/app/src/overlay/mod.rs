@@ -36,7 +36,9 @@ use gpui_kit::base::Root;
 use gpui_kit::component::{ActiveTheme as _, WindowExt as _};
 use gpui_kit::*;
 
-pub use native::{app_is_active, ns_window, subviews as native_subviews};
+pub use native::ns_window;
+#[cfg(debug_assertions)]
+pub use native::{app_is_active, subviews as native_subviews};
 
 /// How a layer treats the mouse.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

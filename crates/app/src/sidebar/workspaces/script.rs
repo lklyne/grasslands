@@ -50,9 +50,6 @@ pub(super) fn start(
     window: &mut Window,
     cx: &mut App,
 ) {
-    if !cfg!(debug_assertions) {
-        return;
-    }
     let Ok(script) = std::env::var("RT_SIDEBAR_SCRIPT") else {
         return;
     };
