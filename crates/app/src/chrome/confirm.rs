@@ -271,7 +271,10 @@ mod tests {
     }
 
     fn ids(members: &[&Workspace]) -> Vec<String> {
-        members.iter().map(|w| w.info.workspace_id.clone()).collect()
+        members
+            .iter()
+            .map(|w| w.info.workspace_id.clone())
+            .collect()
     }
 
     #[test]

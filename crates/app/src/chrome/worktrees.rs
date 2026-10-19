@@ -540,6 +540,10 @@ mod tests {
     #[test]
     fn force_confirmation_quotes_git() {
         let confirmation = force_confirmation("feat", "contains modified files");
-        assert!(confirmation.message.ends_with("git said: contains modified files"));
+        assert!(
+            confirmation
+                .message
+                .ends_with("git said: contains modified files")
+        );
     }
 }

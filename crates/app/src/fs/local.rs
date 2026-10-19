@@ -5,9 +5,9 @@ use std::io;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use super::{Entry, sort_entries};
 use super::SearchResults;
 use super::search::{Collector, MAX_FILE_BYTES};
+use super::{Entry, sort_entries};
 
 /// Lists `dir` one level deep, respecting .gitignore (and git's other ignore
 /// files) inside a repo. Dotfiles are shown; `.git` is not.

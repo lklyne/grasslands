@@ -182,12 +182,7 @@ impl Fs {
     }
 
     /// Names and contents below `root` matching `query` (smart case).
-    pub fn search(
-        &self,
-        root: &Path,
-        query: &str,
-        cancel: &AtomicBool,
-    ) -> SearchResults {
+    pub fn search(&self, root: &Path, query: &str, cancel: &AtomicBool) -> SearchResults {
         match self {
             Self::Local => local::search(root, query, cancel),
             Self::Remote { files, .. } => {

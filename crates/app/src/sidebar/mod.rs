@@ -53,7 +53,9 @@ impl SidebarPanels {
         let list = spaces.downgrade();
         crate::chrome::set_placements(
             cx,
-            Rc::new(move |machine, info, cx| list.upgrade()?.read(cx).placement_on(machine, info, cx)),
+            Rc::new(move |machine, info, cx| {
+                list.upgrade()?.read(cx).placement_on(machine, info, cx)
+            }),
         );
         cx.set_global(Spaces(spaces.downgrade()));
         cx.set_global(Files(files.downgrade()));

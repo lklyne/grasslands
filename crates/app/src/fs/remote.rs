@@ -11,9 +11,9 @@ use std::time::Duration;
 
 use herdr_client::{ExecOutput, RemoteEntry, RemoteFs};
 
-use super::{Entry, sort_entries};
 use super::SearchResults;
 use super::search::Collector;
+use super::{Entry, sort_entries};
 
 /// Runs `argv` in `cwd` on the machine.
 pub(super) type Run<'a> = dyn Fn(&[&str], Option<&Path>) -> io::Result<ExecOutput> + 'a;

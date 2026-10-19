@@ -448,7 +448,9 @@ impl WorkspaceList {
             machine,
             workspace_id,
         });
-        chrome.update(cx, |chrome, cx| chrome.run_menu_command(command, window, cx));
+        chrome.update(cx, |chrome, cx| {
+            chrome.run_menu_command(command, window, cx)
+        });
     }
 
     fn is_folded(&self, machine: &MachineId, repo_key: &str) -> bool {
@@ -1163,7 +1165,9 @@ impl WorkspaceList {
         }
         entries.push(MenuEntry::item(
             "New Worktree…",
-            list_command(&this, |this, window, cx| this.new_worktree(None, window, cx)),
+            list_command(&this, |this, window, cx| {
+                this.new_worktree(None, window, cx)
+            }),
         ));
         entries.push(MenuEntry::item(
             "Open Worktree…",

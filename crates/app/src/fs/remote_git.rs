@@ -9,8 +9,8 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use super::remote::Run;
 use super::git::{FileChange, Summary};
+use super::remote::Run;
 
 /// Finds the checkout's root, branch, parent and the diff's base the way
 /// `local_git` does, then prints `top\0HEAD's target\0parent\0` and diffs
@@ -396,7 +396,13 @@ mod tests {
             .unwrap()
             .insert(PathBuf::from("/old"), (stale, None));
         cache.put(Path::new("/r"), None);
-        assert!(!cache.entries.lock().unwrap().contains_key(Path::new("/old")));
+        assert!(
+            !cache
+                .entries
+                .lock()
+                .unwrap()
+                .contains_key(Path::new("/old"))
+        );
     }
 
     #[test]

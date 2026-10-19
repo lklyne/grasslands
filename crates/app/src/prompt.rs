@@ -107,7 +107,10 @@ pub fn ask_new_worktree(
             if first_build.replace(false) {
                 branch.focus_handle(cx).focus(window, cx);
             }
-            let (fields, submit) = ((branch.clone(), base.clone(), label.clone()), submit.clone());
+            let (fields, submit) = (
+                (branch.clone(), base.clone(), label.clone()),
+                submit.clone(),
+            );
             dialog
                 .title("New Worktree")
                 .w(px(420.))
@@ -145,7 +148,11 @@ pub fn ask_new_worktree(
     open_floating(open, window, cx);
 }
 
-fn open_floating(open: impl FnOnce(&mut Window, &mut App) + 'static, window: &mut Window, cx: &mut App) {
+fn open_floating(
+    open: impl FnOnce(&mut Window, &mut App) + 'static,
+    window: &mut Window,
+    cx: &mut App,
+) {
     match crate::chrome::get(window, cx) {
         // An open context menu closes, as for `Chrome::confirm`, so the
         // prompt doesn't open on top of it. Both happen on the next tick;
