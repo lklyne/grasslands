@@ -7,6 +7,7 @@
 //! until herdr's layout reflects it. See
 //! docs/decisions/0008-terminal-area-and-overlay.md.
 
+pub mod command_terminal;
 mod layout;
 #[cfg(debug_assertions)]
 pub mod script;
@@ -33,10 +34,11 @@ use crate::herdr::{
 use crate::overlay;
 use crate::setup::{Setup, Stage};
 use crate::sidebar::files::DraggedPath;
-use crate::state::{AppEvent, AppState, MachineId, MachineTask, On, RunStage};
+use crate::state::{AppEvent, AppState, MachineId, MachineTask, On};
 use crate::{label, status};
 
-use self::terminals::{AttachCommands, Launch, SetupTerminal, Terminals};
+use self::command_terminal::CommandTerminal;
+use self::terminals::{AttachCommands, Launch, Terminals};
 
 actions!(
     terminal_area,
@@ -246,11 +248,12 @@ pub struct TerminalArea {
     /// The dragged tab and the tab the drag last ticked over, so each new
     /// tab ticks once.
     tab_drag_tick: Option<(usize, usize)>,
-    /// The terminal beside the herdr setup screen, running the last fix.
-    setup_terminal: Option<SetupTerminal>,
+    /// The terminal beside the herdr setup screen, running the last fix
+    /// (`setup::fix_terminal`).
+    setup_terminal: Entity<CommandTerminal>,
     /// The terminal beside a machine's sign-in, setup or add
-    /// (`AppState::machine_run`), whichever machine is selected.
-    machine_terminal: Option<SetupTerminal>,
+    /// (`machines::run_terminal`), whichever machine is selected.
+    machine_terminal: Entity<CommandTerminal>,
     _subscriptions: Vec<Subscription>,
     _liveness: Task<()>,
 }
@@ -263,16 +266,13 @@ impl TerminalArea {
             .as_ref()
             .map(Launch::from_config);
         let setup = state.read(cx).setup().clone();
+        let setup_terminal = crate::setup::fix_terminal(&setup, window, cx);
+        let machine_terminal = crate::machines::run_terminal(&state, window, cx);
         let subscriptions = vec![
-            cx.observe_in(&setup, window, |this, _, window, cx| {
-                this.sync_setup_terminal(window, cx);
-                cx.notify();
-            }),
-            cx.observe_in(&state, window, |this, _, window, cx| {
-                this.sync_setup_terminal(window, cx);
-                this.sync_machine_terminal(window, cx);
-                cx.notify();
-            }),
+            cx.observe(&setup, |_, _, cx| cx.notify()),
+            cx.observe(&setup_terminal, |_, _, cx| cx.notify()),
+            cx.observe(&machine_terminal, |_, _, cx| cx.notify()),
+            cx.observe(&state, |_, _, cx| cx.notify()),
             // Coming back to the window after fixing herdr elsewhere (a
             // terminal, a Nix rebuild) checks again.
             cx.observe_window_activation(window, |this, window, cx| {
@@ -304,12 +304,13 @@ impl TerminalArea {
             shown_tab: None,
             focus_on_show: None,
             tab_drag_tick: None,
-            setup_terminal: None,
-            machine_terminal: None,
+            setup_terminal,
+            machine_terminal,
             _subscriptions: subscriptions,
             _liveness: Self::watch_liveness(cx),
         };
         this.sync_with_snapshot(window, cx);
+        this.sync_command_terminals(cx);
         #[cfg(debug_assertions)]
         if let Some(scenario) = script::requested() {
             script::start(scenario, cx.entity(), window, cx);
@@ -317,85 +318,17 @@ impl TerminalArea {
         this
     }
 
-    /// Starts a terminal for each new setup fix and drops it once setup is
-    /// over.
-    fn sync_setup_terminal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let setup = self.state.read(cx).setup().clone();
-        let Some(run) = setup.read(cx).run().cloned() else {
-            if let Some(setup) = self.setup_terminal.take() {
-                setup
-                    .terminal
-                    .update(cx, |terminal, _| terminal.set_visible(false));
-            }
-            return;
-        };
-        if self
-            .setup_terminal
-            .as_ref()
-            .is_some_and(|setup| setup.run == run.id)
-        {
-            return;
-        }
-        if let Some(old) = self.setup_terminal.take() {
-            old.terminal
-                .update(cx, |terminal, _| terminal.set_visible(false));
-        }
-        match self.terminals.spawn_setup(run.command, window, cx) {
-            Ok(terminal) => {
-                self.setup_terminal = Some(SetupTerminal {
-                    run: run.id,
-                    terminal,
-                });
-            }
-            Err(error) => {
-                tracing::error!("herdr setup terminal: {error:#}");
-                setup.update(cx, |setup, cx| {
-                    setup.fix_failed_to_start(format!("{error:#}"), cx)
-                });
-            }
-        }
-    }
-
-    /// Starts a terminal for each new machine run and drops it once the run
-    /// is closed.
-    fn sync_machine_terminal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let run = self
-            .state
-            .read(cx)
-            .machine_run()
-            .map(|run| (run.id, run.command.clone()));
-        // The run's screen covers Local's setup screen, terminal and all.
-        if let Some(setup) = &self.setup_terminal {
-            let show = self.visible && self.terminals.selected().is_local() && run.is_none();
-            setup
-                .terminal
-                .update(cx, |terminal, _| terminal.set_visible(show));
-        }
-        let Some((id, command)) = run else {
-            if let Some(old) = self.machine_terminal.take() {
-                old.terminal
-                    .update(cx, |terminal, _| terminal.set_visible(false));
-            }
-            return;
-        };
-        if self.machine_terminal.as_ref().is_some_and(|t| t.run == id) {
-            return;
-        }
-        if let Some(old) = self.machine_terminal.take() {
-            old.terminal
-                .update(cx, |terminal, _| terminal.set_visible(false));
-        }
-        match self.terminals.spawn_setup(command, window, cx) {
-            Ok(terminal) => {
-                terminal.update(cx, |terminal, _| terminal.set_visible(self.visible));
-                self.machine_terminal = Some(SetupTerminal { run: id, terminal });
-            }
-            Err(error) => {
-                tracing::error!("machine terminal: {error:#}");
-                self.state
-                    .update(cx, |state, cx| state.machine_run_exited(cx));
-            }
-        }
+    /// Shows the command terminals that belong on screen: the setup fix's
+    /// on Local while no machine run covers it, a machine run's whenever
+    /// the area shows.
+    fn sync_command_terminals(&mut self, cx: &mut Context<Self>) {
+        let run = self.state.read(cx).machine_run().is_some();
+        let setup = self.visible && self.terminals.selected().is_local() && !run;
+        let visible = self.visible;
+        self.setup_terminal
+            .update(cx, |terminal, cx| terminal.set_visible(setup, cx));
+        self.machine_terminal
+            .update(cx, |terminal, cx| terminal.set_visible(visible, cx));
     }
 
     /// An attach process can end without any herdr event (another client
@@ -415,28 +348,6 @@ impl TerminalArea {
                     if attached != this.attached {
                         this.attached = attached;
                         cx.notify();
-                    }
-                    let setup = this.state.read(cx).setup().clone();
-                    let fixing = matches!(setup.read(cx).stage(), Stage::Fixing(_));
-                    let ended = this
-                        .setup_terminal
-                        .as_ref()
-                        .is_some_and(|setup| !setup.terminal.read(cx).is_alive());
-                    if fixing && ended {
-                        setup.update(cx, Setup::fix_exited);
-                    }
-                    let running = this
-                        .state
-                        .read(cx)
-                        .machine_run()
-                        .is_some_and(|run| run.stage == RunStage::Running);
-                    let ended = this
-                        .machine_terminal
-                        .as_ref()
-                        .is_some_and(|t| !t.terminal.read(cx).is_alive());
-                    if running && ended {
-                        this.state
-                            .update(cx, |state, cx| state.machine_run_exited(cx));
                     }
                 });
                 if alive.is_err() {
@@ -614,6 +525,7 @@ impl TerminalArea {
             AppEvent::MachinesChanged => self.sync_other_machines(window, cx),
             AppEvent::MachineConnected(machine) => self.reattach_machine(machine, window, cx),
             AppEvent::MachineRestarted(machine) => self.terminals.forget_machine(machine, cx),
+            AppEvent::MachineRunChanged => self.sync_command_terminals(cx),
             // Keyboard focus follows herdr's focus, but only if it is already
             // in the terminal area: an agent focusing a pane must not pull
             // typing out of the editor.
@@ -637,12 +549,7 @@ impl TerminalArea {
             // another machine reuses.
             self.terminals.select(&machine, cx);
             // The setup terminal is Local's; it isn't drawn on another machine.
-            if let Some(setup) = &self.setup_terminal {
-                let show = self.visible && machine.is_local();
-                setup
-                    .terminal
-                    .update(cx, |terminal, _| terminal.set_visible(show));
-            }
+            self.sync_command_terminals(cx);
             self.overrides.clear();
             self.drag = None;
             self.shown_tab = None;
@@ -764,16 +671,7 @@ impl TerminalArea {
         } else {
             self.terminals.hide_all(cx);
         }
-        if let Some(setup) = &self.setup_terminal {
-            let show = visible && self.terminals.selected().is_local();
-            setup
-                .terminal
-                .update(cx, |terminal, _| terminal.set_visible(show));
-        }
-        if let Some(run) = &self.machine_terminal {
-            run.terminal
-                .update(cx, |terminal, _| terminal.set_visible(visible));
-        }
+        self.sync_command_terminals(cx);
         cx.notify();
     }
 
@@ -1817,9 +1715,10 @@ impl TerminalArea {
         );
         let terminal = self
             .machine_terminal
-            .as_ref()
+            .read(cx)
+            .terminal()
             .filter(|_| self.visible)
-            .map(|t| t.terminal.clone().into_any_element());
+            .map(|terminal| terminal.clone().into_any_element());
         Some(crate::setup::screen("machine-run", card, terminal, cx))
     }
 
@@ -1862,9 +1761,10 @@ impl Render for TerminalArea {
         let local = self.state.read(cx).selected().is_local();
         let setup_terminal = self
             .setup_terminal
-            .as_ref()
+            .read(cx)
+            .terminal()
             .filter(|_| self.visible && local)
-            .map(|setup| setup.terminal.clone().into_any_element());
+            .map(|terminal| terminal.clone().into_any_element());
         let setup = self.render_machine_run(cx).or_else(|| {
             if local {
                 let state = self.state.read(cx);

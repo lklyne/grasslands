@@ -87,8 +87,8 @@ impl Run {
         eprintln!("script: running {fix:?}");
         cx.update(|_, cx| setup.update(cx, |setup, cx| setup.run_fix(fix, cx)))?;
         let showing = self
-            .until(cx, Duration::from_secs(10), |area, _, _| {
-                area.setup_terminal.is_some()
+            .until(cx, Duration::from_secs(10), |area, _, cx| {
+                area.setup_terminal.read(cx).terminal().is_some()
             })
             .await;
         self.check(showing, "the fix runs in a terminal beside the screen");
@@ -120,7 +120,7 @@ impl Run {
                 let app = area.state.read(cx);
                 app.setup().read(cx).is_ready()
                     && app.snapshot().generation > 0
-                    && area.setup_terminal.is_none()
+                    && area.setup_terminal.read(cx).terminal().is_none()
             })
             .await;
         self.check(

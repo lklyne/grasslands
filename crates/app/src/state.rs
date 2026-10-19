@@ -88,6 +88,9 @@ pub enum AppEvent {
     /// The file tree removed a file or folder: to the Trash on Local, for
     /// good on a saved machine.
     FileRemoved { machine: MachineId, path: PathBuf },
+    /// A machine's sign-in, setup or add started, moved on a stage or
+    /// closed (`AppState::machine_run`).
+    MachineRunChanged,
 }
 
 /// Where the active workspace's files are: a folder on a machine.
@@ -756,6 +759,7 @@ impl AppState {
         sounds::play(Cue::Loading, PlayOptions::default());
         self.machine_run = Some(run);
         self._run_check = None;
+        cx.emit(AppEvent::MachineRunChanged);
         cx.notify();
     }
 
@@ -788,6 +792,7 @@ impl AppState {
                 }
             }
         }));
+        cx.emit(AppEvent::MachineRunChanged);
         cx.notify();
     }
 
@@ -812,6 +817,8 @@ impl AppState {
         if let Some(id) = &added {
             self.added_here.push(id.clone());
             run.machine = added;
+            // The card names the machine now.
+            cx.emit(AppEvent::MachineRunChanged);
         }
         let connected = run
             .machine
@@ -830,6 +837,7 @@ impl AppState {
         if let Some(run) = self.machine_run.as_mut() {
             run.stage = stage;
         }
+        cx.emit(AppEvent::MachineRunChanged);
         cx.notify();
         true
     }
@@ -847,6 +855,7 @@ impl AppState {
         {
             self.select_machine(machine, cx);
         }
+        cx.emit(AppEvent::MachineRunChanged);
         cx.notify();
     }
 

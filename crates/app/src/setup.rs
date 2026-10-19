@@ -15,7 +15,10 @@ use gpui_kit::component::{ActiveTheme as _, Icon, IconName, h_flex, v_flex};
 use gpui_kit::*;
 
 use crate::herdr::{self, Check, ConnectionStatus, Fix, InstallMethod, MIN_VERSION, Version};
+use std::rc::Rc;
+
 use crate::state::AppState;
+use crate::terminal_area::command_terminal::{CommandRun, CommandTerminal, Ended, OnEnded};
 use crate::{logging, sounds};
 use cues::{Cue, PlayOptions};
 
@@ -255,6 +258,42 @@ impl Setup {
         self.stage = Stage::Needed(check);
         cx.emit(SetupEvent::StageChanged);
     }
+}
+
+/// The terminal the setup screen runs its fixes in: each fix gets a fresh
+/// one, and its end (or failure to start) checks herdr again.
+pub fn fix_terminal(
+    setup: &Entity<Setup>,
+    window: &mut Window,
+    cx: &mut App,
+) -> Entity<CommandTerminal> {
+    let wanted = |setup: &Setup| {
+        setup.run().map(|run| CommandRun {
+            id: run.id,
+            command: run.command.clone(),
+        })
+    };
+    let on_ended: OnEnded = {
+        let setup = setup.downgrade();
+        Rc::new(move |ended, _, cx| {
+            setup
+                .update(cx, |setup, cx| match ended {
+                    Ended::Exited => setup.fix_exited(cx),
+                    Ended::FailedToStart(error) => setup.fix_failed_to_start(error, cx),
+                })
+                .ok();
+        })
+    };
+    cx.new(|cx| {
+        let mut terminal = CommandTerminal::new(on_ended, window, cx);
+        terminal.follow(
+            cx.observe_in(setup, window, move |terminal, setup, window, cx| {
+                terminal.sync(wanted(setup.read(cx)), window, cx);
+            }),
+        );
+        terminal.sync(wanted(setup.read(cx)), window, cx);
+        terminal
+    })
 }
 
 /// The setup screen, with the fix's `terminal` beside it once one has run,

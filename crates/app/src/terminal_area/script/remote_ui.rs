@@ -424,11 +424,7 @@ impl Run {
     fn paste_machine_terminal(&self, cx: &mut Cx, text: &str) -> anyhow::Result<()> {
         let area = self.area.clone();
         cx.update(|_, cx| {
-            let terminal = area
-                .read(cx)
-                .machine_terminal
-                .as_ref()
-                .map(|t| t.terminal.clone());
+            let terminal = area.read(cx).machine_terminal.read(cx).terminal().cloned();
             if let Some(terminal) = terminal {
                 terminal.update(cx, |terminal, _| terminal.paste_text(text));
             }

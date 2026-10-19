@@ -23,7 +23,7 @@ use crate::chrome::{self, Callback, Confirmation, MenuCommand, MenuEntry};
 #[cfg(debug_assertions)]
 pub use add_dialog::open_add_machine;
 pub use add_dialog::open_add_machine_with;
-pub use run::{RunCard, run_card};
+pub use run::{RunCard, run_card, run_terminal};
 pub use ssh_config::SshHost;
 
 /// What a machine's header and screens show about its connection.
