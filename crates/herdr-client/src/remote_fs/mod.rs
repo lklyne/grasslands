@@ -283,7 +283,11 @@ impl RemoteFs {
         let Some(session) = slot.as_mut() else {
             return Err(not_connected());
         };
+        session.call_start = session.next_id;
         let result = f(session);
+        // A call that failed partway leaves replies in flight; no later call
+        // asks for their ids, so don't keep the ones that already arrived.
+        session.early.clear();
         if session.broken {
             *slot = None;
         }
@@ -353,6 +357,8 @@ struct Session {
     replies: Receiver<io::Result<Packet>>,
     /// Replies that arrived while waiting for another id.
     early: HashMap<u32, Packet>,
+    /// The first request id of the current top-level call.
+    call_start: u32,
     stderr: Arc<Mutex<Vec<u8>>>,
     next_id: u32,
     /// The stream failed or timed out; the session is dropped after the call.
@@ -398,6 +404,7 @@ impl Session {
             stdin,
             replies,
             early: HashMap::new(),
+            call_start: 0,
             stderr,
             next_id: 0,
             broken: false,
@@ -470,7 +477,10 @@ impl Session {
             if packet.id == id {
                 return Ok(packet);
             }
-            self.early.insert(packet.id, packet);
+            // Ids sent before this call are a failed call's leftovers.
+            if sent_since(packet.id, self.call_start, self.next_id) {
+                self.early.insert(packet.id, packet);
+            }
         }
     }
 
@@ -660,6 +670,12 @@ impl Session {
     }
 }
 
+/// Whether `id` is one of the ids from `start` up to (not including) `next`,
+/// across the u32 wrap.
+fn sent_since(id: u32, start: u32, next: u32) -> bool {
+    id.wrapping_sub(start) < next.wrapping_sub(start)
+}
+
 /// Splits the server's stdout into packets until it ends.
 fn read_packets(mut stdout: impl Read, tx: &mpsc::Sender<io::Result<Packet>>) {
     loop {
@@ -711,5 +727,15 @@ mod tests {
     fn temp_sibling_should_handle_a_bare_name() {
         let temp = temp_sibling(b"notes", 0);
         assert!(temp.starts_with(b".notes.grasslands-"));
+    }
+
+    #[test]
+    fn sent_since_should_drop_ids_from_before_the_call() {
+        assert!(!sent_since(4, 5, 9));
+    }
+
+    #[test]
+    fn sent_since_should_keep_ids_of_the_call_across_the_wrap() {
+        assert!(sent_since(1, u32::MAX - 1, 3));
     }
 }
