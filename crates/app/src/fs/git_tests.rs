@@ -1,77 +1,31 @@
-//! Local's git2 reads against the git CLI scripts, run on this Mac, over
-//! fixture repos covering the Changes and spaces-list rules.
+//! The git scripts' reads on this Mac, as `Fs::Local` makes them, over
+//! fixture repos covering the Changes and spaces-list rules. Until the
+//! scripts replaced git2 on Local, these also had to match git2's reads.
 
 use std::path::{Path, PathBuf};
 
-use super::git::{Checkout, Summary};
-use super::remote::local_run;
+use super::Fs;
+use super::git::{self, Checkout, Summary};
+use super::local::run;
 use super::test_repo::{TestRepo, git, temp_dir};
-use super::{local_git, remote_git};
 
 #[derive(Debug, PartialEq, Eq)]
 struct Readout {
     summary: Option<Summary>,
-    patch: Option<String>,
     checkout: Option<Checkout>,
     root: Option<PathBuf>,
 }
 
-/// Spellings the Changes tab's parser reads alike: index lines (abbreviated
-/// blob ids vary in length), the tab git ends a path holding a space with,
-/// and C-quoted non-ASCII paths (git2 quotes them; the script asks git not
-/// to).
-fn normalize(patch: String) -> String {
-    patch
-        .lines()
-        .filter(|line| !line.starts_with("index "))
-        .map(|line| {
-            if line.starts_with("--- ") || line.starts_with("+++ ") {
-                format!("{}\n", unquote(line.trim_end_matches('\t')))
-            } else if line.starts_with("diff --git ") {
-                format!("{}\n", unquote(line))
-            } else {
-                format!("{line}\n")
-            }
-        })
-        .collect()
-}
-
-/// `"a/\303\251.txt"` as `a/é.txt`.
-fn unquote(line: &str) -> String {
-    let mut out = Vec::new();
-    let mut bytes = line.bytes();
-    while let Some(b) = bytes.next() {
-        match b {
-            b'"' => {}
-            b'\\' => {
-                let digits: Vec<u8> = bytes.by_ref().take(3).collect();
-                let digits = std::str::from_utf8(&digits).unwrap();
-                out.push(u8::from_str_radix(digits, 8).unwrap());
-            }
-            _ => out.push(b),
-        }
-    }
-    String::from_utf8(out).unwrap()
-}
-
-fn git2(dir: &Path) -> Readout {
-    Readout {
-        summary: local_git::read(dir),
-        patch: local_git::patch(dir).map(normalize),
-        checkout: crate::sidebar::workspaces::git::read(dir),
-        root: crate::worktree::resolve_root(dir),
-    }
-}
-
-fn cli(dir: &Path) -> Readout {
-    let summary = remote_git::summary(&local_run, dir).unwrap();
-    let patch = remote_git::patch(&local_run, dir).unwrap();
-    assert_eq!(patch.as_ref().map(|(_, s)| s), summary.as_ref());
+fn read(dir: &Path) -> Readout {
+    let summary = Fs::Local.git_summary(dir).unwrap();
+    let (_, from_patch) = git::patch(&run, dir).unwrap().unzip();
+    assert_eq!(from_patch, summary, "a patch read's summary");
+    let root = Fs::Local.resolve_root(dir);
+    assert_eq!(git::resolve_root(&run, dir), root, "the script's root");
     Readout {
         summary,
-        patch: patch.map(|(patch, _)| normalize(patch)),
-        checkout: remote_git::checkout(&local_run, dir).unwrap(),
-        root: remote_git::resolve_root(&local_run, dir),
+        checkout: Fs::Local.checkout(dir),
+        root,
     }
 }
 
@@ -128,11 +82,9 @@ fn render(readout: &Readout, base: &Path) -> String {
     out.join("\n")
 }
 
-/// The CLI reads `dir` as git2 does, and as `expected` (paths below `base`).
+/// Local reads `dir` as `expected` (paths below `base`).
 fn assert_reads(dir: &Path, base: &Path, expected: &[&str]) {
-    let (git2, cli) = (git2(dir), cli(dir));
-    assert_eq!(cli, git2, "in {}", dir.display());
-    assert_eq!(render(&cli, base), expected.join("\n"));
+    assert_eq!(render(&read(dir), base), expected.join("\n"));
 }
 
 /// `base` and the repo folder in it.
@@ -186,6 +138,40 @@ const FEATURE_BRANCH: &[&str] = &[
     r#"checkout Some("feat") None repo repo at repo key repo/.git git dir repo/.git"#,
     r#"root Some("repo")"#,
 ];
+
+/// Every entry below `dir` with its modification time and size.
+fn snapshot(dir: &Path) -> Vec<(PathBuf, std::time::SystemTime, u64)> {
+    let mut out = Vec::new();
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        for entry in std::fs::read_dir(&dir).unwrap().map(Result::unwrap) {
+            let meta = entry.metadata().unwrap();
+            if meta.is_dir() {
+                stack.push(entry.path());
+            }
+            out.push((entry.path(), meta.modified().unwrap(), meta.len()));
+        }
+    }
+    out.sort();
+    out
+}
+
+/// The files panel watches the whole worktree, `.git` included, and
+/// re-reads git on any change there: a read that wrote into `.git` would
+/// keep re-reading itself.
+#[test]
+fn reads_should_write_nothing_in_the_git_dir() {
+    let (_, dir) = feature_branch("git-dir-untouched");
+    let git_dir = dir.join(".git");
+    let before = snapshot(&git_dir);
+    // The second read finds what the first one would have written.
+    read(&dir);
+    read(&dir);
+    let after = snapshot(&git_dir);
+    let changed: Vec<_> = after.iter().filter(|e| !before.contains(e)).collect();
+    let gone: Vec<_> = before.iter().filter(|e| !after.contains(e)).collect();
+    assert_eq!((changed, gone), (vec![], vec![]));
+}
 
 #[test]
 fn feature_branch_should_count_every_kind_of_change() {
@@ -493,7 +479,7 @@ fn gone_upstream_should_be_no_parent() {
 fn folder_outside_git_should_be_its_own_root() {
     let dir = temp_dir("parity-plain");
     // temp dirs can sit inside a repo on some machines; only compare when not.
-    if remote_git::checkout(&local_run, &dir).unwrap().is_none() {
+    if !super::test_repo::in_git(&dir) {
         assert_reads(
             &dir,
             &dir,

@@ -271,7 +271,7 @@ mod tests {
         }
     }
 
-    /// herdr's placement, plus git2's for `w3`: a linked worktree of `repo`
+    /// herdr's placement, plus git's for `w3`: a linked worktree of `repo`
     /// that herdr knows nothing about.
     fn with_inferred(info: &WorkspaceInfo) -> Option<Placement> {
         herdr_placement(info).or_else(|| {
@@ -369,7 +369,7 @@ mod tests {
     }
 
     #[test]
-    fn herdr_has_no_group_where_only_git2_found_one() {
+    fn herdr_has_no_group_where_only_git_found_one() {
         let mut snapshot = snapshot();
         snapshot.workspaces[0].info.worktree = None;
         snapshot.workspaces[1].info.worktree = None;

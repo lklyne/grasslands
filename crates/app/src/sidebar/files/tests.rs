@@ -36,7 +36,7 @@ fn repo(name: &str) -> PathBuf {
     std::fs::write(dir.join("src/main.rs"), "fn main() {}").unwrap();
     std::fs::write(dir.join("a.txt"), "a").unwrap();
     std::fs::write(dir.join(".gitignore"), "target\n").unwrap();
-    git2::Repository::init(&dir).unwrap();
+    crate::fs::test_repo::TestRepo::init(&dir, "main");
     dir.canonicalize().unwrap()
 }
 

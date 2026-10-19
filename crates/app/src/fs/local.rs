@@ -1,9 +1,13 @@
 //! This Mac's disk: `ignore` for listings and search, `std::fs` for the
-//! rest, the Trash for removing.
+//! rest, the Trash for removing, and this Mac's git (through [`run`]) for
+//! the same git scripts a saved machine runs.
 
 use std::io;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, Ordering};
+
+use herdr_client::ExecOutput;
 
 use super::SearchResults;
 use super::search::{Collector, MAX_FILE_BYTES};
@@ -63,6 +67,66 @@ pub(super) fn trash(path: &Path) -> io::Result<()> {
     trash::delete(path).map_err(io::Error::other)
 }
 
+/// Runs `argv` in `cwd` on this Mac, as a saved machine runs it over SSH.
+pub(super) fn run(argv: &[&str], cwd: Option<&Path>) -> io::Result<ExecOutput> {
+    let (program, args) = argv
+        .split_first()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "no command"))?;
+    let mut command = std::process::Command::new(program);
+    command.args(args);
+    if let Some(cwd) = cwd {
+        command.current_dir(cwd);
+    }
+    let out = command.output()?;
+    Ok(ExecOutput {
+        status: out.status,
+        stdout: out.stdout,
+        stderr: out.stderr,
+    })
+}
+
+/// Whether this Mac has a git for the scripts to run, looked up once on
+/// `PATH`. An app opened from Finder gets launchd's minimal `PATH`, which
+/// `main` extends with the usual install folders (Homebrew's among them)
+/// inside a bundle, so this finds the git a terminal would. `/usr/bin/git`
+/// is only a stub until the Command Line Tools are installed, and running
+/// it then asks to install them, so it counts only once `xcode-select -p`
+/// finds a developer folder. Without git, Local shows no git info.
+pub(super) fn has_git() -> bool {
+    static HAS_GIT: OnceLock<bool> = OnceLock::new();
+    *HAS_GIT.get_or_init(|| {
+        let path = std::env::var_os("PATH").unwrap_or_default();
+        let git = std::env::split_paths(&path)
+            .map(|dir| dir.join("git"))
+            .find(|git| git.is_file());
+        let found = match &git {
+            Some(git) if git == Path::new("/usr/bin/git") => {
+                run(&["xcode-select", "-p"], None).is_ok_and(|out| out.status.success())
+            }
+            Some(_) => true,
+            None => false,
+        };
+        if !found {
+            tracing::warn!("files: no git on PATH ({git:?}); Local shows no git info");
+        }
+        found
+    })
+}
+
+/// The root of the git work tree containing `dir` (a linked worktree's own
+/// checkout), or `dir` itself outside one, both resolved; `None` if `dir`
+/// doesn't exist. git finds a work tree the same way, by the nearest folder
+/// holding `.git` (a folder, or a file for a linked worktree); walking for
+/// it here costs no process, so the UI thread can ask (`Caps::cheap`).
+pub(super) fn resolve_root(dir: &Path) -> Option<PathBuf> {
+    let dir = dir.canonicalize().ok()?;
+    let root = dir
+        .ancestors()
+        .find(|folder| folder.join(".git").exists())
+        .unwrap_or(&dir);
+    Some(root.to_path_buf())
+}
+
 /// Matches `query` against every path and file below `root`, .gitignore
 /// respected.
 pub(super) fn search(root: &Path, query: &str, cancel: &AtomicBool) -> SearchResults {
@@ -118,6 +182,51 @@ mod tests {
     use std::path::PathBuf;
 
     use super::*;
+    use crate::fs::test_repo::TestRepo;
+
+    #[test]
+    fn resolve_root_should_find_repo_root_from_subfolder() {
+        let dir = temp_dir("root-sub");
+        TestRepo::init(&dir, "main");
+        std::fs::create_dir_all(dir.join("a/b")).unwrap();
+        assert_eq!(resolve_root(&dir.join("a/b")), Some(dir));
+    }
+
+    #[test]
+    fn resolve_root_should_return_linked_worktree_checkout() {
+        let dir = temp_dir("root-linked");
+        let main = TestRepo::on_main(&dir.join("main"));
+        main.git(&["worktree", "add", "-q", "-b", "linked", "../linked"]);
+        let linked = dir.join("linked");
+        std::fs::create_dir_all(linked.join("src")).unwrap();
+        assert_eq!(resolve_root(&linked.join("src")), Some(linked));
+    }
+
+    #[test]
+    fn resolve_root_should_find_the_checkout_from_inside_its_git_dir() {
+        let dir = temp_dir("root-git-dir");
+        TestRepo::init(&dir, "main");
+        assert_eq!(resolve_root(&dir.join(".git/refs")), Some(dir));
+    }
+
+    #[test]
+    fn resolve_root_should_fall_back_to_folder_outside_git() {
+        let dir = temp_dir("root-plain");
+        // temp dirs can sit inside a repo on some machines; only assert when not.
+        if !dir.ancestors().any(|d| d.join(".git").exists()) {
+            assert_eq!(resolve_root(&dir), Some(dir));
+        }
+    }
+
+    #[test]
+    fn resolve_root_should_return_none_for_missing_folder() {
+        assert_eq!(resolve_root(Path::new("/no/such/dir/grasslands")), None);
+    }
+
+    #[test]
+    fn this_mac_should_have_git() {
+        assert!(has_git());
+    }
 
     fn temp_dir(name: &str) -> PathBuf {
         let dir =
@@ -134,7 +243,7 @@ mod tests {
     #[test]
     fn read_dir_should_list_folders_first_and_hide_git_and_ignored() {
         let dir = temp_dir("read");
-        git2::Repository::init(&dir).unwrap();
+        TestRepo::init(&dir, "main");
         std::fs::write(dir.join(".gitignore"), "target\n*.log\n").unwrap();
         std::fs::create_dir_all(dir.join("target")).unwrap();
         std::fs::create_dir_all(dir.join("src")).unwrap();
@@ -150,7 +259,7 @@ mod tests {
     #[test]
     fn read_dir_should_apply_parent_gitignore_in_subfolder() {
         let dir = temp_dir("nested");
-        git2::Repository::init(&dir).unwrap();
+        TestRepo::init(&dir, "main");
         std::fs::write(dir.join(".gitignore"), "*.tmp\n").unwrap();
         std::fs::create_dir_all(dir.join("sub")).unwrap();
         std::fs::write(dir.join("sub/keep.rs"), "").unwrap();
@@ -216,7 +325,7 @@ mod tests {
     fn search_dir(name: &str) -> PathBuf {
         let dir = temp_dir(&format!("search-{name}"));
         std::fs::create_dir_all(dir.join("src")).unwrap();
-        git2::Repository::init(&dir).unwrap();
+        TestRepo::init(&dir, "main");
         dir
     }
 

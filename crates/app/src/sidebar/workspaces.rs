@@ -20,8 +20,8 @@
 //! header, then one collapsible header per machine with its status and a ···
 //! menu. A machine that isn't connected keeps its last workspaces, dimmed
 //! and inert. Every row's commands go to its own machine; a remote
-//! workspace's repo grouping comes from herdr alone (git2 reads this Mac's
-//! disk).
+//! workspace's repo grouping comes from herdr alone (its git read gives
+//! the branch only).
 
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
@@ -100,7 +100,7 @@ pub struct WorkspaceList {
     folded: HashMap<MachineId, HashSet<String>>,
     /// Machines whose groups are collapsed to their header.
     collapsed: HashSet<MachineId>,
-    /// git2's answer per workspace folder (`None`: not in git).
+    /// git's answer per Local workspace folder (`None`: not in git).
     checkouts: HashMap<PathBuf, Option<Checkout>>,
     /// Folders being read for the first time.
     reading: HashSet<PathBuf>,
@@ -248,7 +248,8 @@ impl WorkspaceList {
         this
     }
 
-    /// Local's cache: the only machine whose folders git2 can read.
+    /// Local's cache: the only machine whose checkouts give placement and
+    /// upstream counts.
     fn local_snapshot(&self, cx: &App) -> std::sync::Arc<Snapshot> {
         self.state
             .read(cx)
@@ -356,7 +357,7 @@ impl WorkspaceList {
         true
     }
 
-    /// Re-reads `dirs` with git2 off the main thread.
+    /// Re-reads `dirs` with git off the main thread.
     fn read_checkouts(&mut self, dirs: Vec<PathBuf>, cx: &mut Context<Self>) {
         if dirs.is_empty() {
             return;
@@ -410,7 +411,7 @@ impl WorkspaceList {
         }
     }
 
-    /// git2's checkout for a Local workspace, the machine's branch for a
+    /// The checkout for a Local workspace, the machine's branch for a
     /// saved machine's.
     fn checkout(
         &self,
@@ -425,7 +426,7 @@ impl WorkspaceList {
         self.checkouts.get(&dir)?.as_ref()
     }
 
-    /// herdr's repo info, else what git2 found in the workspace's folder.
+    /// herdr's repo info, else what git found in the workspace's folder.
     fn placement(
         &self,
         machine: &MachineId,

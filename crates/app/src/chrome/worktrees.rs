@@ -5,7 +5,7 @@
 //!
 //! Which workspaces are linked worktrees, and which form a group, follows
 //! what the spaces list shows: herdr's `WorkspaceInfo::worktree`, else what
-//! the list read with git2 (see [`set_placements`]).
+//! the list read with git (see [`set_placements`]).
 
 use std::cell::Cell;
 use std::rc::Rc;
@@ -36,7 +36,7 @@ struct Placements(PlaceFn);
 impl Global for Placements {}
 
 /// The spaces list registers how it places workspaces (herdr's info, else
-/// git2's), so menus, the palette and group closes agree with its rows.
+/// git's), so menus, the palette and group closes agree with its rows.
 pub fn set_placements(cx: &mut App, place: PlaceFn) {
     cx.set_global(Placements(place));
 }

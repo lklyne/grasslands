@@ -381,11 +381,7 @@ fn workspace_in_a_git_folder_shows_its_branch(cx: &mut TestAppContext) {
     let dir = std::env::temp_dir().join(format!("grasslands-ws-branch-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
-    git2::Repository::init_opts(
-        &dir,
-        git2::RepositoryInitOptions::new().initial_head("topic"),
-    )
-    .unwrap();
+    crate::fs::test_repo::TestRepo::init(&dir, "topic");
     let mut worktree = main_checkout("x");
     worktree["checkout_path"] = json!(dir.to_string_lossy());
     let (

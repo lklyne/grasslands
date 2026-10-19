@@ -1,27 +1,26 @@
 //! Where a workspace's files live: this Mac's disk or a saved machine's,
 //! behind one blocking API so the file tree, search, editor and Changes tab
-//! don't care which. Run every call off the UI thread. See
-//! docs/decisions/0020-remote-files.md.
+//! don't care which. Run every call off the UI thread unless `Fs::caps`
+//! says it's cheap. See docs/decisions/0020-remote-files.md.
 //!
-//! Local is `ignore`, `std::fs`, git2 and the Trash (`local`, `local_git`).
-//! Remote is `herdr_client::RemoteFs`: SFTP for files, and the machine's own
-//! git, grep and find for ignore rules, search and Changes (`remote`,
-//! `remote_git`), parsed into the same shapes.
+//! Local is `ignore`, `std::fs` and the Trash (`local`). Remote is
+//! `herdr_client::RemoteFs`: SFTP for files, and the machine's own git, grep
+//! and find for ignore rules and search (`remote`), parsed into the same
+//! shapes. Both run the same git scripts for Changes and checkouts (`git`),
+//! Local through this Mac's git.
 
 #[cfg(test)]
 pub mod fake;
 pub mod git;
-mod local;
-mod local_git;
 #[cfg(test)]
-mod parity_tests;
+mod git_tests;
+mod local;
 mod remote;
-mod remote_git;
 pub mod search;
 #[cfg(test)]
-mod test_repo;
+pub mod test_repo;
 
-pub use remote_git::SummaryCache;
+pub use git::SummaryCache;
 pub use search::Results as SearchResults;
 
 use std::io;
@@ -30,7 +29,13 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::time::SystemTime;
 
+use herdr_client::ExecOutput;
+
 use crate::state::MachineId;
+
+/// Runs `argv` in `cwd` on a machine: this Mac (`local::run`) or a saved
+/// one (`remote::runner`).
+type Run<'a> = dyn Fn(&[&str], Option<&Path>) -> io::Result<ExecOutput> + 'a;
 
 /// One row of a folder listing, as the file tree shows it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -239,16 +244,18 @@ impl Fs {
     }
 
     /// The Changes summary for the checkout containing `dir`; `None`
-    /// outside git, an error if a saved machine couldn't be asked. A saved
-    /// machine's comes from a `git_patch` of `dir` moments ago if there was one.
+    /// outside git (or without git), an error if git couldn't be run. A
+    /// saved machine's comes from a `git_patch` of `dir` moments ago if there
+    /// was one.
     pub fn git_summary(&self, dir: &Path) -> io::Result<Option<git::Summary>> {
         match self {
-            Self::Local => Ok(local_git::read(dir)),
+            Self::Local if !local::has_git() => Ok(None),
+            Self::Local => git::summary(&local::run, dir),
             Self::Remote {
                 files, summaries, ..
             } => match summaries.get(dir) {
                 Some(summary) => Ok(summary),
-                None => remote_git::summary(&remote::runner(files), dir),
+                None => git::summary(&remote::runner(files), dir),
             },
             #[cfg(test)]
             Self::Fake(_) => Ok(None),
@@ -259,11 +266,12 @@ impl Fs {
     /// like `git_summary`.
     pub fn git_patch(&self, dir: &Path) -> io::Result<Option<String>> {
         match self {
-            Self::Local => Ok(local_git::patch(dir)),
+            Self::Local if !local::has_git() => Ok(None),
+            Self::Local => Ok(git::patch(&local::run, dir)?.map(|(patch, _)| patch)),
             Self::Remote {
                 files, summaries, ..
             } => {
-                let read = remote_git::patch(&remote::runner(files), dir)?;
+                let read = git::patch(&remote::runner(files), dir)?;
                 summaries.put(dir, read.as_ref().map(|(_, s)| s.clone()));
                 Ok(read.map(|(patch, _)| patch))
             }
@@ -274,25 +282,28 @@ impl Fs {
 
     /// The worktree a pane in `dir` works in: its git checkout's root (a
     /// linked worktree's own), or `dir` outside git. `None` if `dir` doesn't
-    /// exist on this file system (or the machine can't be asked).
+    /// exist on this file system (or the machine can't be asked). Cheap on
+    /// Local, which needs no git for it.
     pub fn resolve_root(&self, dir: &Path) -> Option<PathBuf> {
         match self {
-            Self::Local => crate::worktree::resolve_root(dir),
-            Self::Remote { files, .. } => remote_git::resolve_root(&remote::runner(files), dir),
+            Self::Local => local::resolve_root(dir),
+            Self::Remote { files, .. } => git::resolve_root(&remote::runner(files), dir),
             #[cfg(test)]
             Self::Fake(_) => None,
         }
     }
 
-    /// The branch HEAD names in `dir`: `Some(None)` when detached, `None`
-    /// outside git.
-    pub fn head_branch(&self, dir: &Path) -> Option<Option<String>> {
-        match self {
-            Self::Local => local_git::head_branch(dir),
-            Self::Remote { files, .. } => remote_git::head_branch(&remote::runner(files), dir),
+    /// The checkout containing `dir`; `None` outside git, without git, or
+    /// when the machine can't be asked.
+    pub fn checkout(&self, dir: &Path) -> Option<git::Checkout> {
+        let read = match self {
+            Self::Local if !local::has_git() => return None,
+            Self::Local => git::checkout(&local::run, dir),
+            Self::Remote { files, .. } => git::checkout(&remote::runner(files), dir),
             #[cfg(test)]
-            Self::Fake(_) => None,
-        }
+            Self::Fake(_) => return None,
+        };
+        read.ok().flatten()
     }
 }
 

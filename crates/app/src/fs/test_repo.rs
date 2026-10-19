@@ -12,6 +12,12 @@ pub fn temp_dir(name: &str) -> PathBuf {
     dir.canonicalize().unwrap()
 }
 
+/// Whether `dir` sits inside a git work tree (temp dirs can, on some
+/// machines).
+pub fn in_git(dir: &Path) -> bool {
+    dir.ancestors().any(|d| d.join(".git").exists())
+}
+
 pub struct TestRepo {
     pub dir: PathBuf,
 }
