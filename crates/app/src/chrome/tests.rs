@@ -514,12 +514,22 @@ fn a_callback_entry_runs_through_the_chrome(cx: &mut TestAppContext) {
     let MenuEntry::Item { command, .. } = entries[0].clone() else {
         panic!("first entry is an item");
     };
-    cx.update_window(f.window, |_, window, cx| {
-        f.chrome.update(cx, |chrome, cx| {
-            chrome.run_menu_command(command, window, cx)
-        });
-    })
-    .unwrap();
+    run_menu_command(cx, &f, command);
+    assert_eq!(runs.get(), 1);
+}
+
+/// A callback may update the chrome, as opening a dialog does (Add
+/// Machine crashed re-entering it).
+#[gpui_kit::test]
+fn a_callback_entry_can_update_the_chrome(cx: &mut TestAppContext) {
+    let f = fixture(cx);
+    let runs = Rc::new(Cell::new(0));
+    let (chrome, count) = (f.chrome.clone(), runs.clone());
+    let command = MenuCommand::Callback(Rc::new(move |window, cx| {
+        chrome.update(cx, |chrome, cx| chrome.close_context_menu(window, cx));
+        count.set(count.get() + 1);
+    }));
+    run_menu_command(cx, &f, command);
     assert_eq!(runs.get(), 1);
 }
 
