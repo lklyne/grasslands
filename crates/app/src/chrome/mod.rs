@@ -12,6 +12,7 @@ mod dock;
 mod palette;
 #[cfg(debug_assertions)]
 mod script;
+mod worktrees;
 
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -27,7 +28,7 @@ use gpui_kit::*;
 use crate::attention::{StatusChange, find_agent};
 use crate::herdr::{
     AgentStatus, PluginActionContext, PluginActionInfo, PluginInvocationContext, Snapshot,
-    SplitDirection,
+    SplitDirection, WorkspaceInfo,
 };
 use crate::overlay::{self, Capture, LayerId, Overlay};
 use crate::sounds;
@@ -35,6 +36,7 @@ use crate::state::{AppEvent, AppState, MachineId};
 
 pub use command::HerdrCommand;
 pub use confirm::Confirmation;
+pub use worktrees::{WorktreeCommand, set_placements};
 
 pub fn init(_cx: &mut App) {
     dock::set_icon();
@@ -80,6 +82,8 @@ pub enum MenuCommand {
     Herdr(HerdrCommand),
     /// Ask for a new label, then rename the target.
     Rename(MenuTarget),
+    /// Open Worktree… or Remove Worktree…, which ask before they act.
+    Worktree(WorktreeCommand),
     /// Dispatch an app action (e.g. `ToggleTheme`).
     Action(Rc<dyn Action>),
     /// Anything else the caller wants run.
@@ -576,6 +580,9 @@ impl Chrome {
             } => {
                 let id = || workspace_id.clone();
                 let on = || machine.clone();
+                let placed = snapshot
+                    .workspace(workspace_id)
+                    .and_then(|w| worktrees::placement(machine, &w.info, cx));
                 let mut entries = vec![
                     MenuEntry::herdr(
                         "Focus Workspace",
@@ -592,29 +599,69 @@ impl Chrome {
                         },
                     ),
                     MenuEntry::item("Rename Workspace…", MenuCommand::Rename(target.clone())),
-                    MenuEntry::Separator,
-                    MenuEntry::herdr(
-                        "Close Workspace",
-                        C::CloseWorkspace {
-                            machine: on(),
-                            workspace_id: id(),
-                            close_group: false,
-                        },
-                    ),
                 ];
-                if confirm::group_members(snapshot, workspace_id).len() > 1 {
-                    entries.push(MenuEntry::herdr(
-                        "Close Worktree Group",
-                        C::CloseWorkspace {
+                if placed.is_some() {
+                    entries.push(MenuEntry::item(
+                        "Open Worktree…",
+                        MenuCommand::Worktree(WorktreeCommand::Open {
                             machine: on(),
                             workspace_id: id(),
-                            close_group: true,
-                        },
+                        }),
                     ));
+                }
+                entries.push(MenuEntry::Separator);
+                if placed.is_some_and(|p| p.linked) {
+                    entries.push(MenuEntry::item(
+                        "Remove Worktree…",
+                        MenuCommand::Worktree(WorktreeCommand::Remove {
+                            machine: on(),
+                            workspace_id: id(),
+                        }),
+                    ));
+                }
+                entries.push(MenuEntry::herdr(
+                    "Close Workspace",
+                    C::CloseWorkspace {
+                        machine: on(),
+                        workspace_id: id(),
+                    },
+                ));
+                if let Some(close_group) = self.group_close(machine, workspace_id, cx) {
+                    entries.push(MenuEntry::herdr("Close Worktree Group", close_group));
                 }
                 entries
             }
         }
+    }
+
+    /// Closing the worktree group `workspace_id` heads, as the spaces list
+    /// groups it (herdr's info, else the list's own git read); `None` when
+    /// it heads none.
+    pub fn group_close(
+        &self,
+        machine: &MachineId,
+        workspace_id: &str,
+        cx: &App,
+    ) -> Option<HerdrCommand> {
+        let snapshot = self.snapshot_of(machine, cx);
+        let place = |info: &WorkspaceInfo| worktrees::placement(machine, info, cx);
+        let members = confirm::group_members(snapshot, workspace_id, place);
+        if members.len() < 2 {
+            return None;
+        }
+        let repo_name = snapshot
+            .workspace(workspace_id)
+            .and_then(|w| place(&w.info))
+            .map(|p| p.repo.name)?;
+        Some(HerdrCommand::CloseGroup {
+            machine: machine.clone(),
+            workspace_id: workspace_id.to_owned(),
+            repo_name,
+            members: members
+                .iter()
+                .map(|w| w.info.workspace_id.clone())
+                .collect(),
+        })
     }
 
     /// Plugin actions declared for the target's context, invoked with it.
@@ -653,6 +700,7 @@ impl Chrome {
         match command {
             MenuCommand::Herdr(command) => self.run(command, window, cx),
             MenuCommand::Rename(target) => self.prompt_rename(target, window, cx),
+            MenuCommand::Worktree(command) => self.run_worktree_command(command, window, cx),
             MenuCommand::Action(action) => window.dispatch_action(action.boxed_clone(), cx),
             MenuCommand::Callback(callback) => callback(window, cx),
         }

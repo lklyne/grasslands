@@ -15,8 +15,8 @@ pub use herdr_client::{
     MachineStatus, NewTab, NewWorkspace, PaneDirection, PaneId, PaneInfo, PaneMoveDestination,
     PaneSplit, PluginActionContext, PluginActionInfo, PluginInvocationContext, RightClickTarget,
     SessionSync, SplitDirection, SplitRef, SplitTree, State as Snapshot, Tab, TabId, TabInfo,
-    Update, Version, Workspace, WorkspaceId, WorkspaceInfo, WorkspaceWorktreeInfo, WorktreeInfo,
-    WorktreeParams,
+    Update, Version, Workspace, WorkspaceCreated, WorkspaceId, WorkspaceInfo, WorkspaceWorktreeInfo,
+    WorktreeInfo, WorktreeList, WorktreeParams, WorktreeRemoved,
 };
 
 /// Where to find herdr: `HERDR_BIN`, `HERDR_SESSION`, `HERDR_SOCKET_PATH`

@@ -263,3 +263,129 @@ fn pane_menu_commands_keep_the_machine_they_were_opened_on(cx: &mut TestAppConte
     });
     assert!(!machines.is_empty() && machines.iter().all(|m| m == &remote));
 }
+
+fn workspace(id: &str, linked: Option<bool>) -> herdr::Workspace {
+    herdr::Workspace {
+        info: herdr::WorkspaceInfo {
+            workspace_id: id.into(),
+            number: 1,
+            label: format!("ws-{id}"),
+            focused: false,
+            pane_count: 1,
+            tab_count: 1,
+            active_tab_id: format!("{id}:t1"),
+            agent_status: AgentStatus::Idle,
+            worktree: linked.map(|linked| herdr::WorkspaceWorktreeInfo {
+                repo_key: "/r/.git".into(),
+                repo_name: "r".into(),
+                repo_root: "/r".into(),
+                checkout_path: format!("/w/{id}"),
+                is_linked_worktree: linked,
+            }),
+            tokens: Default::default(),
+        },
+        tabs: Vec::new(),
+    }
+}
+
+/// `w1` and `w2` without herdr worktree info, `w3` a linked worktree herdr
+/// knows about.
+fn worktree_fixture(cx: &mut TestAppContext) -> Fixture {
+    let f = fixture(cx);
+    cx.update(|cx| {
+        f.state.update(cx, |state, cx| {
+            let snapshot = Snapshot {
+                workspaces: vec![
+                    workspace("w1", None),
+                    workspace("w2", None),
+                    workspace("w3", Some(true)),
+                ],
+                ..Snapshot::default()
+            };
+            state.replace_snapshot(Arc::new(snapshot), cx);
+        });
+    });
+    f
+}
+
+fn workspace_labels(cx: &mut TestAppContext, f: &Fixture, id: &str) -> Vec<String> {
+    let target = MenuTarget::Workspace {
+        machine: MachineId::Local,
+        workspace_id: id.into(),
+    };
+    cx.update(|cx| {
+        f.chrome
+            .read(cx)
+            .default_entries(&target, cx)
+            .into_iter()
+            .filter_map(|entry| match entry {
+                MenuEntry::Item { label, .. } => Some(label.to_string()),
+                MenuEntry::Separator | MenuEntry::Submenu { .. } => None,
+            })
+            .collect()
+    })
+}
+
+/// What the spaces list's git read would say: `w1` is the main checkout and
+/// `w2` a linked worktree of herdr's repo.
+fn infer_w1_w2(cx: &mut TestAppContext) {
+    cx.update(|cx| {
+        super::set_placements(
+            cx,
+            std::rc::Rc::new(|_, info, _| {
+                super::worktrees::herdr_placement(info).or_else(|| {
+                    let linked = match info.workspace_id.as_str() {
+                        "w1" => false,
+                        "w2" => true,
+                        _ => return None,
+                    };
+                    Some(crate::worktree::Placement {
+                        repo: crate::worktree::Repo {
+                            key: "/r/.git".into(),
+                            name: "r".into(),
+                            root: "/r".into(),
+                        },
+                        linked,
+                    })
+                })
+            }),
+        );
+    });
+}
+
+#[gpui_kit::test]
+fn a_linked_worktree_menu_offers_open_and_remove(cx: &mut TestAppContext) {
+    let f = worktree_fixture(cx);
+    let labels = workspace_labels(cx, &f, "w3");
+    assert!(
+        labels.contains(&"Open Worktree…".to_owned())
+            && labels.contains(&"Remove Worktree…".to_owned())
+    );
+}
+
+#[gpui_kit::test]
+fn a_workspace_outside_a_repo_offers_no_worktree_entries(cx: &mut TestAppContext) {
+    let f = worktree_fixture(cx);
+    let labels = workspace_labels(cx, &f, "w1");
+    assert!(!labels.iter().any(|l| l.contains("Worktree")));
+}
+
+#[gpui_kit::test]
+fn an_inferred_linked_worktree_offers_remove(cx: &mut TestAppContext) {
+    let f = worktree_fixture(cx);
+    infer_w1_w2(cx);
+    assert!(workspace_labels(cx, &f, "w2").contains(&"Remove Worktree…".to_owned()));
+}
+
+#[gpui_kit::test]
+fn an_inferred_group_closes_exactly_its_listed_members(cx: &mut TestAppContext) {
+    let f = worktree_fixture(cx);
+    infer_w1_w2(cx);
+    let close = cx.update(|cx| f.chrome.read(cx).group_close(&MachineId::Local, "w1", cx));
+    let members = match close {
+        Some(HerdrCommand::CloseGroup { members, .. }) => members,
+        _ => Vec::new(),
+    };
+    // w3 is herdr's own linked worktree of the same repo, so it belongs too.
+    assert_eq!(members, ["w1", "w2", "w3"]);
+}
