@@ -31,6 +31,7 @@ mod state;
 mod status;
 mod terminal_area;
 mod theme;
+mod updates;
 mod window_registry;
 mod workspace;
 mod worktree;
@@ -57,6 +58,7 @@ fn main() {
             sounds::init(cx);
             herdr_prefs::init(cx);
             settings::init(cx);
+            updates::init(cx);
             editor::init(cx);
             terminal_area::init(cx);
             sidebar::init(cx);
@@ -138,5 +140,6 @@ fn open_main_window(cx: &mut App) -> anyhow::Result<()> {
     #[cfg(debug_assertions)]
     script::start(window, cx);
     cx.activate(true);
+    updates::start();
     Ok(())
 }

@@ -17,6 +17,9 @@ cask "grasslands" do
     strategy :github_releases
   end
 
+  # Sparkle updates the app in place (docs/decisions/0024-updates.md), so
+  # `brew upgrade` leaves it alone unless asked with --greedy.
+  auto_updates true
   depends_on arch: :arm64
   depends_on macos: :ventura
 

@@ -1,6 +1,6 @@
 #!/bin/sh
-# Build an unsigned release .app bundle: target/bundle/grasslands.app.
-# scripts/release.sh signs and notarizes it.
+# Build a release .app bundle, signed ad hoc: target/bundle/grasslands.app.
+# scripts/release.sh signs it with the Developer ID and notarizes it.
 #
 #   scripts/bundle.sh            # build and bundle
 #   scripts/bundle.sh --no-build # re-bundle the existing release binary
@@ -11,11 +11,25 @@
 # binary through the dev environment:
 #
 #   scripts/dev-run target/bundle/grasslands.app/Contents/MacOS/grasslands
+#
+# The bundle carries Sparkle.framework (scripts/fetch-sparkle.sh), the
+# updater, and names its feed and public key in Info.plist; see
+# docs/decisions/0024-updates.md. SPARKLE_PUBLIC_KEY overrides the key, for
+# trying a bundle before UPDATE_PUBLIC_KEY is set; with neither, the bundle
+# has no updater.
 set -eu
+
+# Where updates are announced. `latest` follows the newest regular (not
+# pre-) release, so the feed's address never changes.
+FEED_URL="https://github.com/lklyne/grasslands/releases/latest/download/appcast.xml"
+# The public half of the EdDSA key updates are signed with. The private half
+# is in the maintainer's login keychain under the account `grasslands`.
+UPDATE_PUBLIC_KEY=""
 
 root=$(cd "$(dirname "$0")/.." && pwd)
 app="$root/target/bundle/grasslands.app"
 version=$(sed -n 's/^version = "\(.*\)"/\1/p' "$root/crates/app/Cargo.toml" | head -n 1)
+public_key="${SPARKLE_PUBLIC_KEY:-$UPDATE_PUBLIC_KEY}"
 
 if [ "${1:-}" != "--no-build" ]; then
   # libghostty needs Zig 0.16 (Homebrew's 0.17 won't build it).
@@ -30,6 +44,18 @@ bin="$root/target/release/grasslands"
 rm -rf "$app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 cp "$bin" "$app/Contents/MacOS/grasslands"
+sparkle=$("$root/scripts/fetch-sparkle.sh")
+if [ -n "$public_key" ]; then
+  mkdir -p "$app/Contents/Frameworks"
+  cp -R "$sparkle/Sparkle.framework" "$app/Contents/Frameworks/"
+  updater_keys="  <key>SUFeedURL</key><string>$FEED_URL</string>
+  <key>SUPublicEDKey</key><string>$public_key</string>
+  <key>SUEnableAutomaticChecks</key><true/>
+  <key>SUScheduledCheckInterval</key><integer>86400</integer>"
+else
+  echo "bundle: no UPDATE_PUBLIC_KEY or SPARKLE_PUBLIC_KEY; this bundle has no updater" >&2
+  updater_keys=""
+fi
 "$root/scripts/compile-icon.sh" "$app/Contents/Resources"
 
 # A binary release has to carry its dependencies' notices. cargo-about covers
@@ -42,7 +68,8 @@ cargo about generate --locked -c "$root/packaging/about.toml" -m "$root/crates/a
   "$root/packaging/about.hbs" -o "$notices"
 for extra in "Ghostty:$root/vendor/gpui-libghostty/vendor/ghostty/LICENSE" \
   "gpui-libghostty:$root/packaging/notices/gpui-libghostty.txt" \
-  "cuelume (ported in crates/cues):$root/packaging/notices/cuelume.txt"; do
+  "cuelume (ported in crates/cues):$root/packaging/notices/cuelume.txt" \
+  "Sparkle:$root/packaging/notices/sparkle.txt"; do
   printf '\n================================================================================\n%s\n\n' "${extra%%:*}" >>"$notices"
   cat "${extra#*:}" >>"$notices"
 done
@@ -65,9 +92,12 @@ cat > "$app/Contents/Info.plist" <<EOF
   <key>LSMinimumSystemVersion</key><string>13.0</string>
   <key>NSHighResolutionCapable</key><true/>
   <key>NSSupportsAutomaticGraphicsSwitching</key><true/>
+$updater_keys
 </dict>
 </plist>
 EOF
 
 plutil -lint "$app/Contents/Info.plist" >/dev/null
+"$root/scripts/sign-bundle.sh" "$app" >/dev/null 2>&1 \
+  || { echo "bundle: ad hoc signing failed" >&2; exit 1; }
 echo "bundle: $app"

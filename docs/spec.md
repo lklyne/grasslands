@@ -147,6 +147,7 @@ The upper sidebar panel lists every herdr workspace and agent, laid out like her
 - **Plugin panes:** plugins that open as a split, tab, zoomed pane or overlay create real panes, which we show like any other pane.
 - **Confirmations:** herdr API closes happen immediately, so the app asks before closing a pane or tab with a running agent, and before closing any workspace or worktree group while herdr's `ui.confirm_close` is on.
 - **Popovers over terminals:** because Ghostty views sit above the GPUI layer, menus, popovers, the command palette and toasts are drawn in a transparent, borderless overlay window above the main window.
+- **Updates:** the app bundle embeds Sparkle, which checks the latest GitHub release's `appcast.xml` daily and installs signed updates in place. grasslands > Check for Updates… (and the palette) checks now; Settings → Updates has the version, a check button and the automatic-checks switch (decision 0024).
 
 **Known gaps in herdr's API (re-check against 0.9.5; file feature requests if still missing):**
 - Plugin **popup** placements have no pane id or events, so they can't be shown in our app.
