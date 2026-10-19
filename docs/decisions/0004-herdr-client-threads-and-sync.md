@@ -4,8 +4,7 @@
 
 gpui-pre 0.3.9 brings its own executor (async-task, async-channel, futures); no tokio or smol runtime. So `herdr-client` uses no async runtime at all: blocking Unix sockets on plain threads. The app gets:
 
-- `SessionSync::state() -> Arc<State>`: a lock-and-clone of the latest immutable cache.
-- `SessionSync::updates() -> async_channel::Receiver<Update>`: `State(Arc<State>)`, `Event(Box<Event>)`, `Status(ConnectionStatus)`. GPUI can `recv().await` it inside `cx.spawn`; tests use `recv_blocking()`. async-channel 2.5 is already in GPUI's tree.
+- `SessionSync::updates() -> async_channel::Receiver<Update>`: `State(Arc<State>)` (the whole immutable cache, replaced), `Event { kind }` (an event arrived; its kind only, since nothing reacts to events except through the re-read) and `Status(ConnectionStatus)`. GPUI can `recv().await` it inside `cx.spawn`; tests drain it with `try_recv()`. async-channel 2.5 is already in GPUI's tree. The engine thread keeps its own last state; the app keeps its copy from these updates.
 - `Client`: typed commands, one blocking round trip each. Call them from `cx.background_executor().spawn(...)`.
 
 ## Protocol facts found by probing 0.9.5 (not stated in the schema)
@@ -18,7 +17,7 @@ gpui-pre 0.3.9 brings its own executor (async-task, async-channel, futures); no 
 
 ## Sync loop
 
-subscribe → `session.snapshot` + `layout.export` for each tab → build `State` → publish if it differs. Every event (after a 10 ms coalescing window) only marks the cache stale and triggers the same full read; events are never applied to the cache. If the trees disagree with the snapshot's pane membership (reads raced a change) or the pane set moved, it re-reads (up to 4 passes, then publishes and queues another pass).
+subscribe → `session.snapshot` + `layout.export` for each tab (up to 8 at once, since over ssh each is a ~0.2 s round trip) → build `State` → publish if it differs. Every event (after a 10 ms coalescing window) only marks the cache stale and triggers the same full read; events are never applied to the cache. If the trees disagree with the snapshot's pane membership (reads raced a change) or the pane set moved, it re-reads (up to 4 passes, then publishes and queues another pass).
 
 On a dropped connection or `events_lost`: status `Reconnecting`, back off 100 ms doubling to 5 s, then subscribe and read again, replacing the cache. If nothing answers on the socket, `Endpoint::connect` starts `$HERDR_BIN [--session S] server` in its own process group (so it outlives the app) and waits up to 10 s for it.
 
