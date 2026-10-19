@@ -1915,13 +1915,22 @@ impl Render for TerminalArea {
                     this.close_pane_confirmed(pane_id, window, cx);
                 }
             }))
-            .on_action(cx.listener(|this, _: &NewTab, _, cx| {
+            .on_action(cx.listener(|this, _: &NewTab, window, cx| {
                 let snapshot = this.snapshot(cx);
                 let workspace = Self::active_tab(&snapshot).map(|t| t.info.workspace_id.clone());
-                this.state
-                    .read(cx)
-                    .new_tab(workspace.as_deref(), cx)
-                    .detach_and_log_err(cx);
+                let machine = this.state.read(cx).selected().clone();
+                // Through the chrome, which asks for a name when herdr's
+                // `ui.prompt_new_tab_name` says to.
+                match crate::chrome::get(window, cx) {
+                    Some(chrome) => chrome.update(cx, |chrome, cx| {
+                        chrome.new_tab(machine, workspace, window, cx);
+                    }),
+                    None => this
+                        .state
+                        .read(cx)
+                        .new_tab(workspace.as_deref(), cx)
+                        .detach_and_log_err(cx),
+                }
             }))
             .on_action(cx.listener(|this, _: &CloseTab, window, cx| {
                 let snapshot = this.snapshot(cx);

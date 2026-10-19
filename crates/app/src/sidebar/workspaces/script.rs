@@ -148,7 +148,7 @@ fn run_step(
             Some(repo) => this.toggle_group(&repo.key, cx),
             None => eprintln!("[sidebar-script] no repo {arg}"),
         },
-        "new-workspace" => this.new_workspace(cx),
+        "new-workspace" => this.new_workspace(window, cx),
         "new-worktree" => this.new_worktree(None, window, cx),
         "worktree" => this.create_worktree(arg, None, window, cx),
         "new-worktree-in" => match repo_named(this, arg, cx) {

@@ -683,21 +683,53 @@ impl WorkspaceList {
         }
     }
 
-    /// A new workspace on the selected machine, focused. herdr names it;
-    /// rename it from its menu.
-    pub fn new_workspace(&mut self, cx: &mut Context<Self>) {
+    /// A new workspace on the selected machine, focused. herdr names it
+    /// unless its `ui.prompt_new_workspace_name` asks for a name first.
+    pub fn new_workspace(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let machine = self.state.read(cx).selected().clone();
-        self.new_workspace_on(&machine, cx);
+        self.new_workspace_on(&machine, window, cx);
     }
 
     /// A new workspace on `machine`, selected and focused: on Local in the
-    /// active worktree's folder, elsewhere in herdr's default folder.
-    pub fn new_workspace_on(&mut self, machine: &MachineId, cx: &mut Context<Self>) {
+    /// active worktree's folder, elsewhere in herdr's default folder. With
+    /// herdr's `ui.prompt_new_workspace_name` it asks for the name first; an
+    /// empty name lets herdr pick one.
+    pub fn new_workspace_on(
+        &mut self,
+        machine: &MachineId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !crate::herdr_prefs::get(cx).prompt_new_workspace_name {
+            self.create_workspace_on(machine, None, cx);
+            return;
+        }
+        let (this, machine) = (cx.entity().downgrade(), machine.clone());
+        crate::prompt::ask_name(
+            "New Workspace",
+            "Create",
+            "",
+            move |name, _, cx| {
+                let name = name.trim();
+                let label = (!name.is_empty()).then(|| name.to_owned());
+                let _ = this.update(cx, |this, cx| this.create_workspace_on(&machine, label, cx));
+            },
+            window,
+            cx,
+        );
+    }
+
+    fn create_workspace_on(
+        &mut self,
+        machine: &MachineId,
+        label: Option<String>,
+        cx: &mut Context<Self>,
+    ) {
         self.state.update(cx, |state, cx| {
             state.select_machine(machine, cx);
             let cwd = state.active_worktree().cloned();
             state
-                .new_workspace_on(machine, cwd, None, cx)
+                .new_workspace_on(machine, cwd, label, cx)
                 .detach_and_log_err(cx);
         });
     }
@@ -1208,7 +1240,7 @@ impl WorkspaceList {
         let this = cx.entity().downgrade();
         let mut entries = vec![MenuEntry::item(
             "New Workspace",
-            list_command(&this, |this, _, cx| this.new_workspace(cx)),
+            list_command(&this, |this, window, cx| this.new_workspace(window, cx)),
         )];
         let state = self.state.read(cx);
         if state.machines().count() > 1 {
@@ -1219,7 +1251,9 @@ impl WorkspaceList {
                     let id = m.id().clone();
                     MenuEntry::item(
                         m.label().to_owned(),
-                        list_command(&this, move |this, _, cx| this.new_workspace_on(&id, cx)),
+                        list_command(&this, move |this, window, cx| {
+                            this.new_workspace_on(&id, window, cx)
+                        }),
                     )
                 })
                 .collect();
@@ -1375,7 +1409,7 @@ impl Panel for WorkspaceList {
                     if this.state.read(cx).machines().count() > 1 {
                         this.open_new_menu(event.position(), window, cx)
                     } else {
-                        this.new_workspace(cx)
+                        this.new_workspace(window, cx)
                     }
                 })),
         ])
@@ -1393,8 +1427,8 @@ impl Panel for WorkspaceList {
             cx.entity().downgrade(),
         );
         menu.item(
-            PopupMenuItem::new("New Workspace").on_click(move |_, _, cx| {
-                let _ = a.update(cx, |this, cx| this.new_workspace(cx));
+            PopupMenuItem::new("New Workspace").on_click(move |_, window, cx| {
+                let _ = a.update(cx, |this, cx| this.new_workspace(window, cx));
             }),
         )
         .item(

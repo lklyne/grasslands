@@ -38,11 +38,31 @@ pub struct HerdrPrefs {
     /// `server.reload_config`'s diagnostics when it didn't fully apply.
     reload_diagnostics: Vec<String>,
     state: Option<WeakEntity<AppState>>,
+    /// Edits a script run keeps applied over whatever the file says, so a
+    /// dialog herdr's config asks for doesn't stall it (never written).
+    script_overrides: Vec<Edit>,
     _watcher: Option<ConfigWatcher>,
     _watch: Option<Task<()>>,
 }
 
 impl Global for HerdrPrefs {}
+
+impl HerdrPrefs {
+    fn apply_overrides(&self, prefs: &mut Prefs) {
+        for edit in &self.script_overrides {
+            edit.apply_to(prefs);
+        }
+    }
+}
+
+/// Keeps `edit` applied for the rest of a script run, whatever the file
+/// says, without writing it (debug builds' scripts only).
+#[cfg(debug_assertions)]
+pub fn override_for_script(edit: Edit, cx: &mut App) {
+    let global = cx.default_global::<HerdrPrefs>();
+    edit.apply_to(&mut global.prefs);
+    global.script_overrides.push(edit);
+}
 
 /// Reads the config and starts watching it.
 pub fn init(cx: &mut App) {
@@ -124,10 +144,12 @@ pub fn reload(cx: &mut App) {
     };
     let parsed = config::load(&path);
     let global = cx.default_global::<HerdrPrefs>();
-    if global.prefs != parsed.prefs || global.problems != parsed.problems {
+    let mut prefs = parsed.prefs;
+    global.apply_overrides(&mut prefs);
+    if global.prefs != prefs || global.problems != parsed.problems {
         log_problems(&path, &parsed.problems);
         tracing::info!("herdr config: reread {}", path.display());
-        global.prefs = parsed.prefs;
+        global.prefs = prefs;
         global.problems = parsed.problems;
     }
     run_check(cx);
@@ -158,7 +180,9 @@ fn run_check(cx: &mut App) {
         cx.update(|cx| {
             let global = cx.default_global::<HerdrPrefs>();
             if report.using_defaults {
-                global.prefs = Prefs::default();
+                let mut prefs = Prefs::default();
+                global.apply_overrides(&mut prefs);
+                global.prefs = prefs;
             }
             if global.check.as_ref() != Some(&report) {
                 if !report.ok {

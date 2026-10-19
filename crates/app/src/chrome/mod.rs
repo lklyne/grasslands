@@ -731,6 +731,14 @@ impl Chrome {
     /// Sends a herdr command, asking first when it would close a running
     /// agent or a whole worktree group (herdr closes immediately).
     pub fn run(&mut self, command: HerdrCommand, window: &mut Window, cx: &mut Context<Self>) {
+        if let HerdrCommand::NewTab {
+            machine,
+            workspace_id,
+        } = &command
+        {
+            self.new_tab(machine.clone(), Some(workspace_id.clone()), window, cx);
+            return;
+        }
         let confirm_close = crate::herdr_prefs::get(cx).confirm_close;
         let confirmation =
             confirm::needed_for(&command, self.snapshot_of(command.machine(), cx), confirm_close);
@@ -746,6 +754,43 @@ impl Chrome {
             });
         };
         self.confirm(confirmation, send, window, cx);
+    }
+
+    /// A new tab in `workspace_id` (the focused one when `None`) on
+    /// `machine`. With herdr's `ui.prompt_new_tab_name` (on by default) it
+    /// asks for the name first; an empty name lets herdr pick one.
+    pub fn new_tab(
+        &mut self,
+        machine: MachineId,
+        workspace_id: Option<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let state = self.state.clone();
+        let create = move |label: Option<String>, cx: &mut App| {
+            state
+                .read(cx)
+                .new_tab_named_on(&machine, workspace_id.as_deref(), label, cx)
+                .detach_and_log_err(cx);
+        };
+        if !crate::herdr_prefs::get(cx).prompt_new_tab_name {
+            create(None, cx);
+            return;
+        }
+        // `ask_name` reaches the chrome itself, so it opens after this update.
+        window.defer(cx, move |window, cx| {
+            crate::prompt::ask_name(
+                "New Tab",
+                "Create",
+                "",
+                move |name, _, cx| {
+                    let name = name.trim();
+                    create((!name.is_empty()).then(|| name.to_owned()), cx);
+                },
+                window,
+                cx,
+            );
+        });
     }
 
     /// Sends without asking; a failure becomes an error toast.

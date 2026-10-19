@@ -168,7 +168,7 @@ impl Run {
 
         // New Workspace on › dockerbox, then rename and close it through the
         // chrome's commands, which go to dockerbox.
-        self.spaces(cx, |spaces, _, cx| spaces.new_workspace_on(&id, cx))?;
+        self.spaces(cx, |spaces, window, cx| spaces.new_workspace_on(&id, window, cx))?;
         let made = self
             .until(cx, Duration::from_secs(10), |area, _, cx| {
                 remote(area, cx).is_some_and(|m| m.snapshot().workspaces.len() > 3)
@@ -200,9 +200,12 @@ impl Run {
             self.check(renamed, "renaming a dockerbox workspace renames it there");
             self.shoot(cx, "remote-new-workspace");
             // herdr's `ui.confirm_close` would ask first; this checks the
-            // close itself (in memory only: script runs don't write it).
+            // close itself.
             cx.update(|_, cx| {
-                crate::herdr_prefs::set(crate::herdr::config::Edit::ConfirmClose(false), cx);
+                crate::herdr_prefs::override_for_script(
+                    crate::herdr::config::Edit::ConfirmClose(false),
+                    cx,
+                );
             })?;
             self.chrome_run(
                 cx,
