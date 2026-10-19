@@ -21,14 +21,14 @@ use std::time::{Duration, Instant};
 
 use gpui_kit::component::WindowExt as _;
 use gpui_kit::*;
-use serde_json::json;
 
 use super::{Cx, Run};
 use crate::actions::CommandPalette;
 use crate::chrome::{MenuCommand, MenuTarget};
-use crate::herdr::{SplitDirection, SplitTree};
+use crate::herdr::{PaneId, SplitDirection, SplitTree, WorkspaceId, method, protocol};
 use crate::overlay;
-use crate::terminal_area::{HEADER_HEIGHT, TerminalArea};
+use crate::terminal_area::NewTab;
+use crate::terminal_area::hooks::{self, HEADER_HEIGHT, Hooks};
 
 impl Run {
     pub(super) async fn chrome(&mut self, cx: &mut Cx) -> anyhow::Result<()> {
@@ -46,45 +46,49 @@ impl Run {
         // A workspace of our own with two terminals.
         let task = self.read(cx, |area, cx| {
             let home = std::env::var_os("HOME").map(PathBuf::from);
-            area.state
+            area.state()
                 .read(cx)
-                .new_workspace(home, Some("chrome-script".to_owned()), cx)
+                .on(&area.machine(cx), cx, |session, cx| {
+                    session.new_workspace(home, Some("chrome-script".to_owned()), cx)
+                })
         })?;
         let workspace_id = task.await?.workspace_id;
-        let task = self.read(cx, |area, cx| {
-            area.state.read(cx).focus_workspace(&workspace_id, cx)
+        let task = self.on_state(cx, |state, machine, cx| {
+            state.focus_workspace(machine, &workspace_id, cx)
         })?;
         task.await?;
         let ours = {
             let workspace_id = workspace_id.clone();
-            move |area: &TerminalArea, cx: &App| {
-                TerminalArea::active_tab(&area.snapshot(cx))
+            move |area: &Hooks, cx: &App| {
+                Hooks::active_tab(&area.snapshot(cx))
                     .is_some_and(|tab| tab.info.workspace_id == workspace_id)
             }
         };
         let shown = self
             .until(cx, Duration::from_secs(10), |area, _, cx| {
-                ours(area, cx) && area.drawn.borrow().panes.len() == 1
+                ours(area, cx) && area.drawn().panes.len() == 1
             })
             .await;
         self.check(shown, "own workspace shows one terminal");
         let task = self.read(cx, |area, cx| {
-            area.state
+            area.state()
                 .read(cx)
-                .split_pane(None, SplitDirection::Right, cx)
+                .on(&area.machine(cx), cx, |session, cx| {
+                    session.split_pane(None, SplitDirection::Right, cx)
+                })
         })?;
         task.await?;
         let two = self
             .until(cx, Duration::from_secs(10), |area, _, _| {
-                area.drawn.borrow().panes.len() == 2
+                area.drawn().panes.len() == 2
             })
             .await;
         self.check(two, "split into two terminals");
         let Some((tab_id, tree)) = self.tab(cx)? else {
             anyhow::bail!("no tab");
         };
-        let panes: Vec<String> = match &tree {
-            SplitTree::Split { .. } => tree.pane_ids().into_iter().map(str::to_owned).collect(),
+        let panes: Vec<PaneId> = match &tree {
+            SplitTree::Split { .. } => tree.pane_ids().into_iter().map(PaneId::from).collect(),
             SplitTree::Pane(pane) => vec![pane.clone()],
         };
         let [first, second] = panes.as_slice() else {
@@ -93,7 +97,8 @@ impl Run {
         let (first, second) = (first.clone(), second.clone());
 
         // An agent on the first pane, so closing it needs a confirmation.
-        self.report_agent(cx, &first, "working").await?;
+        self.report_agent(cx, &first, protocol::ReportedState::Working)
+            .await?;
         let agent = self
             .until(cx, Duration::from_secs(5), |area, _, cx| {
                 area.snapshot(cx).agents.iter().any(|a| a.pane_id == first)
@@ -106,7 +111,7 @@ impl Run {
         // Type into the second terminal, as a person would before opening
         // anything: it has the keyboard, and must get it back each time.
         let bodies = self.read(cx, |area, _| {
-            let drawn = area.drawn.borrow();
+            let drawn = area.drawn();
             (
                 drawn.panes.get(&first).copied(),
                 drawn.panes.get(&second).copied(),
@@ -118,7 +123,7 @@ impl Run {
         self.click(cx, second_body.center()).await;
         let in_terminal = self
             .until(cx, Duration::from_secs(3), |area, window, cx| {
-                area.terminals.focused(window, cx).is_some()
+                area.terminals().focused(window, cx).is_some()
             })
             .await;
         self.check(
@@ -139,7 +144,13 @@ impl Run {
         let typing = self.focused(cx);
         let area = self.area.clone();
         let on_terminal = cx
-            .update(|window, cx| area.read(cx).terminals.focused(window, cx).is_some())
+            .update(|window, cx| {
+                area.read(cx)
+                    .hooks()
+                    .terminals()
+                    .focused(window, cx)
+                    .is_some()
+            })
             .unwrap_or(false);
         self.check(
             on_terminal,
@@ -170,7 +181,7 @@ impl Run {
         self.focus_back(cx, &typing, "the menu").await;
 
         // Right-click the tab: the tab menu.
-        let tab = self.read(cx, |area, _| area.drawn.borrow().tabs.get(&tab_id).copied())?;
+        let tab = self.read(cx, |area, _| area.drawn().tabs.get(&tab_id).copied())?;
         if let Some(tab) = tab {
             self.right_click(cx, tab.center());
             let open = self.until_chrome(cx, |menu, _| menu == Some(true)).await;
@@ -204,7 +215,7 @@ impl Run {
         self.key(cx, "enter");
         let split = self
             .until(cx, Duration::from_secs(5), |area, _, _| {
-                area.drawn.borrow().panes.len() == 3
+                area.drawn().panes.len() == 3
             })
             .await;
         self.check(split, "down, down, Enter in the pane menu runs Split Right");
@@ -215,7 +226,7 @@ impl Run {
         // The terminal area's close confirmation is chrome's, in the overlay.
         cx.update(|window, cx| {
             self.area.update(cx, |area, cx| {
-                area.close_pane_confirmed(first.clone(), window, cx);
+                hooks::close_pane_confirmed(area, first.clone(), window, cx);
             });
         })
         .ok();
@@ -244,14 +255,29 @@ impl Run {
         self.focus_in_terminals(cx, "the confirmation").await;
 
         // An agent turning blocked raises a toast in the overlay.
-        self.report_agent(cx, &second, "working").await?;
+        self.report_agent(cx, &second, protocol::ReportedState::Working)
+            .await?;
         let working = self
             .until(cx, Duration::from_secs(5), |area, _, cx| {
                 area.snapshot(cx).agents.iter().any(|a| a.pane_id == second)
             })
             .await;
         self.check(working, "agent reported on the second pane");
-        self.report_agent(cx, &second, "blocked").await?;
+        // herdr raises no popup for the tab in view (0022): look at a new
+        // tab, so the agent's is in the background.
+        let agent_tab = self.read(cx, |area, cx| {
+            area.snapshot(cx).pane(&second).map(|p| p.tab_id.clone())
+        })?;
+        self.dispatch(cx, Box::new(NewTab));
+        let away = self
+            .until(cx, Duration::from_secs(10), |area, _, cx| {
+                let snapshot = area.snapshot(cx);
+                snapshot.focused_tab_id.is_some() && snapshot.focused_tab_id != agent_tab
+            })
+            .await;
+        self.check(away, "a new tab puts the agent's tab in the background");
+        self.report_agent(cx, &second, protocol::ReportedState::Blocked)
+            .await?;
         let toast = self
             .until_overlay(cx, |window, cx| !window.notifications(cx).is_empty())
             .await;
@@ -264,9 +290,11 @@ impl Run {
         self.palette(cx).await;
 
         let task = self.read(cx, |area, cx| {
-            area.state
+            area.state()
                 .read(cx)
-                .close_workspace(&workspace_id, false, cx)
+                .on(&area.machine(cx), cx, |session, cx| {
+                    session.close_workspace(&workspace_id, false, cx)
+                })
         })?;
         task.await?;
         Ok(())
@@ -275,19 +303,21 @@ impl Run {
     pub(super) async fn report_agent(
         &self,
         cx: &mut Cx,
-        pane_id: &str,
-        status: &str,
+        pane_id: &PaneId,
+        state: protocol::ReportedState,
     ) -> anyhow::Result<()> {
-        let params = json!({
-            "pane_id": pane_id,
-            "source": "chrome-script",
-            "agent": "claude",
-            "state": status,
-        });
+        let params = protocol::PaneReportAgentParams {
+            pane_id: pane_id.clone(),
+            source: "chrome-script".into(),
+            agent: "claude".into(),
+            state,
+        };
         let task = self.read(cx, |area, cx| {
-            area.state
+            area.state()
                 .read(cx)
-                .call(cx, move |client| client.call("pane.report_agent", &params))
+                .call(&area.machine(cx), cx, move |client| {
+                    client.send::<method::PaneReportAgent>(&params)
+                })
         })?;
         task.await?;
         Ok(())
@@ -388,7 +418,7 @@ impl Run {
     async fn focus_in_terminals(&mut self, cx: &mut Cx, what: &str) {
         let back = self
             .until(cx, Duration::from_secs(3), |area, window, cx| {
-                area.terminals.focused(window, cx).is_some()
+                area.terminals().focused(window, cx).is_some()
             })
             .await;
         let keys_home = cx
@@ -437,11 +467,12 @@ impl Run {
 
     /// The shared name prompt (`crate::prompt`): type into it, Escape it
     /// (nothing submitted), then type again and submit with Enter.
-    async fn name_prompt(&mut self, cx: &mut Cx, workspace_id: &str) {
+    async fn name_prompt(&mut self, cx: &mut Cx, workspace_id: &WorkspaceId) {
         let before = self.focused(cx);
         // Opened from an open context menu (a sidebar menu, then a click on
         // a "New Folder" button), the prompt replaces the menu.
         let target = MenuTarget::Workspace {
+            machine: crate::state::MachineId::Local,
             workspace_id: workspace_id.to_owned(),
         };
         cx.update(|window, cx| {
@@ -542,9 +573,10 @@ impl Run {
 
     /// The chrome's rename dialog: select all, type a new name, Enter; herdr
     /// has the new label.
-    async fn rename_dialog(&mut self, cx: &mut Cx, workspace_id: &str) {
+    async fn rename_dialog(&mut self, cx: &mut Cx, workspace_id: &WorkspaceId) {
         let before = self.focused(cx);
         let target = MenuTarget::Workspace {
+            machine: crate::state::MachineId::Local,
             workspace_id: workspace_id.to_owned(),
         };
         cx.update(|window, cx| {
@@ -594,7 +626,7 @@ impl Run {
     /// The palette: type a query, arrow down, Enter runs the selected entry.
     async fn palette(&mut self, cx: &mut Cx) {
         let panes = self
-            .read(cx, |area, _| area.drawn.borrow().panes.len())
+            .read(cx, |area, _| area.drawn().panes.len())
             .unwrap_or(0);
         cx.update(|window, cx| overlay::dispatch_action(Box::new(CommandPalette), window, cx))
             .ok();
@@ -642,7 +674,7 @@ impl Run {
         self.check(shut, "Enter closes the palette");
         let ran = self
             .until(cx, Duration::from_secs(5), |area, _, _| {
-                area.drawn.borrow().panes.len() == panes + 1
+                area.drawn().panes.len() == panes + 1
             })
             .await;
         self.check(ran, "Enter runs the selected entry (a split)");

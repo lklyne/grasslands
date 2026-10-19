@@ -3,6 +3,8 @@
 //! directly; the watcher has its own test.
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
 use gpui_kit::{
@@ -13,7 +15,8 @@ use gpui_kit::{
 use super::buffer::Prompt;
 use super::watcher::FileWatcher;
 use super::{Answer, Editor};
-use crate::state::AppState;
+use crate::fs::fake::FakeFs;
+use crate::state::{AppState, MachineId};
 
 struct Fixture {
     window: AnyWindowHandle,
@@ -69,11 +72,16 @@ impl Fixture {
     }
 
     fn open(&self, cx: &mut TestAppContext, path: &Path) {
+        self.open_on(cx, &MachineId::Local, path);
+    }
+
+    fn open_on(&self, cx: &mut TestAppContext, machine: &MachineId, path: &Path) {
         cx.update_window(self.window, |_, window, cx| {
             self.editor
-                .update(cx, |editor, cx| editor.open(path, window, cx));
+                .update(cx, |editor, cx| editor.open(machine, path, window, cx));
         })
         .unwrap();
+        cx.run_until_parked();
     }
 
     fn type_text(&self, cx: &mut TestAppContext, text: &str) {
@@ -101,6 +109,7 @@ impl Fixture {
                 .update(cx, |editor, cx| editor.answer(answer, window, cx));
         })
         .unwrap();
+        cx.run_until_parked();
     }
 
     fn text(&self, cx: &mut TestAppContext) -> String {
@@ -138,9 +147,10 @@ impl Fixture {
         cx.read(|cx| {
             self.editor
                 .read(cx)
-                .group()
-                .map(|g| g.titles())
-                .unwrap_or_default()
+                .tabs(cx)
+                .into_iter()
+                .map(|tab| tab.title)
+                .collect()
         })
     }
 }
@@ -287,8 +297,9 @@ impl Fixture {
     fn moved_in_tree(&self, cx: &mut TestAppContext, from: &Path, to: &Path) {
         std::fs::rename(from, to).unwrap();
         let (from, to) = (from.to_path_buf(), to.to_path_buf());
-        self.state
-            .update(cx, |state, cx| state.file_moved(from, to, cx));
+        self.state.update(cx, |state, cx| {
+            state.file_moved(MachineId::Local, from, to, cx)
+        });
         cx.run_until_parked();
     }
 
@@ -296,8 +307,9 @@ impl Fixture {
         // The real tree moves it to the Trash; for the editor only the event matters.
         std::fs::remove_file(path).unwrap();
         let path = path.to_path_buf();
-        self.state
-            .update(cx, |state, cx| state.file_trashed(path, cx));
+        self.state.update(cx, |state, cx| {
+            state.file_removed(MachineId::Local, path, cx)
+        });
         cx.run_until_parked();
     }
 }
@@ -390,6 +402,312 @@ fn trash_in_tree_keeps_a_dirty_tab(cx: &mut TestAppContext) {
         (f.tab_titles(cx), f.dirty(cx)),
         (vec!["a.rs".to_owned()], true)
     );
+}
+
+#[gpui::test]
+fn save_from_the_close_prompt_writes_then_closes(cx: &mut TestAppContext) {
+    let f = fixture(cx, "closesave");
+    let path = f.file("a.rs", "a\n");
+    f.open(cx, &path);
+    f.type_text(cx, "b");
+    f.press(cx, "cmd-w");
+    f.answer(cx, Answer::Save);
+    assert_eq!(
+        (f.tab_titles(cx), std::fs::read_to_string(&path).unwrap()),
+        (Vec::<String>::new(), "ba\n".to_owned())
+    );
+}
+
+// Remote machines, against an in-memory disk standing in for "box"
+// (`AppState::set_test_fs`). "box" isn't in AppState's machine list, so
+// its label is its id.
+
+fn remote() -> MachineId {
+    MachineId::Remote("box".into())
+}
+
+impl Fixture {
+    fn fake_remote(&self, cx: &mut TestAppContext) -> Arc<FakeFs> {
+        let fake = Arc::new(FakeFs::default());
+        self.state.update(cx, |state, cx| {
+            state.set_test_fs(remote(), fake.clone(), cx)
+        });
+        fake
+    }
+
+    fn poll(&self, cx: &mut TestAppContext) {
+        cx.update_window(self.window, |_, window, cx| {
+            self.editor
+                .update(cx, |editor, cx| editor.poll_remote(true, window, cx));
+        })
+        .unwrap();
+        cx.run_until_parked();
+    }
+
+    /// The disk half of a poll, run now; its result is applied later by
+    /// `finish_poll`, so a test can act while the poll is in flight.
+    fn start_poll(&self, cx: &mut TestAppContext) -> Vec<super::Polled> {
+        let jobs = self
+            .editor
+            .read_with(cx, |editor, cx| editor.poll_jobs(true, cx));
+        super::run_poll(jobs)
+    }
+
+    fn finish_poll(&self, cx: &mut TestAppContext, found: Vec<super::Polled>) {
+        cx.update_window(self.window, |_, window, cx| {
+            self.editor
+                .update(cx, |editor, cx| editor.apply_poll(found, window, cx));
+        })
+        .unwrap();
+        cx.run_until_parked();
+    }
+}
+
+/// A poll reads the file's old text, then a save finishes before the poll's
+/// result lands.
+fn save_during_poll(cx: &mut TestAppContext, name: &str) -> (Fixture, Arc<FakeFs>) {
+    let f = fixture(cx, name);
+    let disk = f.fake_remote(cx);
+    let path = Path::new("/r/a.rs");
+    disk.put(path, "a\n");
+    f.open_on(cx, &remote(), path);
+    f.type_text(cx, "b");
+    // Touched elsewhere, same text: the poll's stamp check says read.
+    disk.put(path, "a\n");
+    let found = f.start_poll(cx);
+    f.press(cx, "cmd-s");
+    f.finish_poll(cx, found);
+    (f, disk)
+}
+
+#[gpui::test]
+fn a_save_finishing_during_a_poll_is_not_reverted(cx: &mut TestAppContext) {
+    let (f, _) = save_during_poll(cx, "remotepollrace");
+    assert_eq!(
+        (f.text(cx), f.dirty(cx), f.prompt(cx)),
+        ("ba\n".to_owned(), false, None)
+    );
+}
+
+#[gpui::test]
+fn a_stale_poll_keeps_the_saves_stamp(cx: &mut TestAppContext) {
+    let (f, disk) = save_during_poll(cx, "remotepollstamp");
+    let reads = disk.reads.load(Ordering::SeqCst);
+    f.poll(cx);
+    assert_eq!(disk.reads.load(Ordering::SeqCst), reads);
+}
+
+#[gpui::test]
+fn a_remote_tab_names_its_machine(cx: &mut TestAppContext) {
+    let f = fixture(cx, "remotetitle");
+    let disk = f.fake_remote(cx);
+    disk.put(Path::new("/home/lyle/api/src/main.rs"), "fn main() {}\n");
+    f.open_on(cx, &remote(), Path::new("/home/lyle/api/src/main.rs"));
+    assert_eq!(f.tab_titles(cx), ["main.rs — box"]);
+}
+
+#[gpui::test]
+fn the_same_path_on_two_machines_is_two_tabs(cx: &mut TestAppContext) {
+    let f = fixture(cx, "remotetwice");
+    let local = f.file("main.rs", "local\n");
+    let disk = f.fake_remote(cx);
+    disk.put(&local, "remote\n");
+    f.open(cx, &local);
+    f.open_on(cx, &remote(), &local);
+    f.open(cx, &local);
+    assert_eq!(f.tab_titles(cx), ["main.rs", "main.rs — box"]);
+}
+
+#[gpui::test]
+fn reopening_a_remote_file_reuses_its_tab(cx: &mut TestAppContext) {
+    let f = fixture(cx, "remotereuse");
+    let disk = f.fake_remote(cx);
+    let path = Path::new("/r/a.rs");
+    disk.put(path, "a");
+    f.open_on(cx, &remote(), path);
+    f.open_on(cx, &remote(), path);
+    assert_eq!(f.tab_titles(cx), ["a.rs — box"]);
+}
+
+#[gpui::test]
+fn saving_a_remote_file_writes_its_machine(cx: &mut TestAppContext) {
+    let f = fixture(cx, "remotesave");
+    let disk = f.fake_remote(cx);
+    let path = Path::new("/r/a.rs");
+    disk.put(path, "a\n");
+    f.open_on(cx, &remote(), path);
+    f.type_text(cx, "b");
+    f.press(cx, "cmd-s");
+    assert_eq!((disk.get(path), f.dirty(cx)), (Some("ba\n".into()), false));
+}
+
+#[gpui::test]
+fn an_offline_machine_refuses_saves_and_keeps_the_edits(cx: &mut TestAppContext) {
+    let f = fixture(cx, "remoteoffline");
+    let disk = f.fake_remote(cx);
+    let path = Path::new("/r/a.rs");
+    disk.put(path, "a\n");
+    f.open_on(cx, &remote(), path);
+    f.type_text(cx, "b");
+    disk.offline.store(true, Ordering::SeqCst);
+    f.press(cx, "cmd-s");
+    assert_eq!(
+        (disk.get(path), f.dirty(cx), f.text(cx)),
+        (Some("a\n".into()), true, "ba\n".to_owned())
+    );
+}
+
+#[gpui::test]
+fn saves_resume_when_the_machine_reconnects(cx: &mut TestAppContext) {
+    let f = fixture(cx, "remoteresume");
+    let disk = f.fake_remote(cx);
+    let path = Path::new("/r/a.rs");
+    disk.put(path, "a\n");
+    f.open_on(cx, &remote(), path);
+    f.type_text(cx, "b");
+    disk.offline.store(true, Ordering::SeqCst);
+    f.press(cx, "cmd-s");
+    disk.offline.store(false, Ordering::SeqCst);
+    f.press(cx, "cmd-s");
+    assert_eq!(disk.get(path), Some("ba\n".into()));
+}
+
+#[gpui::test]
+fn polling_reloads_a_clean_remote_buffer(cx: &mut TestAppContext) {
+    let f = fixture(cx, "remotereload");
+    let disk = f.fake_remote(cx);
+    let path = Path::new("/r/a.rs");
+    disk.put(path, "old\n");
+    f.open_on(cx, &remote(), path);
+    disk.put(path, "new\n");
+    f.poll(cx);
+    assert_eq!((f.text(cx), f.prompt(cx)), ("new\n".to_owned(), None));
+}
+
+#[gpui::test]
+fn polling_an_unchanged_file_does_not_read_it(cx: &mut TestAppContext) {
+    let f = fixture(cx, "remoteunchanged");
+    let disk = f.fake_remote(cx);
+    let path = Path::new("/r/a.rs");
+    disk.put(path, "a\n");
+    f.open_on(cx, &remote(), path);
+    let reads = disk.reads.load(Ordering::SeqCst);
+    f.poll(cx);
+    assert_eq!(disk.reads.load(Ordering::SeqCst), reads);
+}
+
+#[gpui::test]
+fn polling_after_our_own_save_does_not_prompt(cx: &mut TestAppContext) {
+    let f = fixture(cx, "remoteownsave");
+    let disk = f.fake_remote(cx);
+    let path = Path::new("/r/a.rs");
+    disk.put(path, "a\n");
+    f.open_on(cx, &remote(), path);
+    f.type_text(cx, "b");
+    f.press(cx, "cmd-s");
+    f.poll(cx);
+    assert_eq!((f.prompt(cx), f.dirty(cx)), (None, false));
+}
+
+#[gpui::test]
+fn polling_a_dirty_remote_buffer_asks(cx: &mut TestAppContext) {
+    let f = fixture(cx, "remoteconflict");
+    let disk = f.fake_remote(cx);
+    let path = Path::new("/r/a.rs");
+    disk.put(path, "base\n");
+    f.open_on(cx, &remote(), path);
+    f.type_text(cx, "mine ");
+    disk.put(path, "theirs\n");
+    f.poll(cx);
+    assert_eq!(
+        f.prompt(cx),
+        Some(Prompt::Conflict {
+            theirs: "theirs\n".into()
+        })
+    );
+}
+
+#[gpui::test]
+fn a_remote_file_deleted_on_its_machine_stays_open_dirty(cx: &mut TestAppContext) {
+    let f = fixture(cx, "remotedelete");
+    let disk = f.fake_remote(cx);
+    let path = Path::new("/r/a.rs");
+    disk.put(path, "a\n");
+    f.open_on(cx, &remote(), path);
+    disk.remove(path);
+    f.poll(cx);
+    assert_eq!(
+        (f.tab_titles(cx), f.dirty(cx)),
+        (vec!["a.rs — box".to_owned()], true)
+    );
+}
+
+#[gpui::test]
+fn polling_an_offline_machine_leaves_the_buffer_alone(cx: &mut TestAppContext) {
+    let f = fixture(cx, "remotepolloffline");
+    let disk = f.fake_remote(cx);
+    let path = Path::new("/r/a.rs");
+    disk.put(path, "a\n");
+    f.open_on(cx, &remote(), path);
+    disk.offline.store(true, Ordering::SeqCst);
+    f.poll(cx);
+    assert_eq!((f.text(cx), f.dirty(cx)), ("a\n".to_owned(), false));
+}
+
+#[gpui::test]
+fn a_remote_rename_in_the_tree_retargets_only_that_machines_tab(cx: &mut TestAppContext) {
+    let f = fixture(cx, "remotemove");
+    let local = f.file("a.rs", "local\n");
+    let disk = f.fake_remote(cx);
+    disk.put(&local, "remote\n");
+    f.open(cx, &local);
+    f.open_on(cx, &remote(), &local);
+    let (from, to) = (local.clone(), f.dir.join("b.rs"));
+    f.state
+        .update(cx, |state, cx| state.file_moved(remote(), from, to, cx));
+    cx.run_until_parked();
+    assert_eq!(f.tab_titles(cx), ["a.rs", "b.rs — box"]);
+}
+
+#[gpui::test]
+fn a_remote_delete_in_the_tree_closes_only_that_machines_tab(cx: &mut TestAppContext) {
+    let f = fixture(cx, "remoteremove");
+    let local = f.file("a.rs", "local\n");
+    let disk = f.fake_remote(cx);
+    disk.put(&local, "remote\n");
+    f.open(cx, &local);
+    f.open_on(cx, &remote(), &local);
+    disk.remove(&local);
+    let path = local.clone();
+    f.state
+        .update(cx, |state, cx| state.file_removed(remote(), path, cx));
+    cx.run_until_parked();
+    assert_eq!(f.tab_titles(cx), ["a.rs"]);
+}
+
+#[gpui::test]
+fn remote_worktrees_get_their_own_tab_sets(cx: &mut TestAppContext) {
+    let f = fixture(cx, "remotegroups");
+    let disk = f.fake_remote(cx);
+    let (api, infra) = (Path::new("/home/lyle/api"), Path::new("/home/lyle/infra"));
+    disk.put(&api.join("a.rs"), "a");
+    let set_root = |cx: &mut TestAppContext, root: &Path| {
+        let root = root.to_path_buf();
+        f.state.update(cx, |state, cx| {
+            state.set_worktree(&remote(), Some(root), cx)
+        });
+        cx.run_until_parked();
+    };
+    f.state.update(cx, |state, cx| {
+        state.add_test_machine("box", "box", Arc::default(), cx);
+        state.select_machine(&remote(), cx);
+    });
+    set_root(cx, api);
+    f.open_on(cx, &remote(), &api.join("a.rs"));
+    set_root(cx, infra);
+    assert!(f.tab_titles(cx).is_empty());
+    set_root(cx, api);
+    assert_eq!(f.tab_titles(cx), ["a.rs — box"]);
 }
 
 #[test]

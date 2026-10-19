@@ -5,7 +5,7 @@ use std::collections::HashMap;
 
 use gpui_kit::{Bounds, Pixels};
 
-use crate::herdr::{PaneDirection, SplitDirection, SplitTree};
+use crate::herdr::{PaneDirection, PaneId, SplitDirection, SplitTree};
 
 /// Smallest share a divider can give either side.
 pub const MIN_RATIO: f32 = 0.05;
@@ -38,10 +38,10 @@ pub fn ratio_at(
 /// last drawn: it must lie on that side, and among those the one whose facing
 /// edge is closest and that overlaps `from` most on the other axis wins.
 pub fn neighbor<'a>(
-    from: &str,
+    from: &PaneId,
     direction: PaneDirection,
-    panes: &'a HashMap<String, Bounds<Pixels>>,
-) -> Option<&'a str> {
+    panes: &'a HashMap<PaneId, Bounds<Pixels>>,
+) -> Option<&'a PaneId> {
     let origin = panes.get(from)?;
     let edge = |b: &Bounds<Pixels>| -> (f32, f32, f32, f32) {
         (
@@ -56,7 +56,7 @@ pub fn neighbor<'a>(
     const SLACK: f32 = 12.0;
     panes
         .iter()
-        .filter(|(id, _)| id.as_str() != from)
+        .filter(|(id, _)| *id != from)
         .filter_map(|(id, bounds)| {
             let (l, t, r, b) = edge(bounds);
             let (gap, overlap) = match direction {
@@ -65,7 +65,7 @@ pub fn neighbor<'a>(
                 PaneDirection::Up => (ot - b, or.min(r) - ol.max(l)),
                 PaneDirection::Down => (t - ob, or.min(r) - ol.max(l)),
             };
-            ((-1.0..=SLACK).contains(&gap) && overlap > 0.0).then_some((id.as_str(), overlap))
+            ((-1.0..=SLACK).contains(&gap) && overlap > 0.0).then_some((id, overlap))
         })
         .max_by(|a, b| a.1.total_cmp(&b.1))
         .map(|(id, _)| id)
@@ -76,7 +76,7 @@ pub fn neighbor<'a>(
 /// left/up shrinks the first side, right/down grows it.
 pub fn resize(
     tree: &SplitTree,
-    pane_id: &str,
+    pane_id: &PaneId,
     direction: PaneDirection,
 ) -> Option<(Vec<bool>, f32)> {
     let axis = match direction {
@@ -105,7 +105,7 @@ mod tests {
     use gpui_kit::{point, px, size};
 
     fn pane(id: &str) -> SplitTree {
-        SplitTree::Pane(id.to_owned())
+        SplitTree::Pane(id.into())
     }
 
     fn split(direction: SplitDirection, ratio: f32, a: SplitTree, b: SplitTree) -> SplitTree {
@@ -122,11 +122,11 @@ mod tests {
     }
 
     /// a | (b over c)
-    fn three() -> HashMap<String, Bounds<Pixels>> {
+    fn three() -> HashMap<PaneId, Bounds<Pixels>> {
         HashMap::from([
-            ("a".to_owned(), rect(0., 0., 400., 600.)),
-            ("b".to_owned(), rect(404., 0., 400., 298.)),
-            ("c".to_owned(), rect(404., 302., 400., 298.)),
+            ("a".into(), rect(0., 0., 400., 600.)),
+            ("b".into(), rect(404., 0., 400., 298.)),
+            ("c".into(), rect(404., 302., 400., 298.)),
         ])
     }
 
@@ -153,19 +153,28 @@ mod tests {
     #[test]
     fn neighbor_right_of_a_picks_the_pane_overlapping_most() {
         let mut panes = three();
-        panes.insert("b".to_owned(), rect(404., 0., 400., 400.));
-        panes.insert("c".to_owned(), rect(404., 404., 400., 196.));
-        assert_eq!(neighbor("a", PaneDirection::Right, &panes), Some("b"));
+        panes.insert("b".into(), rect(404., 0., 400., 400.));
+        panes.insert("c".into(), rect(404., 404., 400., 196.));
+        assert_eq!(
+            neighbor(&"a".into(), PaneDirection::Right, &panes).map(PaneId::as_str),
+            Some("b")
+        );
     }
 
     #[test]
     fn neighbor_down_from_b_is_c() {
-        assert_eq!(neighbor("b", PaneDirection::Down, &three()), Some("c"));
+        assert_eq!(
+            neighbor(&"b".into(), PaneDirection::Down, &three()).map(PaneId::as_str),
+            Some("c")
+        );
     }
 
     #[test]
     fn neighbor_left_of_the_leftmost_pane_is_none() {
-        assert_eq!(neighbor("a", PaneDirection::Left, &three()), None);
+        assert_eq!(
+            neighbor(&"a".into(), PaneDirection::Left, &three()).map(PaneId::as_str),
+            None
+        );
     }
 
     #[test]
@@ -177,7 +186,7 @@ mod tests {
             split(SplitDirection::Down, 0.5, pane("b"), pane("c")),
         );
         assert_eq!(
-            resize(&tree, "c", PaneDirection::Up),
+            resize(&tree, &"c".into(), PaneDirection::Up),
             Some((vec![true], 0.45))
         );
     }
@@ -191,7 +200,7 @@ mod tests {
             split(SplitDirection::Down, 0.5, pane("b"), pane("c")),
         );
         assert_eq!(
-            resize(&tree, "c", PaneDirection::Right),
+            resize(&tree, &"c".into(), PaneDirection::Right),
             Some((vec![], 0.55))
         );
     }
@@ -199,6 +208,6 @@ mod tests {
     #[test]
     fn resize_without_a_split_on_that_axis_is_none() {
         let tree = split(SplitDirection::Right, 0.5, pane("a"), pane("b"));
-        assert_eq!(resize(&tree, "a", PaneDirection::Down), None);
+        assert_eq!(resize(&tree, &"a".into(), PaneDirection::Down), None);
     }
 }

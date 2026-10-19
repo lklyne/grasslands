@@ -2,8 +2,13 @@
 //! (`client/shell/agent_sidebar.rs`): every agent on one line, its status
 //! glyph with its workspace (and tab, when the workspace has more than one),
 //! then its name. "grouped" keeps herdr's workspace order, blocked first
-//! within each workspace; "priority" is herdr's attention queue. The sort
-//! toggle sits in the panel's title bar.
+//! within each workspace; "priority" is herdr's attention queue. The order
+//! is herdr's `ui.agent_panel_sort`; the sort toggle in the panel's title
+//! bar writes it back to herdr's config.
+//!
+//! Agents on every connected machine share the list (Local's first in
+//! "grouped"); with more than one machine each row ends in its machine's
+//! label, and clicking an agent on another machine selects that machine.
 
 use std::cmp::Reverse;
 
@@ -14,22 +19,15 @@ use gpui_kit::component::{ActiveTheme as _, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
-use super::{AgentSort, ROW, dim_text, priority, status_icon, text};
+use super::{AgentSort, ROW, dim_text, text};
 use crate::actions::OpenContextMenu;
 use crate::chrome::MenuTarget;
-use crate::herdr::{Agent, AgentStatus, Snapshot};
-use crate::state::AppState;
-
-/// What herdr calls an agent in its panel.
-fn agent_label(agent: &Agent) -> &str {
-    agent
-        .display_agent
-        .as_deref()
-        .or(agent.name.as_deref())
-        .or(agent.agent.as_deref())
-        .or(agent.title.as_deref())
-        .unwrap_or("agent")
-}
+use crate::herdr::config::Edit;
+use crate::herdr::{Agent, PaneId, Snapshot};
+use crate::herdr_prefs::{self, HerdrPrefs};
+use crate::label;
+use crate::state::{AppState, MachineId, On, Session};
+use crate::status::{self, priority};
 
 /// The agents in `sort` order.
 pub(super) fn ordered(snapshot: &Snapshot, sort: AgentSort) -> Vec<&Agent> {
@@ -56,62 +54,112 @@ pub(super) fn ordered(snapshot: &Snapshot, sort: AgentSort) -> Vec<&Agent> {
     agents
 }
 
+/// Every connected machine's agents in `sort` order, each with its machine.
+/// "grouped" keeps the machines' order; "priority" merges them.
+fn ordered_everywhere<'a>(
+    state: &'a AppState,
+    sort: AgentSort,
+    cx: &'a App,
+) -> Vec<(&'a Session, &'a Agent)> {
+    let mut agents: Vec<(&Session, &Agent)> = state
+        .live_machines(cx)
+        .flat_map(|m| ordered(m.snapshot(), sort).into_iter().map(move |a| (m, a)))
+        .collect();
+    if sort == AgentSort::Priority {
+        agents.sort_by_key(|(_, a)| {
+            (
+                Reverse(priority(a.agent_status)),
+                Reverse(a.state_change_seq),
+            )
+        });
+    }
+    agents
+}
+
 pub struct AgentList {
     state: Entity<AppState>,
-    pub(super) sort: AgentSort,
     focus: FocusHandle,
     _observe: Subscription,
+    _observe_prefs: Subscription,
 }
 
 impl AgentList {
     pub fn new(state: Entity<AppState>, cx: &mut Context<Self>) -> Self {
         Self {
+            // It lists every live machine's agents, so any change redraws it.
             _observe: cx.observe(&state, |_, _, cx| cx.notify()),
+            _observe_prefs: cx.observe_global::<HerdrPrefs>(|_, cx| cx.notify()),
             state,
-            sort: AgentSort::Grouped,
             focus: cx.focus_handle(),
         }
     }
 
-    /// Focuses the agent's pane and counts its result as seen.
-    pub fn activate(&mut self, pane_id: &str, window: &mut Window, cx: &mut Context<Self>) {
-        self.state
-            .update(cx, |state, cx| state.mark_seen(pane_id, cx));
+    /// Focuses the agent's pane; herdr's `pane.focus` counts its result as
+    /// seen (`done` becomes `idle`).
+    pub fn activate(&mut self, pane_id: &PaneId, window: &mut Window, cx: &mut Context<Self>) {
+        let machine = self.state.read(cx).selected().clone();
+        self.activate_on(&machine, pane_id, window, cx);
+    }
+
+    /// [`Self::activate`] on `machine`, selecting it first.
+    pub fn activate_on(
+        &mut self,
+        machine: &MachineId,
+        pane_id: &PaneId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.state.update(cx, |state, cx| {
+            state.select_machine(machine, cx);
+        });
         window.dispatch_action(
             Box::new(crate::actions::FocusPane {
+                machine: machine.clone(),
                 pane_id: pane_id.to_owned(),
             }),
             cx,
         );
     }
 
+    /// The order: herdr's `ui.agent_panel_sort`.
+    pub(super) fn sort(&self, cx: &App) -> AgentSort {
+        herdr_prefs::get(cx).agent_panel_sort.into()
+    }
+
     pub fn toggle_sort(&mut self, cx: &mut Context<Self>) {
-        self.sort = match self.sort {
+        let sort = match self.sort(cx) {
             AgentSort::Grouped => AgentSort::Priority,
             AgentSort::Priority => AgentSort::Grouped,
         };
+        self.set_sort(sort, cx);
+    }
+
+    /// Sets the order, writing it to herdr's config so herdr's own agent
+    /// panel follows.
+    fn set_sort(&mut self, sort: AgentSort, cx: &mut Context<Self>) {
+        herdr_prefs::set(Edit::AgentPanelSort(sort.into()), cx);
         cx.notify();
     }
 
+    /// One agent's row; `show_machine` adds its machine's label.
     fn render_agent(
         &self,
+        machine: &Session,
         agent: &Agent,
-        snapshot: &Snapshot,
-        cx: &mut Context<Self>,
+        show_machine: bool,
+        cx: &Context<Self>,
     ) -> AnyElement {
         let state = self.state.read(cx);
         let theme = cx.theme();
-        let focused = state.focused_pane.as_deref() == Some(agent.pane_id.as_str());
-        let unseen = state.attention.is_unseen_done(snapshot, &agent.pane_id);
-        let status = match agent.agent_status {
-            AgentStatus::Done if !unseen => AgentStatus::Idle,
-            status => status,
-        };
+        let snapshot = machine.snapshot();
+        let selected = state.selected() == machine.id();
+        let focused = selected && machine.focused_pane() == Some(agent.pane_id.as_str());
         let workspace = snapshot
             .workspaces
             .iter()
             .find(|w| w.info.workspace_id == agent.workspace_id);
-        let mut place = workspace.map_or(agent.workspace_id.clone(), |w| w.info.label.clone());
+        let mut place =
+            workspace.map_or_else(|| agent.workspace_id.to_string(), |w| w.info.label.clone());
         if let Some(tab) = workspace
             .filter(|w| w.tabs.len() > 1)
             .and_then(|w| w.tabs.iter().find(|t| t.info.tab_id == agent.tab_id))
@@ -119,12 +167,14 @@ impl AgentList {
             place = format!("{place} · {}", tab.info.label);
         }
         let (pane_id, menu_pane_id) = (agent.pane_id.clone(), agent.pane_id.clone());
+        let machine_id = machine.id().clone();
+        let menu_machine = machine_id.clone();
+        // Pane ids repeat across machines.
+        let key = On::new(machine_id.clone(), &agent.pane_id);
+        let selector = format!("agent-{key}");
         h_flex()
-            .id(SharedString::from(format!("agent-{}", agent.pane_id)))
-            .debug_selector({
-                let pane_id = agent.pane_id.clone();
-                move || format!("agent-{pane_id}")
-            })
+            .id(SharedString::from(format!("agent-{key}")))
+            .debug_selector(move || selector)
             .flex_shrink_0()
             .h(ROW)
             .pl(px(6.))
@@ -135,20 +185,24 @@ impl AgentList {
             .when(focused, |this| this.bg(theme.sidebar_accent))
             .hover(|this| this.bg(theme.sidebar_accent.opacity(0.6)))
             .on_click(cx.listener(move |this, _, window, cx| {
-                this.activate(&pane_id, window, cx);
+                this.activate_on(&machine_id, &pane_id, window, cx);
             }))
-            .on_mouse_down(MouseButton::Right, move |event, window, cx| {
-                window.dispatch_action(
-                    Box::new(OpenContextMenu {
-                        target: MenuTarget::Pane {
-                            pane_id: menu_pane_id.clone(),
-                        },
-                        position: event.position,
-                    }),
-                    cx,
-                );
+            // A pane's menu acts on the selected machine.
+            .when(selected, |this| {
+                this.on_mouse_down(MouseButton::Right, move |event, window, cx| {
+                    window.dispatch_action(
+                        Box::new(OpenContextMenu {
+                            target: MenuTarget::Pane {
+                                machine: menu_machine.clone(),
+                                pane_id: menu_pane_id.clone(),
+                            },
+                            position: event.position,
+                        }),
+                        cx,
+                    );
+                })
             })
-            .child(status_icon(status, cx))
+            .child(status::indicator(agent.agent_status, cx))
             .child(
                 div()
                     .min_w_0()
@@ -165,8 +219,15 @@ impl AgentList {
                     .min_w_0()
                     .truncate()
                     .text_color(theme.muted_foreground)
-                    .child(agent_label(agent).to_owned()),
+                    .child(label::agent(snapshot, agent).to_owned()),
             )
+            .when(show_machine, |this| {
+                this.child(div().flex_1()).child(
+                    text(machine.label().to_owned())
+                        .text_xs()
+                        .text_color(theme.muted_foreground),
+                )
+            })
             .into_any_element()
     }
 }
@@ -195,7 +256,7 @@ impl Panel for AgentList {
     }
 
     fn toolbar_buttons(&mut self, _: &mut Window, cx: &mut Context<Self>) -> Option<Vec<Button>> {
-        let label = match self.sort {
+        let label = match self.sort(cx) {
             AgentSort::Grouped => "Grouped",
             AgentSort::Priority => "Priority",
         };
@@ -220,17 +281,13 @@ impl Panel for AgentList {
         ]
         .into_iter()
         .fold(menu.label("Sort"), |menu, (label, sort)| {
+            let current = self.sort(cx);
             let this = cx.entity().downgrade();
-            menu.item(
-                PopupMenuItem::new(label)
-                    .checked(self.sort == sort)
-                    .on_click(move |_, _, cx| {
-                        let _ = this.update(cx, |this, cx| {
-                            this.sort = sort;
-                            cx.notify();
-                        });
-                    }),
-            )
+            menu.item(PopupMenuItem::new(label).checked(current == sort).on_click(
+                move |_, _, cx| {
+                    let _ = this.update(cx, |this, cx| this.set_sort(sort, cx));
+                },
+            ))
         })
     }
 
@@ -245,10 +302,11 @@ impl Panel for AgentList {
 
 impl Render for AgentList {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let snapshot = self.state.read(cx).snapshot.clone();
-        let rows: Vec<AnyElement> = ordered(&snapshot, self.sort)
+        let state = self.state.read(cx);
+        let show_machine = state.machines(cx).count() > 1;
+        let rows: Vec<AnyElement> = ordered_everywhere(state, self.sort(cx), cx)
             .into_iter()
-            .map(|agent| self.render_agent(agent, &snapshot, cx))
+            .map(|(machine, agent)| self.render_agent(machine, agent, show_machine, cx))
             .collect();
         let theme = cx.theme();
         let empty = rows

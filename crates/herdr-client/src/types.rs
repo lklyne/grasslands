@@ -7,12 +7,7 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-/// herdr's pane id, e.g. `w1:p3`.
-pub type PaneId = String;
-/// herdr's tab id, e.g. `w1:t1`.
-pub type TabId = String;
-/// herdr's workspace id, e.g. `w1`.
-pub type WorkspaceId = String;
+pub use crate::ids::{PaneId, TabId, TerminalId, WorkspaceId};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -110,7 +105,7 @@ pub struct PaneScrollInfo {
 pub struct PaneInfo {
     pub pane_id: PaneId,
     /// Pass to `herdr terminal attach <terminal_id> --takeover`.
-    pub terminal_id: String,
+    pub terminal_id: TerminalId,
     pub workspace_id: WorkspaceId,
     pub tab_id: TabId,
     pub focused: bool,
@@ -155,7 +150,7 @@ impl PaneInfo {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentInfo {
     pub pane_id: PaneId,
-    pub terminal_id: String,
+    pub terminal_id: TerminalId,
     pub workspace_id: WorkspaceId,
     pub tab_id: TabId,
     pub focused: bool,
@@ -360,6 +355,9 @@ pub struct ServerCapabilities {
     pub health_check: bool,
     #[serde(default)]
     pub surface_interest: bool,
+    /// Supports `server.ssh_agent.register`.
+    #[serde(default)]
+    pub ssh_agent_registration: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

@@ -13,8 +13,8 @@ Date: 2026-10-15. Status: accepted (app-shell, Part 1).
 | `editor` | `Editor` (open files per worktree + code editor; its tabs are drawn in the titlebar) | app-shell, Part 2 |
 | `terminal_area` | `TerminalArea` (herdr tab bar + split tree of Ghostty views) | ghostty-terminals agent |
 | `overlay` | the transparent overlay window above the terminals (API for chrome) | ghostty-terminals agent |
-| `chrome`, `attention` | `Chrome`: command palette, context menus, toasts, confirmations; `Attention`: status changes and unseen results (see 0006) | chrome agent (ghostty-terminals agent provides the overlay window) |
-| `state` | `AppState`, the shared model | shared, small edits |
+| `chrome`, `attention` | `Chrome`: command palette, context menus, toasts, confirmations; `Attention`: status changes for toasts, and the badge count (see 0006) | chrome agent (ghostty-terminals agent provides the overlay window) |
+| `state` | `AppState`, the machine list and selection; `Session`, one machine's connection, cache and commands | shared, small edits |
 | `herdr` | the only module that names herdr-client types | herdr-client integration |
 | `actions` | app-wide actions, app menu, global key bindings | shared |
 | `theme` | light/dark; follows the system, View → Toggle Light/Dark | app-shell |
@@ -25,30 +25,71 @@ else in the module is yours.
 
 ## How views get herdr state
 
-- `AppState` (one `Entity`, created in `main`) holds the herdr config, the
-  connection status, the snapshot cache, the focused pane and the active
-  worktree. Views hold the entity and read it in `render`.
-- Redraw on any change: `cx.observe(&state, |_, _, cx| cx.notify())`.
-- React to discrete changes: `cx.subscribe(&state, ...)` on `AppEvent`
-  (`ActiveWorktreeChanged(Option<PathBuf>)`, `SnapshotReplaced`; add variants
-  as needed).
+- `AppState` (one `Entity`, created in `main`) is the machine list: one
+  `Entity<Session>` per herdr server (Local, then herdr's saved machines),
+  which one is selected, the machine sign-in/add run and Local's setup. Views
+  hold the `AppState` entity and read it in `render`.
+- A `Session` (`state::session`) owns one machine's connection (client, SSH
+  link, `SessionSync`), its `snapshot: Arc<Snapshot>` (replaced whole), its
+  focused pane, active worktree, attention diff, `status()` (`state::Status`,
+  decision 0019) and caches. It announces each change as a `SessionEvent`,
+  in this order within one update: `SnapshotReplaced`, each
+  `AgentStatusChanged`, `FocusedPaneChanged`, `WorktreeChanged`; a
+  (re)connect sends `Connected`, then `StatusChanged`.
+- A view that shows one machine subscribes to that machine's session for
+  exactly what its render reads, so another machine's traffic doesn't wake
+  it. `TerminalArea` holds the selected session and re-subscribes on
+  `AppEvent::MachineSelected`, resyncing as for that session's
+  `SnapshotReplaced` and `FocusedPaneChanged`. Write the list of what
+  render reads next to the subscription (`TerminalArea` does), and add a
+  variant when something it reads has none: a missed event is stale UI.
+- `AppState` re-emits, as `AppEvent`, the selection and list changes
+  (`MachineSelected`, then `ActiveRootChanged`, on every selection;
+  `MachinesChanged` for the list, a label or a status; `MachineRestarted`,
+  `MachineRunChanged`) and relays each session's changes tagged with their
+  machine, after the session's own events: `MachineSnapshot(machine)`,
+  `AgentStatusChanged { machine, .. }`, `MachineConnected(machine)`, and the
+  selected session's worktree as `ActiveRootChanged`. Views that list every
+  machine (the sidebar's workspace and agent lists, chrome's badge and
+  toasts) use these, and `cx.observe(&state, ...)` redraws on any of them.
+  So views keyed on the active root, not a pane tree (files, Changes, the
+  editor), still see: selection, root.
+- Reads that need the session take `cx`: `state.machine(id, cx)`,
+  `state.machines(cx)`, `state.selected_machine(cx)`, `state.snapshot(cx)`
+  (the selected machine's), `state.fs_for(id, cx)`.
+- Local's herdr setup is its own entity (`AppState::setup`, decision 0018);
+  the terminal area observes it for the setup screen, and Local's session
+  reads it for its status.
 - `crate::herdr` re-exports `herdr-client` types under the names views use
   (`Snapshot` = `herdr_client::State`, `Agent`, `AgentStatus`, `SplitTree`,
-  `ConnectionStatus`, `Config` = `Endpoint`, ...). `AppState::new` starts
-  `SessionSync` and applies its updates on the foreground: `snapshot:
-  Arc<Snapshot>` is replaced whole (`SnapshotReplaced`), `focused_pane` follows
-  (`FocusedPaneChanged`), raw events are re-emitted as `AppEvent::Herdr` and
-  `connection` tracks the status. Under `cargo test` it stays offline.
-- Commands to herdr go through methods on `AppState` (`focus_pane`, `split_pane`,
-  `set_split_ratio`, `new_tab`, ..., or `call` for anything else; each returns a
-  `Task<herdr::Result<T>>` to await or `.detach_and_log_err(cx)`), never straight from a view, so there is one place that talks
-  to the socket.
+  `ConnectionStatus`, `Config` = `Endpoint`, ...). `AppState::start` runs the
+  setup check; Local's session starts its `SessionSync` once it passes and
+  applies its updates on the foreground. Tests never call `start`, so they
+  stay offline.
+- Commands to herdr are methods on `Session` (`focus_pane`, `split_pane`,
+  `set_split_ratio`, `new_tab`, ..., or `call` for anything else; each returns
+  a `Task<herdr::Result<T>>` to await or `.detach_and_log_err(cx)`), never
+  straight from a view, so there is one place that talks to the socket.
+  `Session::call` is the choke point: it logs every failure with the caller's
+  location (`#[track_caller]`) and the machine.
+- Every command names its machine; there is no "selected machine" default.
+  herdr ids are per machine (two servers both have a `w1`), so the target is
+  resolved once, where the intent starts: a key binding or click handler
+  (`TerminalArea` acts on the session it shows), a palette entry or menu
+  (`HerdrCommand`/`MenuTarget` capture the `MachineId` when they open), an
+  action (`FocusPane`, `OpenFile` carry it). A caller with a `MachineId`
+  runs the command with `state.on(&machine, cx, |session, cx| ...)` (or
+  `state.call(&machine, cx, ...)`), which fails when that machine is gone; a
+  removed session also fails every command, so a stale handle can't reach a
+  new connection. `AppState::focus_pane`, `focus_tab` and `focus_workspace`
+  also select their machine, and fail without selecting anything when it is
+  gone.
 - `Config::from_env` honors `HERDR_BIN`, `HERDR_SESSION`, `HERDR_SOCKET_PATH`.
 
 ## How actions flow
 
 - Cross-module intents are GPUI actions in `crate::actions`: `OpenFile { path }`,
-  `FocusPane { pane_id }`, `CommandPalette`, `ToggleTheme`, `Quit`.
+  `FocusPane { machine, pane_id }`, `CommandPalette`, `ToggleTheme`, `Quit`.
 - A view sends one with `window.dispatch_action(Box::new(OpenFile { path }), cx)`.
   Actions bubble up the focus path, not sideways, so `Workspace` handles them
   (`on_action` in its render) and forwards to the owning view
@@ -58,7 +99,7 @@ else in the module is yours.
   `Workspace`, implement the method on the target view.
 - Actions that never leave a module (e.g. editor save) are defined in that
   module and handled by its own view.
-- herdr-originated changes are not actions: they come in through `AppState`.
+- herdr-originated changes are not actions: they come in through each `Session`.
 - Data actions use `#[action(namespace = app, no_json)]` so they need no serde.
 
 ## Window layout and titlebar tabs

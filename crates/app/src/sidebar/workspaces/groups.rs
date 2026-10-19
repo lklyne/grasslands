@@ -12,7 +12,7 @@
 use std::collections::HashSet;
 
 use super::git::{Placement, Repo};
-use crate::herdr::WorkspaceInfo;
+use crate::herdr::{WorkspaceId, WorkspaceInfo};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Kind {
@@ -85,7 +85,7 @@ pub fn entries<'a>(
 /// A row as a drag source or drop target.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Slot {
-    pub workspace_id: String,
+    pub workspace_id: WorkspaceId,
     pub kind: Kind,
     /// The repo key of the group the row sits in, if any.
     pub group: Option<String>,
@@ -121,12 +121,12 @@ pub fn accepts(dragged: &Slot, target: &Slot) -> bool {
 /// lands where `target` was. `entries` must be built with nothing folded, so
 /// a folded group's hidden worktrees move with it. `None` when the drop isn't
 /// allowed or either row is gone.
-pub fn reordered(entries: &[Entry], dragged: &Slot, target: &Slot) -> Option<Vec<String>> {
+pub fn reordered(entries: &[Entry], dragged: &Slot, target: &Slot) -> Option<Vec<WorkspaceId>> {
     if !accepts(dragged, target) {
         return None;
     }
     // Groups are contiguous in `entries`, so each run of one group is a block.
-    let mut blocks: Vec<(Option<String>, Vec<String>)> = Vec::new();
+    let mut blocks: Vec<(Option<String>, Vec<WorkspaceId>)> = Vec::new();
     for slot in entries.iter().map(Slot::of) {
         match blocks.last_mut() {
             Some((group, ids)) if group.is_some() && *group == slot.group => {
@@ -135,18 +135,14 @@ pub fn reordered(entries: &[Entry], dragged: &Slot, target: &Slot) -> Option<Vec
             _ => blocks.push((slot.group, vec![slot.workspace_id])),
         }
     }
-    let block_of = |id: &str| {
-        blocks
-            .iter()
-            .position(|(_, ids)| ids.iter().any(|i| i == id))
-    };
+    let block_of = |id: &WorkspaceId| blocks.iter().position(|(_, ids)| ids.contains(id));
     let (from, to) = (
         block_of(&dragged.workspace_id)?,
         block_of(&target.workspace_id)?,
     );
     if dragged.kind == Kind::Child {
         let ids = &mut blocks[from].1;
-        let position = |id: &str| ids.iter().position(|i| i == id);
+        let position = |id: &WorkspaceId| ids.iter().position(|i| i == id);
         let (i, j) = (
             position(&dragged.workspace_id)?,
             position(&target.workspace_id)?,

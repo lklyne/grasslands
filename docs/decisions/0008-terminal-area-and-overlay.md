@@ -26,9 +26,11 @@ Background and spike results are in 0001.
 - **Hidden behind a file tab.** `TerminalArea::set_visible(false)` hides
   every view and keeps them hidden until `set_visible(true)`; the workspace
   calls it when a titlebar file tab is selected (0002).
-- **The attach command** is `$bin [--session S] terminal attach <id> --takeover`,
+- **The attach command** is `$bin [--session S] terminal attach <id>`,
   built from `AppState::herdr_config`. With no config (the socket guard refused
-  the endpoint), nothing is spawned.
+  the endpoint), nothing is spawned. Without `--takeover`, herdr refuses a
+  terminal another client has attached, and the pane shows "Detached"; only
+  Reattach adds `--takeover` (0019, "Terminal ownership").
 - **When the attach dies** (another client took the terminal over), the view is
   kept and the pane shows "Detached" with a Reattach button. Respawning on its
   own would fight the other client.
@@ -82,7 +84,7 @@ Zoom: a zoomed tab renders only its focused pane.
 | --- | --- |
 | Drag a divider (release) | `layout.set_split_ratio` (tab, path, ratio) |
 | cmd-ctrl-arrows | the same, on the innermost split along that axis, ±0.05 |
-| cmd-d / cmd-shift-d | `pane.split` right/down of herdr's focused pane (AppState sets `right_click: pane`) |
+| cmd-d / cmd-shift-d | `pane.split` right/down of herdr's focused pane (the reconciler then sets `right_click: pane`, as for every pane) |
 | Drop a pane header on another pane | `pane.swap` (same tab) or `pane.move` next to it (other tab) |
 | Drop a pane header on a tab / on `+` | `pane.move` to that tab / to a new tab |
 | × on a pane, cmd-w | `pane.close`, after a native confirmation if its agent is working or blocked |
@@ -231,7 +233,7 @@ What the 54 checks cover:
 
 ## Verifying: `RT_SCRIPT=titlebar`
 
-Same harness (`terminal_area/script/titlebar.rs`): opens files, clicks the
+Same harness (`script/titlebar.rs`): opens files, clicks the
 titlebar tabs and close buttons with GPUI mouse events at their drawn bounds,
 presses ctrl-tab, ctrl-shift-tab, cmd-shift-[ and cmd-1, and checks that no
 native view is shown on a file tab, that views are back on their slots on the

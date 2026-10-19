@@ -1,14 +1,16 @@
 //! The workspace list over an injected snapshot. The herdr endpoint is
 //! offline, so clicks that would send herdr commands only show up as local
-//! effects (expansion, seen results); the live checks run against the dev
+//! effects (expansion, the actions they dispatch); the live checks run against the dev
 //! session (docs/decisions/0009-workspace-list.md).
 
+use std::cell::RefCell;
+use std::rc::Rc;
 use std::sync::Arc;
 
 use gpui_kit::component::dock::{DockArea, DockLayout, DockSkin, panel_handle};
 use gpui_kit::{
-    AppContext as _, Context, Entity, IntoElement, Modifiers, ParentElement as _, Render,
-    Styled as _, TestAppContext, VisualTestContext, Window, div,
+    AppContext as _, Context, Entity, InteractiveElement as _, IntoElement, Modifiers,
+    ParentElement as _, Render, Styled as _, TestAppContext, VisualTestContext, Window, div,
 };
 use serde_json::json;
 
@@ -17,9 +19,10 @@ use std::collections::HashSet;
 use super::agents::ordered;
 use super::git::Placement;
 use super::groups::{Kind, Slot, entries, reordered};
-use super::{AgentList, AgentSort, WorkspaceList, rolled_up};
+use super::{AgentList, AgentSort, WorkspaceList};
+use crate::actions::FocusPane;
 use crate::herdr::{Agent, AgentStatus, Snapshot, WorkspaceInfo};
-use crate::state::{AppState, offline_config};
+use crate::state::{AppState, MachineId, offline_config};
 
 fn agent(pane: &str, workspace: &str, status: AgentStatus) -> Agent {
     serde_json::from_value(json!({
@@ -88,6 +91,7 @@ fn drop_on(infos: &[WorkspaceInfo], dragged: &str, target: &str) -> Option<Vec<S
             .unwrap()
     };
     reordered(&rows, &slot(dragged), &slot(target))
+        .map(|ids| ids.iter().map(ToString::to_string).collect())
 }
 
 /// w1 plain, then alpha's group (w2 main, w3 and w4 linked), then w5 plain.
@@ -194,16 +198,6 @@ fn group_should_match_repo_key_with_trailing_slash() {
     assert_eq!(rows(&infos, &[]), [">w1", "  w2"]);
 }
 
-#[test]
-fn rolled_up_status_should_follow_herdr_priority() {
-    let statuses = [AgentStatus::Working, AgentStatus::Done, AgentStatus::Idle];
-    assert_eq!(rolled_up(statuses), AgentStatus::Done);
-    assert_eq!(
-        rolled_up([AgentStatus::Done, AgentStatus::Blocked]),
-        AgentStatus::Blocked
-    );
-}
-
 fn agents_snapshot() -> Snapshot {
     let workspaces = [info("w1", 1, json!(null)), info("w2", 2, json!(null))]
         .into_iter()
@@ -269,11 +263,19 @@ fn snapshot() -> Arc<Snapshot> {
 /// Both panels in a dock, as the sidebar holds them.
 struct Fixture {
     dock: Entity<DockArea>,
+    /// Panes a `FocusPane` asked for, as the workspace would take them.
+    focused: Rc<RefCell<Vec<String>>>,
 }
 
 impl Render for Fixture {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-        div().size_full().child(self.dock.clone())
+        let focused = self.focused.clone();
+        div()
+            .size_full()
+            .on_action(move |action: &FocusPane, _, _| {
+                focused.borrow_mut().push(action.pane_id.to_string());
+            })
+            .child(self.dock.clone())
     }
 }
 
@@ -281,6 +283,7 @@ struct Panels {
     spaces: Entity<WorkspaceList>,
     agents: Entity<AgentList>,
     state: Entity<AppState>,
+    focused: Rc<RefCell<Vec<String>>>,
 }
 
 fn fixture(cx: &mut TestAppContext) -> (Panels, &mut VisualTestContext) {
@@ -288,6 +291,7 @@ fn fixture(cx: &mut TestAppContext) -> (Panels, &mut VisualTestContext) {
     let state = cx.new(|cx| AppState::new(Ok(offline_config()), cx));
     let spaces = cx.new(|cx| WorkspaceList::new(state.clone(), cx));
     let agents = cx.new(|cx| AgentList::new(state.clone(), cx));
+    let focused = Rc::new(RefCell::new(Vec::new()));
     let (_, cx) = cx.add_window_view(|window, cx| {
         let (dock, _) = DockSkin::dock_area("test", None, window, cx);
         let layout = DockLayout::v_split()
@@ -300,7 +304,10 @@ fn fixture(cx: &mut TestAppContext) -> (Panels, &mut VisualTestContext) {
                 None,
             );
         dock.update(cx, |dock, cx| dock.set_center(layout, window, cx));
-        Fixture { dock }
+        Fixture {
+            dock,
+            focused: focused.clone(),
+        }
     });
     state.update(cx, |state, cx| state.replace_snapshot(snapshot(), cx));
     cx.run_until_parked();
@@ -309,6 +316,7 @@ fn fixture(cx: &mut TestAppContext) -> (Panels, &mut VisualTestContext) {
             spaces,
             agents,
             state,
+            focused,
         },
         cx,
     )
@@ -330,18 +338,19 @@ fn sort_toggle_should_switch_to_priority(cx: &mut TestAppContext) {
     let toggle = cx.debug_bounds("agents-sort").unwrap().center();
     cx.simulate_click(toggle, Modifiers::none());
     cx.run_until_parked();
-    let sort = panels.agents.read_with(cx, |list, _| list.sort);
+    let sort = panels.agents.read_with(cx, |list, cx| list.sort(cx));
     assert_eq!(sort, AgentSort::Priority);
 }
 
+/// herdr turns `done` into `idle` when the pane is focused, so the click
+/// only has to focus it.
 #[gpui::test]
-fn clicking_a_finished_agent_marks_it_seen(cx: &mut TestAppContext) {
-    let (Panels { state, .. }, cx) = fixture(cx);
+fn clicking_an_agent_focuses_its_pane(cx: &mut TestAppContext) {
+    let (Panels { focused, .. }, cx) = fixture(cx);
     let row = cx.debug_bounds("agent-w2:p1").unwrap().center();
     cx.simulate_click(row, Modifiers::none());
     cx.run_until_parked();
-    let unseen = state.read_with(cx, |s, _| s.attention.is_unseen_done(&s.snapshot, "w2:p1"));
-    assert!(!unseen);
+    assert_eq!(*focused.borrow(), ["w2:p1"]);
 }
 
 #[gpui::test]
@@ -373,11 +382,7 @@ fn workspace_in_a_git_folder_shows_its_branch(cx: &mut TestAppContext) {
     let dir = std::env::temp_dir().join(format!("grasslands-ws-branch-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
-    git2::Repository::init_opts(
-        &dir,
-        git2::RepositoryInitOptions::new().initial_head("topic"),
-    )
-    .unwrap();
+    crate::fs::test_repo::TestRepo::init(&dir, "topic");
     let mut worktree = main_checkout("x");
     worktree["checkout_path"] = json!(dir.to_string_lossy());
     let (
@@ -395,9 +400,100 @@ fn workspace_in_a_git_folder_shows_its_branch(cx: &mut TestAppContext) {
     });
     cx.run_until_parked();
     let branch = list.read_with(cx, |list, cx| {
-        let snapshot = list.state.read(cx).snapshot.clone();
-        list.checkout(&snapshot, &snapshot.workspaces[0].info)
-            .and_then(|c| c.branch.clone())
+        let snapshot = list.state.read(cx).snapshot(cx).clone();
+        list.checkout(
+            &crate::state::MachineId::Local,
+            &snapshot,
+            &snapshot.workspaces[0].info,
+        )
+        .and_then(|c| c.branch.clone())
     });
     assert_eq!(branch.as_deref(), Some("topic"));
+}
+
+/// The "+" menu and the panel's title-bar menu are both built from these.
+#[gpui::test]
+fn new_menu_offers_workspace_worktree_and_machine_entries(cx: &mut TestAppContext) {
+    let (panels, cx) = fixture(cx);
+    let labels = panels.spaces.update(cx, |spaces, cx| {
+        crate::chrome::labels(&spaces.new_menu_entries(cx))
+    });
+    assert_eq!(
+        labels,
+        [
+            "New Workspace",
+            "New Worktree…",
+            "Open Worktree…",
+            "---",
+            "Add Machine…"
+        ]
+    );
+}
+
+// The flows the live step list drives (`crate::script::steps`), headless:
+// the spaces panel beside a chrome, which draws its prompts and
+// confirmations.
+
+struct WithChrome {
+    window: gpui_kit::AnyWindowHandle,
+    spaces: Entity<WorkspaceList>,
+}
+
+fn with_chrome(cx: &mut TestAppContext) -> WithChrome {
+    cx.update(gpui_kit::init);
+    let (window, spaces) = cx.update(|cx| {
+        let state = cx.new(|cx| AppState::new(Ok(offline_config()), cx));
+        let spaces = cx.new(|cx| WorkspaceList::new(state.clone(), cx));
+        let (window, _) =
+            gpui_kit::open_window(gpui_kit::WindowOptions::default(), cx, |window, cx| {
+                cx.new(|cx| crate::chrome::Chrome::new(state.clone(), window, cx))
+            })
+            .unwrap();
+        state.update(cx, |state, cx| state.replace_snapshot(snapshot(), cx));
+        (window, spaces)
+    });
+    cx.run_until_parked();
+    WithChrome { window, spaces }
+}
+
+fn asks(cx: &mut TestAppContext, f: &WithChrome) -> bool {
+    use gpui_kit::component::WindowExt as _;
+    cx.run_until_parked();
+    cx.update_window(f.window, |_, window, cx| window.has_active_dialog(cx))
+        .unwrap()
+}
+
+/// `new-worktree` (and `new-worktree-in <repo>`): the New Worktree prompt.
+#[gpui::test]
+fn new_worktree_asks_for_the_branch(cx: &mut TestAppContext) {
+    let f = with_chrome(cx);
+    cx.update_window(f.window, |_, window, cx| {
+        f.spaces
+            .update(cx, |spaces, cx| spaces.new_worktree(None, window, cx));
+    })
+    .unwrap();
+    assert!(asks(cx, &f));
+}
+
+/// `close <workspace>`: herdr's `ui.confirm_close` (on by default) asks
+/// before a workspace closes.
+#[gpui::test]
+fn closing_a_workspace_asks_first(cx: &mut TestAppContext) {
+    let f = with_chrome(cx);
+    cx.update_window(f.window, |_, window, cx| {
+        super::close_workspace(&MachineId::Local, &"w2".into(), window, cx);
+    })
+    .unwrap();
+    assert!(asks(cx, &f));
+}
+
+/// `rename <workspace>`: the chrome's rename dialog.
+#[gpui::test]
+fn renaming_a_workspace_opens_the_dialog(cx: &mut TestAppContext) {
+    let f = with_chrome(cx);
+    cx.update_window(f.window, |_, window, cx| {
+        super::rename_workspace(&MachineId::Local, &"w1".into(), window, cx);
+    })
+    .unwrap();
+    assert!(asks(cx, &f));
 }

@@ -33,7 +33,7 @@ Agents keep using the herdr agent skill unchanged. When an agent splits a pane o
 | `gpui-libghostty` (github.com/behzade/gpui-libghostty) | 0.3.1 | Embeds Ghostty's native renderer as a GPUI component. Consumers bind their own GPUI via `gpui_libghostty::bind_gpui!(gpui)`. Needs Rust ≥1.95, Zig 0.16, Xcode CLT. Alpha. |
 | herdr (herdr.dev, github.com/herdrdev/herdr) | 0.9.5 | Agent runtime, driven through its local socket API (newline-delimited JSON over a Unix socket). Schema: `docs/herdr-api-0.9.5.schema.json`. |
 | `notify` | 8.2.0 | Filesystem watching for the tree and open files. |
-| `git2` | 0.21.0 | Resolves a folder to its repo and worktree root. |
+| git (the machine's own) | any recent | Changes, branches, ahead/behind and repo placement, through shell scripts run on this Mac and on saved machines alike (decision 0015). Not a crate: the app runs the git on `PATH`. |
 | `ignore` | 0.4.33 | .gitignore-aware walking for the file tree. |
 | Rust toolchain | 1.99.0 | Installed. |
 
@@ -83,7 +83,9 @@ The window mirrors herdr's model: **workspaces** (one per repo or worktree) in t
 | Close a pane or tab | `pane.close` / `tab.close` |
 | Click to focus | `pane.focus` / `tab.focus` |
 | Create, rename or close a workspace or tab | `workspace.*` / `tab.*` |
-| New worktree | `worktree.create` |
+| New worktree (branch, optional base ref and label) | `worktree.create` |
+| Open an existing worktree | `worktree.list` → `worktree.open` |
+| Remove a linked worktree | `worktree.remove` (again with `force` when dirty) |
 
 After each drag or command, we re-render from the next `layout.updated` event, so herdr and the app can never disagree for long. Divider drags update locally during the drag, then send the final ratio on release.
 
@@ -91,7 +93,7 @@ Keyboard shortcuts for splitting, focusing, resizing and closing are owned by th
 
 ## Terminals
 
-- Each herdr pane gets one gpui-libghostty view, running `herdr terminal attach <terminal_id> --takeover`. The terminal id comes from the pane records in the snapshot.
+- Each herdr pane gets one gpui-libghostty view, running `herdr terminal attach <terminal_id>` (`--takeover` only when the person clicks Reattach; decision 0019). The terminal id comes from the pane records in the snapshot.
 - Terminal views are created on `pane.created` and destroyed on `pane.closed`, and moved without restarting on `pane.moved`.
 - Each view loads its own Ghostty config file (font, theme, and later, its shader). This may need a small patch to gpui-libghostty if it still starts every view from an empty config (check `TerminalConfiguration` in 0.3.1 first).
 - Ghostty draws into native views layered over the GPUI window. The app repositions them every frame during drags and resizes, and hides views that aren't on screen.
@@ -100,7 +102,7 @@ Keyboard shortcuts for splitting, focusing, resizing and closing are owned by th
 ## Active worktree
 
 1. On `pane.focused`, read that pane's `foreground_cwd`, falling back to its `cwd`.
-2. Resolve it to the repo worktree root with git2.
+2. Resolve it to the repo worktree root (the nearest folder holding `.git`).
 3. If the root changed, re-root the file tree and restart the file watcher.
 
 This also follows agents that move into another folder, since `foreground_cwd` tracks the running process.
@@ -125,22 +127,25 @@ This also follows agents that move into another folder, since `foreground_cwd` t
 
 The upper sidebar panel lists every herdr workspace and agent, laid out like herdr's own TUI sidebar (same rules, same shapes and density, in the monospace font with the GPUI Kit theme's colors). The terminal area shows only herdr's focused workspace, so this list is how you see and switch to the others.
 
-- **spaces:** one compact row per workspace: a status glyph (a ring when idle; filled red when blocked, yellow when working, teal when done and unseen) and the label. A dimmer second line shows the git branch, truncated with an ellipsis, with `↑N` (green) / `↓N` (red) against its upstream. Branch and ahead/behind are read with git2 (herdr's socket API has neither); a detached HEAD shows no line. The focused workspace's row is highlighted.
+- **spaces:** one compact row per workspace: a status glyph (a ring when idle; filled red when blocked, yellow when working, teal when done and unseen) and the label. A dimmer second line shows the git branch, truncated with an ellipsis, with `↑N` (green) / `↓N` (red) against its upstream. Branch and ahead/behind are read with git (herdr's socket API has neither); a detached HEAD shows no line. The focused workspace's row is highlighted.
 - Grouping follows herdr: a repo forms a group only when it has both a main-checkout workspace and a linked-worktree workspace. The main checkout's row heads the group with a ▾/▸ fold toggle, and its linked worktrees sit indented beneath it without branch lines. Everything else is a plain row in herdr's order. A folded group keeps the focused worktree visible and its parent rolls up the group's status and badges.
 - Badges count blocked agents and unseen results per row and in the "spaces" label row.
 - Footer: "new" makes a workspace in the active worktree's folder; "menu" opens the focused workspace's menu plus New Workspace, New Worktree… and the command palette.
 - **agents:** every agent as two lines (glyph, workspace and tab; then the agent's name), with "blocked" and "done" badges. "grouped" keeps herdr's workspace order with blocked first in each workspace; "priority" is herdr's attention queue (blocked, done, working, idle, newest change first). The section folds from its label.
-- Click a workspace to focus it (`workspace.focus`); the terminal area follows. Click an agent to focus its pane and mark its result seen.
-- Hovering a row shows + (a worktree of that repo, `worktree.create`, asks for a branch name), … (the workspace menu: rename, new tab, close, close group) and ×. Closing asks first when agents are running there.
+- Click a workspace to focus it (`workspace.focus`); the terminal area follows. Click an agent to focus its pane; herdr then counts its result as seen.
+- Hovering a row shows + (a worktree of that repo, `worktree.create`, asks for a branch and optionally a base ref and label), … (the workspace menu: rename, new tab, open worktree, remove worktree, close, close group) and ×. Closing asks first when agents are running there.
+- **Open Worktree…** (workspace menu, the panel's menu and "+" menu, the palette) lists the repo's worktrees from `worktree.list` with their branch and folder; picking one focuses its workspace if it has one, otherwise `worktree.open` opens it. **Remove Worktree…** on a linked worktree asks first (naming any running agents), and asks again before forcing when the checkout has uncommitted or untracked files.
+- "Close Worktree Group" closes exactly the group the list shows, including groups found with git that herdr doesn't know about, and the confirmation lists every workspace it closes.
 - Built from `session.snapshot` (workspaces and agents) and kept current by re-reading on every event, including `pane.agent_status_changed`.
 
 ## Replacing herdr's UI
 
-- **Notifications:** agent status changes become our own toasts, badges and sounds. herdr's toast delivery is set to system so nothing is lost when no herdr client is attached.
+- **Notifications:** agent status changes become our own toasts, badges and sounds, following herdr's config: `[ui.sound]` and its per-agent mutes, `[ui.toast]` delivery and delay, and herdr's rule of no sound for the workspace and no toast for the tab you're looking at (decision 0022).
+- **herdr's settings:** the app reads Local herdr's `config.toml` live and follows `ui.agent_panel_sort`, `ui.confirm_close`, `ui.prompt_new_tab_name` and `ui.prompt_new_workspace_name`. Settings → herdr edits them in the file, keeping its comments, then runs `server.reload_config`. grasslands' own appearance and sounds stay in `settings.json`.
 - **Context menus:** our own GPUI Kit menus on panes, tabs and workspaces.
 - **Command palette:** lists every plugin action from `plugin.action.list` and runs it with `plugin.action.invoke`, alongside the app's own commands.
 - **Plugin panes:** plugins that open as a split, tab, zoomed pane or overlay create real panes, which we show like any other pane.
-- **Confirmations:** herdr API closes happen immediately, so the app asks before closing a running agent or a whole worktree group.
+- **Confirmations:** herdr API closes happen immediately, so the app asks before closing a pane or tab with a running agent, and before closing any workspace or worktree group while herdr's `ui.confirm_close` is on.
 - **Popovers over terminals:** because Ghostty views sit above the GPUI layer, menus, popovers, the command palette and toasts are drawn in a transparent, borderless overlay window above the main window.
 
 **Known gaps in herdr's API (re-check against 0.9.5; file feature requests if still missing):**

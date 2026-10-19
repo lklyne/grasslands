@@ -1,98 +1,216 @@
 //! herdr commands the chrome offers in menus and the palette, as data, so an
-//! entry can be confirmed before it runs. Each maps onto an `AppState` method.
+//! entry can be confirmed before it runs. Each maps onto a `Session` method.
+//! Every command names the machine it was built for: herdr ids repeat across
+//! machines, and the selection can move while a confirmation is open.
 
 use gpui_kit::*;
 
-use crate::herdr::{self, PluginActionInfo, PluginInvocationContext, SplitDirection};
-use crate::state::AppState;
+use super::confirm::{group_members, herdr_closes_exactly};
+use super::worktrees::herdr_placement;
+use crate::herdr::{
+    self, PaneId, PluginActionInfo, PluginInvocationContext, SplitDirection, TabId, WorkspaceId,
+};
+use crate::state::{AppState, MachineId};
 
 #[derive(Debug, Clone)]
 pub enum HerdrCommand {
+    /// Selects the machine first when it isn't selected.
     FocusPane {
-        pane_id: String,
+        machine: MachineId,
+        pane_id: PaneId,
     },
     SplitPane {
-        pane_id: String,
+        machine: MachineId,
+        pane_id: PaneId,
         direction: SplitDirection,
     },
     ZoomPane {
-        pane_id: String,
+        machine: MachineId,
+        pane_id: PaneId,
     },
     RenamePane {
-        pane_id: String,
+        machine: MachineId,
+        pane_id: PaneId,
         label: String,
     },
     ClosePane {
-        pane_id: String,
+        machine: MachineId,
+        pane_id: PaneId,
     },
     NewTab {
-        workspace_id: String,
+        machine: MachineId,
+        workspace_id: WorkspaceId,
     },
+    /// Selects the machine first when it isn't selected.
     FocusTab {
-        tab_id: String,
+        machine: MachineId,
+        tab_id: TabId,
     },
     RenameTab {
-        tab_id: String,
+        machine: MachineId,
+        tab_id: TabId,
         label: String,
     },
     CloseTab {
-        tab_id: String,
+        machine: MachineId,
+        tab_id: TabId,
     },
+    /// Selects the machine first when it isn't selected.
     FocusWorkspace {
-        workspace_id: String,
+        machine: MachineId,
+        workspace_id: WorkspaceId,
     },
     RenameWorkspace {
-        workspace_id: String,
+        machine: MachineId,
+        workspace_id: WorkspaceId,
         label: String,
     },
-    /// `close_group` closes every workspace of the worktree group.
     CloseWorkspace {
-        workspace_id: String,
-        close_group: bool,
+        machine: MachineId,
+        workspace_id: WorkspaceId,
+    },
+    /// Closes the worktree group `workspace_id` heads: exactly `members`
+    /// (the ones the confirmation lists), with herdr's `close_group` when
+    /// herdr's own worktree info makes the same group, else one by one.
+    CloseGroup {
+        machine: MachineId,
+        workspace_id: WorkspaceId,
+        repo_name: String,
+        members: Vec<WorkspaceId>,
     },
     InvokePluginAction {
+        machine: MachineId,
         action: Box<PluginActionInfo>,
         context: Box<PluginInvocationContext>,
     },
 }
 
 impl HerdrCommand {
-    /// Sends the command; the cache follows herdr's events, not this call.
-    pub fn send(self, state: &AppState, cx: &App) -> Task<herdr::Result<()>> {
+    /// The machine the command acts on.
+    pub fn machine(&self) -> &MachineId {
         match self {
-            Self::FocusPane { pane_id } => state.focus_pane(&pane_id, cx),
-            Self::SplitPane { pane_id, direction } => {
-                let task = state.split_pane(Some(&pane_id), direction, cx);
+            Self::FocusPane { machine, .. }
+            | Self::SplitPane { machine, .. }
+            | Self::ZoomPane { machine, .. }
+            | Self::RenamePane { machine, .. }
+            | Self::ClosePane { machine, .. }
+            | Self::NewTab { machine, .. }
+            | Self::FocusTab { machine, .. }
+            | Self::RenameTab { machine, .. }
+            | Self::CloseTab { machine, .. }
+            | Self::FocusWorkspace { machine, .. }
+            | Self::RenameWorkspace { machine, .. }
+            | Self::CloseWorkspace { machine, .. }
+            | Self::CloseGroup { machine, .. }
+            | Self::InvokePluginAction { machine, .. } => machine,
+        }
+    }
+
+    /// Sends the command; the cache follows herdr's events, not this call.
+    pub fn send(self, state: &Entity<AppState>, cx: &mut App) -> Task<herdr::Result<()>> {
+        match self {
+            Self::FocusPane { machine, pane_id } => {
+                state.update(cx, |state, cx| state.focus_pane(&machine, &pane_id, cx))
+            }
+            Self::FocusTab { machine, tab_id } => {
+                state.update(cx, |state, cx| state.focus_tab(&machine, &tab_id, cx))
+            }
+            Self::FocusWorkspace {
+                machine,
+                workspace_id,
+            } => state.update(cx, |state, cx| {
+                state.focus_workspace(&machine, &workspace_id, cx)
+            }),
+            Self::SplitPane {
+                machine,
+                pane_id,
+                direction,
+            } => {
+                let task = state.read(cx).on(&machine, cx, |session, cx| {
+                    session.split_pane(Some(&pane_id), direction, cx)
+                });
                 cx.background_executor()
                     .spawn(async move { task.await.map(drop) })
             }
-            Self::ZoomPane { pane_id } => {
-                state.call(cx, move |c| c.pane_zoom(&pane_id, "toggle").map(drop))
+            Self::ZoomPane { machine, pane_id } => state.read(cx).call(&machine, cx, move |c| {
+                c.pane_zoom(&pane_id, herdr::ZoomMode::Toggle)
+            }),
+            Self::RenamePane {
+                machine,
+                pane_id,
+                label,
+            } => state
+                .read(cx)
+                .call(&machine, cx, move |c| c.pane_rename(&pane_id, Some(&label))),
+            Self::ClosePane { machine, pane_id } => {
+                state
+                    .read(cx)
+                    .on(&machine, cx, |session, cx| session.close_pane(&pane_id, cx))
             }
-            Self::RenamePane { pane_id, label } => {
-                state.call(cx, move |c| c.pane_rename(&pane_id, Some(&label)))
-            }
-            Self::ClosePane { pane_id } => state.close_pane(&pane_id, cx),
-            Self::NewTab { workspace_id } => {
-                let task = state.new_tab(Some(&workspace_id), cx);
+            Self::NewTab {
+                machine,
+                workspace_id,
+            } => {
+                let task = state.read(cx).on(&machine, cx, |session, cx| {
+                    session.new_tab(Some(&workspace_id), cx)
+                });
                 cx.background_executor()
                     .spawn(async move { task.await.map(drop) })
             }
-            Self::FocusTab { tab_id } => state.focus_tab(&tab_id, cx),
-            Self::RenameTab { tab_id, label } => state.rename_tab(&tab_id, &label, cx),
-            Self::CloseTab { tab_id } => state.close_tab(&tab_id, cx),
-            Self::FocusWorkspace { workspace_id } => state.focus_workspace(&workspace_id, cx),
+            Self::RenameTab {
+                machine,
+                tab_id,
+                label,
+            } => state.read(cx).on(&machine, cx, |session, cx| {
+                session.rename_tab(&tab_id, &label, cx)
+            }),
+            Self::CloseTab { machine, tab_id } => state
+                .read(cx)
+                .on(&machine, cx, |session, cx| session.close_tab(&tab_id, cx)),
             Self::RenameWorkspace {
+                machine,
                 workspace_id,
                 label,
-            } => state.rename_workspace(&workspace_id, &label, cx),
+            } => state.read(cx).on(&machine, cx, |session, cx| {
+                session.rename_workspace(&workspace_id, &label, cx)
+            }),
             Self::CloseWorkspace {
+                machine,
                 workspace_id,
-                close_group,
-            } => state.close_workspace(&workspace_id, close_group, cx),
-            Self::InvokePluginAction { action, context } => {
-                state.invoke_plugin_action(&action, *context, cx)
+            } => state.read(cx).on(&machine, cx, |session, cx| {
+                session.close_workspace(&workspace_id, false, cx)
+            }),
+            Self::CloseGroup {
+                machine,
+                workspace_id,
+                mut members,
+                ..
+            } => {
+                let state = state.read(cx);
+                let herdr_group = state.machine(&machine, cx).is_some_and(|m| {
+                    let herdr = group_members(m.snapshot(), &workspace_id, herdr_placement);
+                    herdr_closes_exactly(&members, &herdr)
+                });
+                if herdr_group {
+                    state.on(&machine, cx, |session, cx| {
+                        session.close_workspace(&workspace_id, true, cx)
+                    })
+                } else {
+                    // The head last, as herdr closes a group.
+                    members.retain(|id| id != &workspace_id);
+                    members.push(workspace_id);
+                    state.on(&machine, cx, |session, cx| {
+                        session.close_workspaces(members, cx)
+                    })
+                }
             }
+            Self::InvokePluginAction {
+                machine,
+                action,
+                context,
+            } => state.read(cx).on(&machine, cx, |session, cx| {
+                session.invoke_plugin_action(&action, *context, cx)
+            }),
         }
     }
 }

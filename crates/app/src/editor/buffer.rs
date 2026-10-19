@@ -8,6 +8,9 @@ use gpui_kit::component::input::EditorState;
 use gpui_kit::*;
 
 use super::language;
+use super::poll::Stamp;
+use crate::fs::Caps;
+use crate::state::MachineId;
 
 /// A question shown above the editor until the user answers it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -33,15 +36,29 @@ pub enum DiskChange {
 }
 
 pub struct Buffer {
+    /// Whose disk the file is on. With `path`, the buffer's identity: the
+    /// same path on two machines is two buffers.
+    pub machine: MachineId,
     pub path: PathBuf,
     pub state: Entity<EditorState>,
     /// The contents last read from or written to disk; `None` once the file
     /// is deleted on disk.
     saved: Option<String>,
     dirty: bool,
+    /// The text of a save still being written; the write it causes isn't a
+    /// change from elsewhere.
+    saving: Option<String>,
     pub prompt: Option<Prompt>,
     /// Device and inode of the file, to recognise it after a move on disk.
+    /// Only where ids are stable (`Caps::stable_ids`).
     file_id: Option<FileId>,
+    /// The modification time and size last seen on a remote machine, for
+    /// polling.
+    pub stamp: Option<Stamp>,
+    /// Bumped whenever what the buffer knows of its disk copy changes (a
+    /// save starting or finishing, a reload, a deletion), so a poll that
+    /// read the disk before then can tell its result is stale.
+    generation: u64,
     _changes: Subscription,
 }
 
@@ -53,8 +70,8 @@ fn file_id(path: &Path) -> Option<FileId> {
 
 impl Buffer {
     pub fn new(
-        path: PathBuf,
-        text: String,
+        (machine, path): (MachineId, PathBuf),
+        (text, stamp): (String, Option<Stamp>),
         state: Entity<EditorState>,
         changes: Subscription,
         window: &mut Window,
@@ -62,14 +79,30 @@ impl Buffer {
     ) -> Self {
         state.update(cx, |state, cx| state.set_value(text.clone(), window, cx));
         Self {
-            file_id: file_id(&path),
+            file_id: Caps::of(&machine)
+                .stable_ids
+                .then(|| file_id(&path))
+                .flatten(),
+            machine,
             path,
             state,
             saved: Some(text),
             dirty: false,
+            saving: None,
             prompt: None,
+            stamp,
+            generation: 0,
             _changes: changes,
         }
+    }
+
+    /// What the file's machine can do.
+    pub fn caps(&self) -> Caps {
+        Caps::of(&self.machine)
+    }
+
+    pub fn is(&self, machine: &MachineId, path: &Path) -> bool {
+        &self.machine == machine && self.path == path
     }
 
     pub fn new_state(path: &Path, window: &mut Window, cx: &mut App) -> Entity<EditorState> {
@@ -87,16 +120,41 @@ impl Buffer {
         self.dirty = self.saved.as_deref() != Some(self.state.read(cx).value().as_ref());
     }
 
-    pub fn save(&mut self, cx: &App) -> std::io::Result<()> {
+    pub fn generation(&self) -> u64 {
+        self.generation
+    }
+
+    pub fn is_saving(&self) -> bool {
+        self.saving.is_some()
+    }
+
+    /// Starts a save: returns the text to write, or `None` if one is already
+    /// being written.
+    pub fn begin_save(&mut self, cx: &App) -> Option<String> {
+        if self.saving.is_some() {
+            return None;
+        }
         let text = self.state.read(cx).value().to_string();
-        std::fs::write(&self.path, &text)?;
+        self.saving = Some(text.clone());
+        self.generation += 1;
+        Some(text)
+    }
+
+    /// The write started by `begin_save` finished. On success the written
+    /// text becomes the saved text; edits made meanwhile stay dirty.
+    pub fn finish_save(&mut self, written: std::io::Result<Option<Stamp>>, cx: &App) {
+        let text = self.saving.take();
+        self.generation += 1;
+        let (Ok(stamp), Some(text)) = (written, text) else {
+            return;
+        };
         self.refresh_file_id();
+        self.stamp = stamp;
         self.saved = Some(text);
-        self.dirty = false;
+        self.refresh_dirty(cx);
         if matches!(self.prompt, Some(Prompt::Conflict { .. })) {
             self.prompt = None;
         }
-        Ok(())
     }
 
     pub fn classify(&self, disk: std::io::Result<String>) -> std::io::Result<DiskChange> {
@@ -107,7 +165,8 @@ impl Buffer {
             }
             Err(error) => return Err(error),
         };
-        Ok(if self.saved.as_deref() == Some(text.as_str()) {
+        let ours = [self.saved.as_deref(), self.saving.as_deref()];
+        Ok(if ours.contains(&Some(text.as_str())) {
             DiskChange::Unchanged
         } else if self.dirty {
             DiskChange::Conflict(text)
@@ -119,6 +178,9 @@ impl Buffer {
     /// Re-reads the file's identity; kept when the file is gone, so a later
     /// `find_moved` can still recognise it.
     pub fn refresh_file_id(&mut self) {
+        if !self.caps().stable_ids {
+            return;
+        }
         if let Some(id) = file_id(&self.path) {
             self.file_id = Some(id);
         }
@@ -145,6 +207,7 @@ impl Buffer {
     }
 
     pub fn mark_deleted(&mut self) {
+        self.generation += 1;
         self.saved = None;
         self.dirty = true;
     }
@@ -160,11 +223,13 @@ impl Buffer {
         self.saved = Some(text);
         self.dirty = false;
         self.prompt = None;
+        self.generation += 1;
     }
 
     /// Keep the unsaved edits over `theirs`: the buffer stays dirty and the
     /// next save overwrites the file.
     pub fn keep_mine(&mut self, theirs: String) {
+        self.generation += 1;
         self.saved = Some(theirs);
         self.dirty = true;
         self.prompt = None;

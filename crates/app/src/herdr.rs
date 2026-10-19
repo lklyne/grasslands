@@ -2,16 +2,27 @@
 //! the views use. Nothing outside this module and `state` imports
 //! `herdr_client` directly.
 
+pub mod machines {
+    pub use herdr_client::{dev_allowed, list_machines, socket_dir};
+}
+
+/// herdr's `config.toml` (read, edit, watch, check).
+pub mod config {
+    pub use herdr_client::config::*;
+    pub use herdr_client::{ALLOW_LIVE_ENV, ConfigReloadStatus, DEV_ROOT};
+}
 #[allow(
     unused_imports,
     reason = "the views pick these up as they are filled in"
 )]
 pub use herdr_client::{
-    AgentInfo as Agent, AgentStatus, Client, ConnectionStatus, Error, Event, LayoutDescription,
+    AgentInfo as Agent, AgentStatus, Check, Client, ConnectionStatus, Error, Fix, FixCommand,
+    InstallMethod, LayoutDescription, MIN_VERSION, MachineLink, MachineProfile, MachineStatus,
     NewTab, NewWorkspace, PaneDirection, PaneId, PaneInfo, PaneMoveDestination, PaneSplit,
-    PluginActionContext, PluginActionInfo, PluginInvocationContext, RightClickTarget, SessionSync,
-    SplitDirection, SplitRef, SplitTree, State as Snapshot, Tab, TabId, TabInfo, Update, Workspace,
-    WorkspaceId, WorkspaceInfo, WorkspaceWorktreeInfo, WorktreeInfo, WorktreeParams,
+    PluginActionContext, PluginActionInfo, PluginInvocationContext, ProfileId, RightClickTarget,
+    SessionSync, SplitDirection, SplitRef, SplitTree, State as Snapshot, Tab, TabId, TabInfo,
+    TerminalId, Update, Version, Workspace, WorkspaceCreated, WorkspaceId, WorkspaceInfo,
+    WorkspaceWorktreeInfo, WorktreeInfo, WorktreeList, WorktreeParams, WorktreeRemoved,
 };
 
 /// Where to find herdr: `HERDR_BIN`, `HERDR_SESSION`, `HERDR_SOCKET_PATH`
@@ -19,5 +30,11 @@ pub use herdr_client::{
 /// In debug and test builds `from_env` refuses any socket outside
 /// `~/.local/share/grasslands-herdr` unless `RT_ALLOW_LIVE_HERDR=1`.
 pub type Config = herdr_client::Endpoint;
+
+/// herdr's methods typed both ways, for `Client::send`.
+pub use herdr_client::protocol::ZoomMode;
+// Raw typed calls, for the script hooks.
+#[cfg(debug_assertions)]
+pub use herdr_client::protocol::{self, method};
 
 pub type Result<T> = herdr_client::Result<T>;

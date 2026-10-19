@@ -2,13 +2,16 @@
 //! connection; run them off the UI thread.
 
 use std::collections::BTreeMap;
+use std::io::{self, Read};
+use std::os::unix::net::UnixStream;
 
-use serde::de::DeserializeOwned;
+use serde::de::IgnoredAny;
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use serde_json::Value;
 
 use crate::endpoint::Endpoint;
 use crate::error::{Error, Result};
+use crate::protocol::*;
 use crate::types::*;
 
 /// Cheap, cloneable handle for sending commands to herdr.
@@ -184,6 +187,22 @@ pub struct PaneMoveResult {
     pub reason: Option<String>,
 }
 
+/// `server.reload_config`'s answer.
+#[derive(Debug, Clone, Deserialize)]
+pub struct ConfigReload {
+    pub status: ConfigReloadStatus,
+    #[serde(default)]
+    pub diagnostics: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ConfigReloadStatus {
+    Applied,
+    Partial,
+    Failed,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct NotificationShown {
     pub shown: bool,
@@ -198,8 +217,30 @@ pub struct PluginActionInvoked {
     pub log: Option<Value>,
 }
 
-#[derive(Serialize)]
-struct Empty {}
+/// A `server.ssh_agent.register` in force: herdr drops it when this
+/// connection closes, so dropping this ends it.
+#[derive(Debug)]
+pub struct SshAgentRegistration {
+    stream: UnixStream,
+}
+
+impl SshAgentRegistration {
+    /// Whether the server still holds the connection (and so the
+    /// registration). herdr sends nothing on it, so EOF or an error means
+    /// the server, or the tunnel to it, went away.
+    pub fn is_open(&self) -> bool {
+        if self.stream.set_nonblocking(true).is_err() {
+            return false;
+        }
+        let mut byte = [0u8; 1];
+        let open = match (&self.stream).read(&mut byte) {
+            Ok(n) => n > 0,
+            Err(err) => err.kind() == io::ErrorKind::WouldBlock,
+        };
+        let _ = self.stream.set_nonblocking(false);
+        open
+    }
+}
 
 impl Client {
     pub fn new(endpoint: Endpoint) -> Self {
@@ -214,283 +255,279 @@ impl Client {
         &self.endpoint
     }
 
-    /// Any method, for calls without a typed wrapper. Returns the `result` object.
-    pub fn call<P: Serialize>(&self, method: &str, params: &P) -> Result<Value> {
-        self.endpoint.request_value(method, params)
+    /// Sends `M` and decodes its answer. The named methods below are this
+    /// with friendlier arguments.
+    pub fn send<M: Method>(&self, params: &M::Params) -> Result<M::Output> {
+        let result = self.endpoint.request_value(M::NAME, params)?;
+        decode::<M>(result)
     }
 
-    /// Calls `method` and deserializes the `key` field of its result.
-    fn field<P: Serialize, T: DeserializeOwned>(
-        &self,
-        method: &str,
-        key: &str,
-        params: &P,
-    ) -> Result<T> {
-        let mut result = self.endpoint.request_value(method, params)?;
-        let value = result
-            .get_mut(key)
-            .map(Value::take)
-            .ok_or_else(|| Error::Protocol(format!("{method} result has no {key:?}")))?;
-        serde_json::from_value(value).map_err(|source| Error::Decode {
-            method: method.to_owned(),
-            source,
-        })
-    }
-
-    fn ok<P: Serialize>(&self, method: &str, params: &P) -> Result<()> {
-        self.endpoint.request_value(method, params).map(drop)
+    /// [`Self::send`] for methods that answer only success.
+    fn ack<M: Method<Output = IgnoredAny>>(&self, params: &M::Params) -> Result<()> {
+        self.send::<M>(params).map(drop)
     }
 
     pub fn ping(&self) -> Result<Pong> {
-        self.endpoint.request("ping", &Empty {})
+        self.send::<method::Ping>(&NoParams {})
     }
 
     pub fn session_snapshot(&self) -> Result<SessionSnapshot> {
-        self.field("session.snapshot", "snapshot", &Empty {})
+        self.send::<method::SessionSnapshot>(&NoParams {})
     }
 
     // Layout
 
     /// The split tree of `tab_id` (herdr's focused tab when `None`).
-    pub fn layout_export(&self, tab_id: Option<&str>) -> Result<LayoutDescription> {
-        self.field("layout.export", "layout", &json!({ "tab_id": tab_id }))
+    pub fn layout_export(&self, tab_id: Option<&TabId>) -> Result<LayoutDescription> {
+        self.send::<method::LayoutExport>(&LayoutTarget {
+            tab_id: tab_id.cloned(),
+        })
     }
 
     /// Sets the ratio of the split at `path` (from the root: `false` = first child,
     /// `true` = second child; empty = root split).
     pub fn layout_set_split_ratio(
         &self,
-        tab_id: &str,
+        tab_id: &TabId,
         path: &[bool],
         ratio: f32,
     ) -> Result<LayoutDescription> {
-        self.field(
-            "layout.set_split_ratio",
-            "layout",
-            &json!({ "tab_id": tab_id, "path": path, "ratio": ratio }),
-        )
+        self.send::<method::LayoutSetSplitRatio>(&SplitRatio {
+            tab_id: tab_id.clone(),
+            path: path.to_vec(),
+            ratio,
+        })
     }
 
     // Panes
 
     pub fn pane_split(&self, params: &PaneSplit) -> Result<PaneInfo> {
-        self.field("pane.split", "pane", params)
+        self.send::<method::PaneSplit>(params)
     }
 
-    pub fn pane_swap(&self, source_pane_id: &str, target_pane_id: &str) -> Result<PaneSwapResult> {
-        self.field(
-            "pane.swap",
-            "swap",
-            &json!({ "source_pane_id": source_pane_id, "target_pane_id": target_pane_id }),
-        )
+    pub fn pane_swap(
+        &self,
+        source_pane_id: &PaneId,
+        target_pane_id: &PaneId,
+    ) -> Result<PaneSwapResult> {
+        self.send::<method::PaneSwap>(&PaneSwapParams::Panes {
+            source_pane_id: source_pane_id.clone(),
+            target_pane_id: target_pane_id.clone(),
+        })
     }
 
     pub fn pane_swap_direction(
         &self,
-        pane_id: &str,
+        pane_id: &PaneId,
         direction: PaneDirection,
     ) -> Result<PaneSwapResult> {
-        self.field(
-            "pane.swap",
-            "swap",
-            &json!({ "pane_id": pane_id, "direction": direction }),
-        )
+        self.send::<method::PaneSwap>(&PaneSwapParams::Toward {
+            pane_id: pane_id.clone(),
+            direction,
+        })
     }
 
     pub fn pane_move(
         &self,
-        pane_id: &str,
+        pane_id: &PaneId,
         destination: &PaneMoveDestination,
         focus: bool,
     ) -> Result<PaneMoveResult> {
-        self.field(
-            "pane.move",
-            "move_result",
-            &json!({ "pane_id": pane_id, "destination": destination, "focus": focus }),
-        )
+        self.send::<method::PaneMove>(&PaneMoveParams {
+            pane_id: pane_id.clone(),
+            destination: destination.clone(),
+            focus,
+        })
     }
 
-    pub fn pane_close(&self, pane_id: &str) -> Result<()> {
-        self.ok("pane.close", &json!({ "pane_id": pane_id }))
+    pub fn pane_close(&self, pane_id: &PaneId) -> Result<()> {
+        self.ack::<method::PaneClose>(&pane_target(pane_id))
     }
 
-    pub fn pane_focus(&self, pane_id: &str) -> Result<()> {
-        self.ok("pane.focus", &json!({ "pane_id": pane_id }))
+    pub fn pane_focus(&self, pane_id: &PaneId) -> Result<()> {
+        self.ack::<method::PaneFocus>(&pane_target(pane_id))
     }
 
-    pub fn pane_get(&self, pane_id: &str) -> Result<PaneInfo> {
-        self.field("pane.get", "pane", &json!({ "pane_id": pane_id }))
+    pub fn pane_get(&self, pane_id: &PaneId) -> Result<PaneInfo> {
+        self.send::<method::PaneGet>(&pane_target(pane_id))
     }
 
-    pub fn pane_list(&self, workspace_id: Option<&str>) -> Result<Vec<PaneInfo>> {
-        self.field(
-            "pane.list",
-            "panes",
-            &json!({ "workspace_id": workspace_id }),
-        )
+    pub fn pane_list(&self, workspace_id: Option<&WorkspaceId>) -> Result<Vec<PaneInfo>> {
+        self.send::<method::PaneList>(&InWorkspace {
+            workspace_id: workspace_id.cloned(),
+        })
     }
 
-    pub fn pane_rename(&self, pane_id: &str, label: Option<&str>) -> Result<()> {
-        self.ok(
-            "pane.rename",
-            &json!({ "pane_id": pane_id, "label": label }),
-        )
+    pub fn pane_rename(&self, pane_id: &PaneId, label: Option<&str>) -> Result<()> {
+        self.ack::<method::PaneRename>(&PaneRenameParams {
+            pane_id: pane_id.clone(),
+            label: label.map(str::to_owned),
+        })
     }
 
-    /// `mode` is `"toggle"`, `"on"` or `"off"`.
-    pub fn pane_zoom(&self, pane_id: &str, mode: &str) -> Result<Value> {
-        self.call("pane.zoom", &json!({ "pane_id": pane_id, "mode": mode }))
+    pub fn pane_zoom(&self, pane_id: &PaneId, mode: ZoomMode) -> Result<()> {
+        self.ack::<method::PaneZoom>(&PaneZoomParams {
+            pane_id: pane_id.clone(),
+            mode,
+        })
     }
 
     /// Chooses who gets right-clicks in the pane (`pane.input.set`).
-    pub fn pane_set_right_click(&self, pane_id: &str, target: RightClickTarget) -> Result<()> {
-        self.ok(
-            "pane.input.set",
-            &json!({ "pane_id": pane_id, "right_click": target }),
-        )
+    pub fn pane_set_right_click(&self, pane_id: &PaneId, target: RightClickTarget) -> Result<()> {
+        self.ack::<method::PaneInputSet>(&PaneInputSetParams {
+            pane_id: pane_id.clone(),
+            right_click: target,
+        })
     }
 
     // Tabs
 
     pub fn tab_create(&self, params: &NewTab) -> Result<TabCreated> {
-        self.endpoint.request("tab.create", params)
+        self.send::<method::TabCreate>(params)
     }
 
-    pub fn tab_list(&self, workspace_id: Option<&str>) -> Result<Vec<TabInfo>> {
-        self.field("tab.list", "tabs", &json!({ "workspace_id": workspace_id }))
+    pub fn tab_list(&self, workspace_id: Option<&WorkspaceId>) -> Result<Vec<TabInfo>> {
+        self.send::<method::TabList>(&InWorkspace {
+            workspace_id: workspace_id.cloned(),
+        })
     }
 
-    pub fn tab_get(&self, tab_id: &str) -> Result<TabInfo> {
-        self.field("tab.get", "tab", &json!({ "tab_id": tab_id }))
+    pub fn tab_get(&self, tab_id: &TabId) -> Result<TabInfo> {
+        self.send::<method::TabGet>(&tab_target(tab_id))
     }
 
-    pub fn tab_focus(&self, tab_id: &str) -> Result<()> {
-        self.ok("tab.focus", &json!({ "tab_id": tab_id }))
+    pub fn tab_focus(&self, tab_id: &TabId) -> Result<()> {
+        self.ack::<method::TabFocus>(&tab_target(tab_id))
     }
 
-    pub fn tab_rename(&self, tab_id: &str, label: &str) -> Result<()> {
-        self.ok("tab.rename", &json!({ "tab_id": tab_id, "label": label }))
+    pub fn tab_rename(&self, tab_id: &TabId, label: &str) -> Result<()> {
+        self.ack::<method::TabRename>(&TabRenameParams {
+            tab_id: tab_id.clone(),
+            label: label.to_owned(),
+        })
     }
 
-    pub fn tab_move(&self, tab_id: &str, insert_index: usize) -> Result<()> {
-        self.ok(
-            "tab.move",
-            &json!({ "tab_id": tab_id, "insert_index": insert_index }),
-        )
+    pub fn tab_move(&self, tab_id: &TabId, insert_index: usize) -> Result<()> {
+        self.ack::<method::TabMove>(&TabMoveParams {
+            tab_id: tab_id.clone(),
+            insert_index,
+        })
     }
 
-    pub fn tab_close(&self, tab_id: &str) -> Result<()> {
-        self.ok("tab.close", &json!({ "tab_id": tab_id }))
+    pub fn tab_close(&self, tab_id: &TabId) -> Result<()> {
+        self.ack::<method::TabClose>(&tab_target(tab_id))
     }
 
     // Workspaces
 
     pub fn workspace_create(&self, params: &NewWorkspace) -> Result<WorkspaceCreated> {
-        self.endpoint.request("workspace.create", params)
+        self.send::<method::WorkspaceCreate>(params)
     }
 
     pub fn workspace_list(&self) -> Result<Vec<WorkspaceInfo>> {
-        self.field("workspace.list", "workspaces", &Empty {})
+        self.send::<method::WorkspaceList>(&NoParams {})
     }
 
-    pub fn workspace_get(&self, workspace_id: &str) -> Result<WorkspaceInfo> {
-        self.field(
-            "workspace.get",
-            "workspace",
-            &json!({ "workspace_id": workspace_id }),
-        )
+    pub fn workspace_get(&self, workspace_id: &WorkspaceId) -> Result<WorkspaceInfo> {
+        self.send::<method::WorkspaceGet>(&workspace_target(workspace_id))
     }
 
-    pub fn workspace_focus(&self, workspace_id: &str) -> Result<()> {
-        self.ok("workspace.focus", &json!({ "workspace_id": workspace_id }))
+    pub fn workspace_focus(&self, workspace_id: &WorkspaceId) -> Result<()> {
+        self.ack::<method::WorkspaceFocus>(&workspace_target(workspace_id))
     }
 
-    pub fn workspace_rename(&self, workspace_id: &str, label: &str) -> Result<()> {
-        self.ok(
-            "workspace.rename",
-            &json!({ "workspace_id": workspace_id, "label": label }),
-        )
+    pub fn workspace_rename(&self, workspace_id: &WorkspaceId, label: &str) -> Result<()> {
+        self.ack::<method::WorkspaceRename>(&WorkspaceRenameParams {
+            workspace_id: workspace_id.clone(),
+            label: label.to_owned(),
+        })
     }
 
-    pub fn workspace_move(&self, workspace_id: &str, insert_index: usize) -> Result<()> {
-        self.ok(
-            "workspace.move",
-            &json!({ "workspace_id": workspace_id, "insert_index": insert_index }),
-        )
+    pub fn workspace_move(&self, workspace_id: &WorkspaceId, insert_index: usize) -> Result<()> {
+        self.ack::<method::WorkspaceMove>(&WorkspaceMoveParams {
+            workspace_id: workspace_id.clone(),
+            insert_index,
+        })
     }
 
     /// Moves `workspace_ids`, in that order, to just before
     /// `before_workspace_id`, or to the end when `None`.
     pub fn workspace_move_block(
         &self,
-        workspace_ids: &[String],
-        before_workspace_id: Option<&str>,
+        workspace_ids: &[WorkspaceId],
+        before_workspace_id: Option<&WorkspaceId>,
     ) -> Result<()> {
-        self.ok(
-            "workspace.move_block",
-            &json!({ "workspace_ids": workspace_ids, "before_workspace_id": before_workspace_id }),
-        )
+        self.ack::<method::WorkspaceMoveBlock>(&WorkspaceMoveBlockParams {
+            workspace_ids: workspace_ids.to_vec(),
+            before_workspace_id: before_workspace_id.cloned(),
+        })
     }
 
     /// Closes a workspace; `close_group` also closes its worktree group.
-    pub fn workspace_close(&self, workspace_id: &str, close_group: bool) -> Result<()> {
-        self.ok(
-            "workspace.close",
-            &json!({ "workspace_id": workspace_id, "close_group": close_group }),
-        )
+    pub fn workspace_close(&self, workspace_id: &WorkspaceId, close_group: bool) -> Result<()> {
+        self.ack::<method::WorkspaceClose>(&WorkspaceCloseParams {
+            workspace_id: workspace_id.clone(),
+            close_group,
+        })
     }
 
     // Worktrees
 
     pub fn worktree_list(
         &self,
-        workspace_id: Option<&str>,
+        workspace_id: Option<&WorkspaceId>,
         cwd: Option<&str>,
     ) -> Result<WorktreeList> {
-        self.endpoint.request(
-            "worktree.list",
-            &json!({ "workspace_id": workspace_id, "cwd": cwd }),
-        )
+        self.send::<method::WorktreeList>(&WorktreeListParams {
+            workspace_id: workspace_id.cloned(),
+            cwd: cwd.map(str::to_owned),
+        })
     }
 
     pub fn worktree_create(&self, params: &WorktreeParams) -> Result<WorkspaceCreated> {
-        self.endpoint.request("worktree.create", params)
+        self.send::<method::WorktreeCreate>(params)
     }
 
     pub fn worktree_open(&self, params: &WorktreeParams) -> Result<WorkspaceCreated> {
-        self.endpoint.request("worktree.open", params)
+        self.send::<method::WorktreeOpen>(params)
     }
 
-    pub fn worktree_remove(&self, workspace_id: &str, force: bool) -> Result<WorktreeRemoved> {
-        self.endpoint.request(
-            "worktree.remove",
-            &json!({ "workspace_id": workspace_id, "force": force }),
-        )
+    pub fn worktree_remove(
+        &self,
+        workspace_id: &WorkspaceId,
+        force: bool,
+    ) -> Result<WorktreeRemoved> {
+        self.send::<method::WorktreeRemove>(&WorktreeRemoveParams {
+            workspace_id: workspace_id.clone(),
+            force,
+        })
     }
 
     // Agents
 
     pub fn agent_list(&self) -> Result<Vec<AgentInfo>> {
-        self.field("agent.list", "agents", &Empty {})
+        self.send::<method::AgentList>(&NoParams {})
     }
 
     /// `target` is a pane id or agent name.
     pub fn agent_get(&self, target: &str) -> Result<AgentInfo> {
-        self.field("agent.get", "agent", &json!({ "target": target }))
+        self.send::<method::AgentGet>(&AgentTarget {
+            target: target.to_owned(),
+        })
     }
 
     pub fn agent_focus(&self, target: &str) -> Result<()> {
-        self.ok("agent.focus", &json!({ "target": target }))
+        self.ack::<method::AgentFocus>(&AgentTarget {
+            target: target.to_owned(),
+        })
     }
 
     // Plugins
 
     pub fn plugin_action_list(&self, plugin_id: Option<&str>) -> Result<Vec<PluginActionInfo>> {
-        self.field(
-            "plugin.action.list",
-            "actions",
-            &json!({ "plugin_id": plugin_id }),
-        )
+        self.send::<method::PluginActionList>(&PluginActionListParams {
+            plugin_id: plugin_id.map(str::to_owned),
+        })
     }
 
     pub fn plugin_action_invoke(
@@ -499,19 +536,92 @@ impl Client {
         action_id: &str,
         context: Option<&PluginInvocationContext>,
     ) -> Result<PluginActionInvoked> {
-        self.endpoint.request(
-            "plugin.action.invoke",
-            &json!({ "plugin_id": plugin_id, "action_id": action_id, "context": context }),
-        )
+        self.send::<method::PluginActionInvoke>(&PluginActionInvokeParams {
+            plugin_id: plugin_id.map(str::to_owned),
+            action_id: action_id.to_owned(),
+            context: context.cloned(),
+        })
+    }
+
+    // Server
+
+    /// Makes `socket_path`, an agent socket on the server's host, the SSH
+    /// agent of the server's panes (they see it through their
+    /// `SSH_AUTH_SOCK`). It lasts as long as the returned registration.
+    pub fn ssh_agent_register(&self, socket_path: &str) -> Result<SshAgentRegistration> {
+        let (stream, _) = self.endpoint.request_open(
+            method::ServerSshAgentRegister::NAME,
+            &SshAgentRegisterParams {
+                socket_path: socket_path.to_owned(),
+            },
+        )?;
+        Ok(SshAgentRegistration { stream })
+    }
+
+    /// Makes the server re-read `config.toml` (herdr has no method to read or
+    /// write it; see `crate::config`).
+    pub fn server_reload_config(&self) -> Result<ConfigReload> {
+        self.send::<method::ServerReloadConfig>(&NoParams {})
     }
 
     // Notifications
 
     /// Asks herdr to show a toast. With `ui.toast.delivery = "system"` it goes to the OS.
     pub fn notification_show(&self, title: &str, body: Option<&str>) -> Result<NotificationShown> {
-        self.endpoint.request(
-            "notification.show",
-            &json!({ "title": title, "body": body }),
-        )
+        self.send::<method::NotificationShow>(&NotificationShowParams {
+            title: title.to_owned(),
+            body: body.map(str::to_owned),
+        })
+    }
+}
+
+/// `result` as `M` answers it: its [`Method::FIELD`], or all of it.
+pub(crate) fn decode<M: Method>(mut result: Value) -> Result<M::Output> {
+    let value = match M::FIELD {
+        Some(key) => result
+            .get_mut(key)
+            .map(Value::take)
+            .ok_or_else(|| Error::Protocol(format!("{} result has no {key:?}", M::NAME)))?,
+        None => result,
+    };
+    serde_json::from_value(value).map_err(|source| Error::Decode {
+        method: M::NAME.to_owned(),
+        source,
+    })
+}
+
+fn pane_target(pane_id: &PaneId) -> PaneTarget {
+    PaneTarget {
+        pane_id: pane_id.clone(),
+    }
+}
+
+fn tab_target(tab_id: &TabId) -> TabTarget {
+    TabTarget {
+        tab_id: tab_id.clone(),
+    }
+}
+
+fn workspace_target(workspace_id: &WorkspaceId) -> WorkspaceTarget {
+    WorkspaceTarget {
+        workspace_id: workspace_id.clone(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn registration_should_be_open_while_the_server_holds_it() {
+        let (stream, _server) = UnixStream::pair().unwrap();
+        assert!(SshAgentRegistration { stream }.is_open());
+    }
+
+    #[test]
+    fn registration_should_be_closed_once_the_server_hangs_up() {
+        let (stream, server) = UnixStream::pair().unwrap();
+        drop(server);
+        assert!(!SshAgentRegistration { stream }.is_open());
     }
 }

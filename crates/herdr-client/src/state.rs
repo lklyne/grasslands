@@ -240,7 +240,7 @@ impl State {
     }
 
     pub fn pane_ids(&self) -> BTreeSet<&str> {
-        self.panes.keys().map(String::as_str).collect()
+        self.panes.keys().map(PaneId::as_str).collect()
     }
 
     /// Tabs whose split tree does not hold exactly the panes the snapshot puts in them,
@@ -249,9 +249,9 @@ impl State {
         let mut by_tab: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
         for pane in self.panes.values() {
             by_tab
-                .entry(&pane.tab_id)
+                .entry(pane.tab_id.as_str())
                 .or_default()
-                .insert(&pane.pane_id);
+                .insert(pane.pane_id.as_str());
         }
         self.workspaces
             .iter()
@@ -327,7 +327,11 @@ mod tests {
     fn build_should_nest_tabs_under_workspaces() {
         let snapshot: SessionSnapshot = serde_json::from_str(SNAPSHOT).unwrap();
         let layout: LayoutDescription = serde_json::from_str(LAYOUT).unwrap();
-        let state = State::build(1, snapshot, &BTreeMap::from([("w1:t1".to_owned(), layout)]));
+        let state = State::build(
+            1,
+            snapshot,
+            &BTreeMap::from([(TabId::from("w1:t1"), layout)]),
+        );
         assert_eq!(state.workspace("w1").map(|w| w.tabs.len()), Some(1));
     }
 
@@ -335,7 +339,11 @@ mod tests {
     fn inconsistent_tabs_should_be_empty_when_tree_matches_snapshot() {
         let snapshot: SessionSnapshot = serde_json::from_str(SNAPSHOT).unwrap();
         let layout: LayoutDescription = serde_json::from_str(LAYOUT).unwrap();
-        let state = State::build(1, snapshot, &BTreeMap::from([("w1:t1".to_owned(), layout)]));
+        let state = State::build(
+            1,
+            snapshot,
+            &BTreeMap::from([(TabId::from("w1:t1"), layout)]),
+        );
         assert!(state.inconsistent_tabs().is_empty());
     }
 

@@ -13,16 +13,25 @@ mod attention;
 mod changes;
 mod chrome;
 mod editor;
+mod fs;
 mod herdr;
+mod herdr_prefs;
+mod label;
 mod logging;
+mod machines;
 mod overlay;
 mod prompt;
+#[cfg(debug_assertions)]
+mod script;
 mod settings;
+mod setup;
 mod sidebar;
 mod sounds;
 mod state;
+mod status;
 mod terminal_area;
 mod theme;
+mod window_registry;
 mod workspace;
 mod worktree;
 
@@ -46,6 +55,7 @@ fn main() {
             actions::init(cx);
             theme::init(cx);
             sounds::init(cx);
+            herdr_prefs::init(cx);
             settings::init(cx);
             editor::init(cx);
             terminal_area::init(cx);
@@ -88,7 +98,9 @@ fn add_install_dirs_to_path() {
 }
 
 fn open_main_window(cx: &mut App) -> anyhow::Result<()> {
-    let state = cx.new(|cx| AppState::new(herdr::Config::from_env(), cx));
+    let state = cx.new(|cx| AppState::new(setup::config_from_env(), cx));
+    state.update(cx, AppState::start);
+    herdr_prefs::attach(&state, cx);
     let options = WindowOptions {
         window_bounds: Some(WindowBounds::centered(size(px(1400.), px(900.)), cx)),
         ..workspace::window_options()
@@ -100,15 +112,31 @@ fn open_main_window(cx: &mut App) -> anyhow::Result<()> {
                 theme::sync_with_system(window, cx);
             })
             .detach();
+            // The watcher follows herdr's config; coming back to the window
+            // rereads it too, in case a change slipped past.
+            cx.observe_window_activation(window, |_, window, cx| {
+                if window.is_window_active() {
+                    herdr_prefs::reload(cx);
+                }
+            })
+            .detach();
             Workspace::new(state, window, cx)
         })
     })?;
     // Files named on the command line open in the editor.
     window.update(cx, |_, window, cx| {
         for path in std::env::args_os().skip(1) {
-            window.dispatch_action(Box::new(actions::OpenFile { path: path.into() }), cx);
+            window.dispatch_action(
+                Box::new(actions::OpenFile {
+                    path: path.into(),
+                    machine: crate::state::MachineId::Local,
+                }),
+                cx,
+            );
         }
     })?;
+    #[cfg(debug_assertions)]
+    script::start(window, cx);
     cx.activate(true);
     Ok(())
 }

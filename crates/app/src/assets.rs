@@ -8,7 +8,9 @@ use gpui_kit::*;
 
 icon_assets!(
     ExtraIcons,
-    [CircleQuestionMark, GitBranch, GitCompare, GitMerge]
+    [
+        GitBranch, GitCompare, GitMerge, KeyRound, Server, ServerOff, WifiOff
+    ]
 );
 
 pub struct AppAssets;

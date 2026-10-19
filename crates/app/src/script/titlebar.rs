@@ -17,10 +17,10 @@ use gpui_kit::*;
 use super::{Cx, Run};
 use crate::actions::{OpenFile, ToggleTheme};
 use crate::editor::Answer;
-use crate::herdr::{SplitDirection, SplitTree};
+use crate::herdr::{PaneId, SplitDirection, SplitTree, protocol};
 use crate::overlay;
-use crate::terminal_area::TerminalArea;
-use crate::workspace::{self, MainTab, Workspace};
+use crate::terminal_area::hooks::Hooks;
+use crate::workspace::{MainTab, Workspace};
 
 impl Run {
     pub(super) async fn titlebar(&mut self, cx: &mut Cx) -> anyhow::Result<()> {
@@ -40,32 +40,36 @@ impl Run {
         // A workspace of our own with two terminals.
         let task = self.read(cx, |area, cx| {
             let home = std::env::var_os("HOME").map(PathBuf::from);
-            area.state
+            area.state()
                 .read(cx)
-                .new_workspace(home, Some("titlebar-script".to_owned()), cx)
+                .on(&area.machine(cx), cx, |session, cx| {
+                    session.new_workspace(home, Some("titlebar-script".to_owned()), cx)
+                })
         })?;
         let workspace_id = task.await?.workspace_id;
-        let task = self.read(cx, |area, cx| {
-            area.state.read(cx).focus_workspace(&workspace_id, cx)
+        let task = self.on_state(cx, |state, machine, cx| {
+            state.focus_workspace(machine, &workspace_id, cx)
         })?;
         task.await?;
         let shown = self
             .until(cx, Duration::from_secs(10), |area, _, cx| {
-                TerminalArea::active_tab(&area.snapshot(cx))
+                Hooks::active_tab(&area.snapshot(cx))
                     .is_some_and(|tab| tab.info.workspace_id == workspace_id)
-                    && area.drawn.borrow().panes.len() == 1
+                    && area.drawn().panes.len() == 1
             })
             .await;
         self.check(shown, "own workspace shows one terminal");
         let task = self.read(cx, |area, cx| {
-            area.state
+            area.state()
                 .read(cx)
-                .split_pane(None, SplitDirection::Right, cx)
+                .on(&area.machine(cx), cx, |session, cx| {
+                    session.split_pane(None, SplitDirection::Right, cx)
+                })
         })?;
         task.await?;
         let two = self
             .until(cx, Duration::from_secs(10), |area, _, _| {
-                area.drawn.borrow().panes.len() == 2
+                area.drawn().panes.len() == 2
             })
             .await;
         self.check(two, "split into two terminals");
@@ -88,7 +92,13 @@ impl Run {
             std::fs::write(file, format!("// {}\nfn main() {{}}\n", file.display()))?;
         }
         for file in &files {
-            self.dispatch(cx, Box::new(OpenFile { path: file.clone() }));
+            self.dispatch(
+                cx,
+                Box::new(OpenFile {
+                    path: file.clone(),
+                    machine: crate::state::MachineId::Local,
+                }),
+            );
             Self::settle(cx).await;
         }
         let on_file = self.workspace(cx, |ws, _, cx| (ws.selected(), ws.selected_index(cx)))?;
@@ -167,11 +177,13 @@ impl Run {
         };
         let pane = match &tree {
             SplitTree::Pane(pane) => pane.clone(),
-            SplitTree::Split { .. } => tree.pane_ids()[0].to_owned(),
+            SplitTree::Split { .. } => PaneId::from(tree.pane_ids()[0]),
         };
-        self.report_agent(cx, &pane, "working").await?;
+        self.report_agent(cx, &pane, protocol::ReportedState::Working)
+            .await?;
         Self::sleep(cx, 500).await;
-        self.report_agent(cx, &pane, "blocked").await?;
+        self.report_agent(cx, &pane, protocol::ReportedState::Blocked)
+            .await?;
         let toast = self
             .until_overlay(cx, |window, cx| !window.notifications(cx).is_empty())
             .await;
@@ -202,7 +214,7 @@ impl Run {
         let dirty = self.workspace(cx, |ws, _, cx| {
             ws.editor()
                 .read(cx)
-                .tabs()
+                .tabs(cx)
                 .iter()
                 .map(|t| t.dirty)
                 .collect::<Vec<_>>()
@@ -246,25 +258,15 @@ impl Run {
         self.check_views(cx, "after closing every file");
 
         let task = self.read(cx, |area, cx| {
-            area.state
+            area.state()
                 .read(cx)
-                .close_workspace(&workspace_id, false, cx)
+                .on(&area.machine(cx), cx, |session, cx| {
+                    session.close_workspace(&workspace_id, false, cx)
+                })
         })?;
         task.await?;
         let _ = std::fs::remove_dir_all(&dir);
         Ok(())
-    }
-
-    fn workspace<R>(
-        &self,
-        cx: &mut Cx,
-        f: impl FnOnce(&mut Workspace, &mut Window, &mut Context<Workspace>) -> R,
-    ) -> anyhow::Result<R> {
-        cx.update(|window, cx| {
-            let workspace =
-                workspace::get(window, cx).ok_or_else(|| anyhow::anyhow!("no workspace"))?;
-            Ok(workspace.update(cx, |ws, cx| f(ws, window, cx)))
-        })?
     }
 
     async fn click_tab(&mut self, cx: &mut Cx, index: usize) -> anyhow::Result<()> {
@@ -312,11 +314,11 @@ impl Run {
     }
 }
 
-fn tab_titles(workspace: &Workspace, cx: &App) -> Vec<String> {
+pub(super) fn tab_titles(workspace: &Workspace, cx: &App) -> Vec<String> {
     workspace
         .editor()
         .read(cx)
-        .tabs()
+        .tabs(cx)
         .into_iter()
         .map(|tab| tab.title)
         .collect()

@@ -10,7 +10,6 @@ mod main_area;
 mod titlebar;
 
 use std::cell::RefCell;
-use std::collections::HashMap;
 use std::rc::Rc;
 
 use gpui_kit::component::{ActiveTheme as _, v_flex};
@@ -30,6 +29,7 @@ use crate::overlay;
 use crate::sidebar::SidebarPanels;
 use crate::state::AppState;
 use crate::terminal_area::TerminalArea;
+use crate::window_registry;
 
 actions!(workspace, [NextMainTab, PreviousMainTab, ShowHerdr]);
 
@@ -56,12 +56,6 @@ pub enum MainTab {
     Changes,
 }
 
-/// Each main window's workspace, for the script hooks: see [`get`].
-#[derive(Default)]
-struct Workspaces(HashMap<WindowId, WeakEntity<Workspace>>);
-
-impl Global for Workspaces {}
-
 /// Set when the active drag can leave the terminals on screen: its drop
 /// targets aren't under them, unlike a dock panel's. Cleared when it ends.
 #[derive(Default)]
@@ -75,10 +69,10 @@ pub fn keep_terminals_during_drag(cx: &mut App) {
     cx.set_global(KeepTerminalsDuringDrag(true));
 }
 
-/// The workspace of the main window `window`, if it has one.
+/// The workspace of the main window `window`, if it has one (for the
+/// script hooks).
 pub fn get(window: &Window, cx: &App) -> Option<Entity<Workspace>> {
-    let id = window.window_handle().window_id();
-    cx.try_global::<Workspaces>()?.0.get(&id)?.upgrade()
+    window_registry::upgrade(window, cx)
 }
 
 pub struct Workspace {
@@ -121,9 +115,8 @@ impl Workspace {
                 cx.notify();
             }),
         ];
-        let id = window.window_handle().window_id();
         let this = cx.entity().downgrade();
-        cx.default_global::<Workspaces>().0.insert(id, this.clone());
+        window_registry::insert(window, this.clone(), cx);
         let terminal_area = cx.new(|cx| TerminalArea::new(state.clone(), window, cx));
         let main_area = cx.new(|_| MainArea::new(this));
         let main_panel = cx.new(|cx| {
@@ -153,6 +146,15 @@ impl Workspace {
 
     pub fn editor(&self) -> &Entity<Editor> {
         &self.editor
+    }
+
+    pub fn terminal_area(&self) -> &Entity<TerminalArea> {
+        &self.terminal_area
+    }
+
+    /// The Changes tab, while it is open.
+    pub fn changes(&self) -> Option<&Entity<Changes>> {
+        self.changes.as_ref()
     }
 
     pub fn selected(&self) -> MainTab {
@@ -194,7 +196,7 @@ impl Workspace {
     fn changes_index(&self, cx: &App) -> Option<usize> {
         self.changes
             .as_ref()
-            .map(|_| self.editor.read(cx).tabs().len() + 1)
+            .map(|_| self.editor.read(cx).tabs(cx).len() + 1)
     }
 
     /// Selects titlebar tab `index`: 0 is herdr, then the file tabs, then
@@ -225,7 +227,7 @@ impl Workspace {
     fn cycle(&mut self, step: isize, window: &mut Window, cx: &mut Context<Self>) {
         let count = self
             .changes_index(cx)
-            .unwrap_or(self.editor.read(cx).tabs().len()) as isize
+            .unwrap_or(self.editor.read(cx).tabs(cx).len()) as isize
             + 1;
         let index = (self.selected_index(cx) as isize + step).rem_euclid(count) as usize;
         crate::sounds::play(cues::Cue::Select, cues::PlayOptions::default());
@@ -233,13 +235,14 @@ impl Workspace {
     }
 
     fn open_file(&mut self, action: &OpenFile, window: &mut Window, cx: &mut Context<Self>) {
-        self.editor
-            .update(cx, |editor, cx| editor.open(&action.path, window, cx));
+        self.editor.update(cx, |editor, cx| {
+            editor.open(&action.machine, &action.path, window, cx)
+        });
     }
 
     fn open_file_at(&mut self, action: &OpenFileAt, window: &mut Window, cx: &mut Context<Self>) {
         self.editor.update(cx, |editor, cx| {
-            editor.open_at(&action.path, action.line, window, cx)
+            editor.open_at(&action.machine, &action.path, action.line, window, cx)
         });
     }
 
@@ -250,7 +253,7 @@ impl Workspace {
             Some(changes) => changes.update(cx, |changes, cx| changes.reload(cx)),
             None => {
                 let state = self.state.clone();
-                self.changes = Some(cx.new(|cx| Changes::new(state, cx)));
+                self.changes = Some(cx.new(|cx| Changes::new(state, window, cx)));
             }
         }
         self.select(MainTab::Changes, window, cx);
@@ -266,8 +269,9 @@ impl Workspace {
 
     fn focus_pane(&mut self, action: &FocusPane, window: &mut Window, cx: &mut Context<Self>) {
         self.select(MainTab::Herdr, window, cx);
-        self.terminal_area
-            .update(cx, |area, cx| area.focus_pane(&action.pane_id, window, cx));
+        self.terminal_area.update(cx, |area, cx| {
+            area.focus_pane(&action.machine, &action.pane_id, window, cx)
+        });
     }
 
     fn command_palette(&mut self, _: &CommandPalette, window: &mut Window, cx: &mut Context<Self>) {

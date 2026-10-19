@@ -11,9 +11,15 @@
 //! sockets, so it works the same from GPUI, tokio or a test.
 
 mod client;
+pub mod config;
 mod endpoint;
 mod error;
 pub mod events;
+mod ids;
+mod machines;
+pub mod protocol;
+mod remote_fs;
+mod setup;
 mod state;
 mod sync;
 pub mod types;
@@ -21,7 +27,14 @@ pub mod types;
 pub use client::*;
 pub use endpoint::{ALLOW_LIVE_ENV, DEV_ROOT, Endpoint, check_dev_socket};
 pub use error::{EVENTS_LOST, Error, Result};
-pub use events::Event;
+pub use ids::{PaneId, ProfileId, TabId, TerminalId, WorkspaceId};
+pub use machines::{
+    DEV_MACHINES_ENV, FORWARD_AGENT_ENV, MachineLink, MachineProfile, MachineStatus, dev_allowed,
+    list_machines, socket_dir,
+};
+pub use protocol::{Method, method};
+pub use remote_fs::{ExecOutput, RemoteEntry, RemoteFs, RemoteMetadata};
+pub use setup::{Check, Fix, FixCommand, InstallMethod, Installed, MIN_VERSION, Version};
 pub use state::{SplitRef, SplitTree, State, Tab, Workspace};
 pub use sync::{ConnectionStatus, SessionSync, Update};
 pub use types::*;

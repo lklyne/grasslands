@@ -46,12 +46,16 @@ const BUNDLED: &[&str] = &[
     include_str!("../themes/twilight.json"),
 ];
 
-/// Light or dark: following the system, or fixed.
+/// The themes a fresh install starts with.
+const DEFAULT_LIGHT: &str = "Aurora Light";
+const DEFAULT_DARK: &str = "Catppuccin Macchiato";
+
+/// Light or dark: following the system, or fixed. New installs start dark.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Appearance {
-    #[default]
     System,
     Light,
+    #[default]
     Dark,
 }
 
@@ -94,12 +98,25 @@ pub struct ThemeSettings {
 impl Global for ThemeSettings {}
 
 impl ThemeSettings {
+    /// Dark, in Catppuccin Macchiato; Aurora Light for light mode. Falls back
+    /// to the Kit's defaults if a bundled theme is missing.
     fn defaults(cx: &App) -> Self {
         let registry = ThemeRegistry::global(cx);
+        let bundled = |name: &str, fallback: &SharedString| -> SharedString {
+            if registry
+                .sorted_themes()
+                .iter()
+                .any(|theme| theme.name == name)
+            {
+                SharedString::new(name)
+            } else {
+                fallback.clone()
+            }
+        };
         Self {
-            appearance: Appearance::System,
-            light: registry.default_light_theme().name.clone(),
-            dark: registry.default_dark_theme().name.clone(),
+            appearance: Appearance::Dark,
+            light: bundled(DEFAULT_LIGHT, &registry.default_light_theme().name),
+            dark: bundled(DEFAULT_DARK, &registry.default_dark_theme().name),
         }
     }
 
@@ -238,7 +255,7 @@ pub fn read_settings_file() -> Map<String, Value> {
 /// Script runs toggle settings to check the app follows; they must not
 /// change the user's saved choices.
 pub fn write_settings_file(write: impl FnOnce(&mut Map<String, Value>)) {
-    if std::env::var_os("RT_SCRIPT").is_some() {
+    if cfg!(debug_assertions) && std::env::var_os("RT_SCRIPT").is_some() {
         return;
     }
     let Some(path) = settings_path() else {

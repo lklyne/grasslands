@@ -8,11 +8,13 @@ use gpui_kit::component::WindowExt as _;
 use gpui_kit::component::command::{Command, CommandGroup, CommandItem, CommandState};
 use gpui_kit::*;
 
+use super::worktrees::{self, WorktreeCommand};
 use super::{Chrome, HerdrCommand, MenuCommand, MenuTarget, pane_context, update_later};
 use crate::actions::{FocusPane, OpenChanges, OpenSettings, Quit, ToggleTheme};
-use crate::attention::{agent_name, status_label};
-use crate::herdr::{PluginActionInfo, PluginInvocationContext, SplitDirection};
+use crate::herdr::{PluginActionInfo, PluginInvocationContext, SplitDirection, WorkspaceInfo};
 use crate::state::AppState;
+use crate::worktree::Placement;
+use crate::{label, status};
 
 struct Group {
     label: &'static str,
@@ -33,7 +35,10 @@ pub(super) fn open(
             command_state.update(cx, |palette, cx| palette.focus(window, cx));
         }
         let plugin_actions = chrome.read(cx).plugin_actions.clone();
-        let groups: Vec<Group> = groups(state.read(cx), &plugin_actions)
+        let state = state.read(cx);
+        let machine = state.selected().clone();
+        let place = |info: &WorkspaceInfo| worktrees::placement(&machine, info, cx);
+        let groups: Vec<Group> = groups(state, &plugin_actions, place, cx)
             .into_iter()
             .filter(|g| !g.entries.is_empty())
             .collect();
@@ -74,8 +79,14 @@ pub(super) fn open(
     palette_state
 }
 
-fn groups(state: &AppState, plugin_actions: &[PluginActionInfo]) -> Vec<Group> {
-    let snapshot = &state.snapshot;
+fn groups(
+    state: &AppState,
+    plugin_actions: &[PluginActionInfo],
+    place: impl Fn(&WorkspaceInfo) -> Option<Placement>,
+    cx: &App,
+) -> Vec<Group> {
+    let snapshot = state.snapshot(cx);
+    let machine = || state.selected().clone();
     let focused = snapshot.focused_pane();
 
     let mut app: Vec<(SharedString, MenuCommand)> = Vec::new();
@@ -87,6 +98,7 @@ fn groups(state: &AppState, plugin_actions: &[PluginActionInfo]) -> Vec<Group> {
             herdr(
                 "Pane: Split Right",
                 C::SplitPane {
+                    machine: machine(),
                     pane_id: pane_id(),
                     direction: SplitDirection::Right,
                 },
@@ -94,48 +106,93 @@ fn groups(state: &AppState, plugin_actions: &[PluginActionInfo]) -> Vec<Group> {
             herdr(
                 "Pane: Split Down",
                 C::SplitPane {
+                    machine: machine(),
                     pane_id: pane_id(),
                     direction: SplitDirection::Down,
                 },
             ),
-            herdr("Pane: Toggle Zoom", C::ZoomPane { pane_id: pane_id() }),
+            herdr(
+                "Pane: Toggle Zoom",
+                C::ZoomPane {
+                    machine: machine(),
+                    pane_id: pane_id(),
+                },
+            ),
             (
                 "Pane: Rename…".into(),
-                MenuCommand::Rename(MenuTarget::Pane { pane_id: pane_id() }),
+                MenuCommand::Rename(MenuTarget::Pane {
+                    machine: machine(),
+                    pane_id: pane_id(),
+                }),
             ),
-            herdr("Pane: Close", C::ClosePane { pane_id: pane_id() }),
+            herdr(
+                "Pane: Close",
+                C::ClosePane {
+                    machine: machine(),
+                    pane_id: pane_id(),
+                },
+            ),
             herdr(
                 "Tab: New",
                 C::NewTab {
+                    machine: machine(),
                     workspace_id: pane.workspace_id.clone(),
                 },
             ),
             (
                 "Tab: Rename…".into(),
                 MenuCommand::Rename(MenuTarget::Tab {
+                    machine: machine(),
                     tab_id: pane.tab_id.clone(),
                 }),
             ),
             herdr(
                 "Tab: Close",
                 C::CloseTab {
+                    machine: machine(),
                     tab_id: pane.tab_id.clone(),
                 },
             ),
             (
                 "Workspace: Rename…".into(),
                 MenuCommand::Rename(MenuTarget::Workspace {
+                    machine: machine(),
                     workspace_id: pane.workspace_id.clone(),
                 }),
             ),
             herdr(
                 "Workspace: Close",
                 C::CloseWorkspace {
+                    machine: machine(),
                     workspace_id: pane.workspace_id.clone(),
-                    close_group: false,
                 },
             ),
         ]);
+        let placed = snapshot
+            .workspace(&pane.workspace_id)
+            .and_then(|w| place(&w.info));
+        let worktree = |label: &'static str, command: fn(_, _) -> WorktreeCommand| {
+            (
+                label.into(),
+                MenuCommand::Worktree(command(machine(), pane.workspace_id.clone())),
+            )
+        };
+        if placed.is_some() {
+            app.push(worktree("Worktree: Open…", |machine, workspace_id| {
+                WorktreeCommand::Open {
+                    machine,
+                    workspace_id,
+                }
+            }));
+        }
+        if placed.is_some_and(|p| p.linked) {
+            app.push(worktree("Worktree: Remove…", |machine, workspace_id| {
+                WorktreeCommand::Remove {
+                    machine,
+                    workspace_id,
+                }
+            }));
+        }
     }
     app.push((
         "View: Show Changes".into(),
@@ -161,11 +218,12 @@ fn groups(state: &AppState, plugin_actions: &[PluginActionInfo]) -> Vec<Group> {
             (
                 format!(
                     "Go to {} — {workspace} ({})",
-                    agent_name(agent),
-                    status_label(agent.agent_status)
+                    label::agent(snapshot, agent),
+                    status::text(agent.agent_status, &agent.state_labels)
                 )
                 .into(),
                 MenuCommand::Action(Rc::new(FocusPane {
+                    machine: machine(),
                     pane_id: agent.pane_id.clone(),
                 })),
             )
@@ -186,6 +244,7 @@ fn groups(state: &AppState, plugin_actions: &[PluginActionInfo]) -> Vec<Group> {
             (
                 format!("{}: {}", action.plugin_id, action.title).into(),
                 MenuCommand::Herdr(HerdrCommand::InvokePluginAction {
+                    machine: machine(),
                     action: Box::new(action.clone()),
                     context: Box::new(context.clone()),
                 }),

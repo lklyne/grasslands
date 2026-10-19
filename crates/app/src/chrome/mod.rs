@@ -11,42 +11,69 @@ mod confirm;
 mod dock;
 mod palette;
 #[cfg(debug_assertions)]
-mod script;
+pub(crate) mod script;
+mod worktrees;
 
 use std::collections::HashMap;
+use std::path::Path;
 use std::rc::Rc;
+use std::time::Duration;
 
 use gpui_kit::component::WindowExt as _;
 use gpui_kit::component::command::CommandState;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::menu::{PopupMenu, PopupMenuItem};
-use gpui_kit::component::notification::{Notification, NotificationDelivery, NotificationType};
+use gpui_kit::component::notification::Notification;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use crate::attention::{StatusChange, find_agent};
 use crate::herdr::{
-    AgentStatus, PluginActionContext, PluginActionInfo, PluginInvocationContext, Snapshot,
-    SplitDirection,
+    AgentStatus, PaneId, PluginActionContext, PluginActionInfo, PluginInvocationContext, Snapshot,
+    SplitDirection, TabId, WorkspaceId, WorkspaceInfo,
 };
 use crate::overlay::{self, Capture, LayerId, Overlay};
 use crate::sounds;
-use crate::state::{AppEvent, AppState};
+use crate::state::{AppEvent, AppState, MachineId};
+use crate::status;
+use crate::window_registry;
 
 pub use command::HerdrCommand;
 pub use confirm::Confirmation;
+pub use worktrees::{WorktreeCommand, set_placements};
 
 pub fn init(_cx: &mut App) {
     dock::set_icon();
 }
 
 /// What a context menu is about. The terminal area opens one per pane and
-/// tab, the sidebar per workspace and agent.
+/// tab, the sidebar per workspace and agent. Each names the machine it was
+/// opened on, captured then, so its commands act there.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MenuTarget {
-    Pane { pane_id: String },
-    Tab { tab_id: String },
-    Workspace { workspace_id: String },
+    Pane {
+        machine: MachineId,
+        pane_id: PaneId,
+    },
+    Tab {
+        machine: MachineId,
+        tab_id: TabId,
+    },
+    Workspace {
+        machine: MachineId,
+        workspace_id: WorkspaceId,
+    },
+}
+
+impl MenuTarget {
+    /// The machine the target is on.
+    fn machine(&self) -> &MachineId {
+        match self {
+            Self::Pane { machine, .. }
+            | Self::Tab { machine, .. }
+            | Self::Workspace { machine, .. } => machine,
+        }
+    }
 }
 
 /// A UI callback run by a menu entry or a confirmation.
@@ -59,6 +86,8 @@ pub enum MenuCommand {
     Herdr(HerdrCommand),
     /// Ask for a new label, then rename the target.
     Rename(MenuTarget),
+    /// Open Worktree… or Remove Worktree…, which ask before they act.
+    Worktree(WorktreeCommand),
     /// Dispatch an app action (e.g. `ToggleTheme`).
     Action(Rc<dyn Action>),
     /// Anything else the caller wants run.
@@ -73,6 +102,11 @@ pub enum MenuEntry {
         label: SharedString,
         command: MenuCommand,
         disabled: bool,
+    },
+    /// Opens `entries` beside the menu.
+    Submenu {
+        label: SharedString,
+        entries: Vec<MenuEntry>,
     },
     Separator,
 }
@@ -89,6 +123,22 @@ impl MenuEntry {
     fn herdr(label: &'static str, command: HerdrCommand) -> Self {
         Self::item(label, MenuCommand::Herdr(command))
     }
+}
+
+/// `entries` as text, for tests: items by label, `---` for a separator and
+/// `Label › [...]` for a submenu.
+#[cfg(test)]
+pub fn labels(entries: &[MenuEntry]) -> Vec<String> {
+    entries
+        .iter()
+        .map(|entry| match entry {
+            MenuEntry::Item { label, .. } => label.to_string(),
+            MenuEntry::Separator => "---".to_owned(),
+            MenuEntry::Submenu { label, entries } => {
+                format!("{label} › {:?}", labels(entries))
+            }
+        })
+        .collect()
 }
 
 struct OpenMenu {
@@ -117,20 +167,14 @@ impl Render for MenuLayer {
     }
 }
 
-/// Keys agent toasts so a newer status for the same pane replaces the older.
+/// Keys agent toasts so a newer status for the same pane on the same machine
+/// replaces the older.
 struct AgentToast;
 
-/// Each main window's chrome, so views that only have the window (the
-/// terminal area) can reach it: see [`get`].
-#[derive(Default)]
-struct Chromes(HashMap<WindowId, WeakEntity<Chrome>>);
-
-impl Global for Chromes {}
-
-/// The chrome of the main window `window`, if it has one.
+/// The chrome of the main window `window`, if it has one, for views that
+/// only have the window (the terminal area).
 pub fn get(window: &Window, cx: &App) -> Option<Entity<Chrome>> {
-    let id = window.window_handle().window_id();
-    cx.try_global::<Chromes>()?.0.get(&id)?.upgrade()
+    window_registry::upgrade(window, cx)
 }
 
 pub struct Chrome {
@@ -146,29 +190,28 @@ pub struct Chrome {
     /// The rename dialog's input, while one is open.
     rename_input: Option<WeakEntity<InputState>>,
     badge: usize,
+    /// Agent alerts waiting out herdr's `ui.toast.delay_seconds`, by toast key.
+    pending_alerts: HashMap<SharedString, Task<()>>,
     _subscriptions: Vec<Subscription>,
 }
 
 impl Chrome {
     pub fn new(state: Entity<AppState>, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let events = cx.subscribe_in(&state, window, |this, _, event, window, cx| {
-            if let AppEvent::AgentStatusChanged(change) = event {
-                this.agent_toast(change, window, cx);
-            }
-        });
-        let badge = cx.observe(&state, |this, state, cx| {
-            let state = state.read(cx);
-            let count = state.attention.count(&state.snapshot);
-            if count != this.badge {
-                this.badge = count;
-                dock::set_badge(count);
+        let events = cx.subscribe_in(&state, window, |this, state, event, window, cx| {
+            match event {
+                AppEvent::AgentStatusChanged { machine, change } => {
+                    this.agent_toast(machine, change, window, cx);
+                }
+                // The badge counts the live machines' agents: their caches,
+                // and which machines are live.
+                AppEvent::MachineSnapshot(_) | AppEvent::MachinesChanged => {
+                    this.update_badge(state.read(cx).attention_count(cx));
+                }
+                _ => {}
             }
         });
         let main_window = window.window_handle();
-        let weak = cx.entity().downgrade();
-        cx.default_global::<Chromes>()
-            .0
-            .insert(main_window.window_id(), weak);
+        window_registry::insert(window, cx.entity().downgrade(), cx);
         let mut chrome = Self {
             state,
             main_window,
@@ -178,16 +221,25 @@ impl Chrome {
             rename: None,
             rename_input: None,
             badge: 0,
-            _subscriptions: vec![events, badge],
+            pending_alerts: HashMap::new(),
+            _subscriptions: vec![events],
         };
         chrome.refresh_plugin_actions(cx);
-        #[cfg(debug_assertions)]
-        script::start(window, cx);
         chrome
     }
 
+    fn update_badge(&mut self, count: usize) {
+        if count != self.badge {
+            self.badge = count;
+            dock::set_badge(count);
+        }
+    }
+
     fn refresh_plugin_actions(&mut self, cx: &mut Context<Self>) {
-        let task = self.state.read(cx).plugin_actions(cx);
+        let state = self.state.read(cx);
+        let task = state.on(state.selected(), cx, |session, cx| {
+            session.plugin_actions(cx)
+        });
         cx.spawn(async move |this, cx| match task.await {
             Ok(actions) => this
                 .update(cx, |this, cx| {
@@ -242,30 +294,113 @@ impl Chrome {
             .map_or(self.main_window, |overlay| overlay.read(cx).window_handle())
     }
 
+    /// After herdr's `ui.toast.delay_seconds`, alerts for an agent that
+    /// needs you (blocked) or finished, if it is still in that state (as
+    /// herdr does). A newer change for the same pane replaces a pending one.
+    fn agent_toast(
+        &mut self,
+        machine: &MachineId,
+        change: &StatusChange,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let key = toast_key(machine, &change.pane_id);
+        self.pending_alerts.remove(&key);
+        if !matches!(change.status, AgentStatus::Blocked | AgentStatus::Done) {
+            return;
+        }
+        let delay = Duration::from_secs(crate::herdr_prefs::get(cx).toast.delay_seconds);
+        if delay.is_zero() {
+            self.agent_alert(machine, change, window, cx);
+            return;
+        }
+        let (machine, change) = (machine.clone(), change.clone());
+        let task = cx.spawn_in(window, async move |this, cx| {
+            cx.background_executor().timer(delay).await;
+            // The finished task stays in `pending_alerts` until the pane's
+            // next change replaces it; dropping it from inside would cancel it.
+            this.update_in(cx, |this, window, cx| {
+                let still = this
+                    .state
+                    .read(cx)
+                    .machine(&machine, cx)
+                    .and_then(|m| find_agent(m.snapshot(), &change.pane_id))
+                    .is_some_and(|agent| agent.agent_status == change.status);
+                if still {
+                    this.agent_alert(&machine, &change, window, cx);
+                }
+            })
+            .ok();
+        });
+        self.pending_alerts.insert(key, task);
+    }
+
     /// A toast (bottom right) and a sound for an agent that needs you
-    /// (blocked) or finished.
-    /// While the window is in the background the toast also goes to the OS.
-    fn agent_toast(&mut self, change: &StatusChange, window: &mut Window, cx: &mut Context<Self>) {
-        let (kind, message) = match change.status {
-            AgentStatus::Blocked => (NotificationType::Warning, "needs your input"),
-            AgentStatus::Done => (NotificationType::Success, "finished"),
+    /// (blocked) or finished, as herdr's config says: no sound for the
+    /// workspace in view, no toast for the tab in view, toasts delivered
+    /// per `ui.toast.delivery` (`herdr_prefs::alert`).
+    fn agent_alert(
+        &mut self,
+        machine: &MachineId,
+        change: &StatusChange,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let default_message = match change.status {
+            AgentStatus::Blocked => "needs your input",
+            AgentStatus::Done => "finished",
             _ => return,
         };
-        let snapshot = &self.state.read(cx).snapshot;
-        let workspace = find_agent(snapshot, &change.pane_id)
+        // A file tab hides the terminals: nothing of herdr's is in view.
+        let terminals_shown = crate::workspace::get(window, cx)
+            .is_none_or(|ws| ws.read(cx).selected() == crate::workspace::MainTab::Herdr);
+        let state = self.state.read(cx);
+        let Some(snapshot) = state.machine(machine, cx).map(|m| m.snapshot()) else {
+            return;
+        };
+        let agent = find_agent(snapshot, &change.pane_id);
+        // The agent's own words for the state, when it reported some.
+        let message = agent
+            .and_then(|a| a.state_labels.get(status::word(change.status)))
+            .filter(|label| !label.trim().is_empty())
+            .map_or_else(|| default_message.to_owned(), Clone::clone);
+        let workspace = agent
             .and_then(|agent| snapshot.workspace(&agent.workspace_id))
             .map(|w| format!(" in {}", w.info.label))
             .unwrap_or_default();
-        let delivery = if window.is_window_active() {
-            NotificationDelivery::InApp
-        } else {
-            NotificationDelivery::InAppAndSystem
+        let window_active = window.is_window_active();
+        let looking = agent.map_or_else(Default::default, |agent| {
+            crate::herdr_prefs::Looking::at(
+                agent,
+                snapshot,
+                terminals_shown && state.selected() == machine,
+                window_active,
+            )
+        });
+        let prefs = crate::herdr_prefs::get(cx);
+        let alert = crate::herdr_prefs::alert(
+            prefs,
+            agent.and_then(|a| a.agent.as_deref()),
+            looking,
+            window_active,
+            crate::herdr::config::sound_disabled_by_env(),
+        );
+        if alert.sound {
+            let custom = prefs
+                .sound
+                .custom_sound(change.status == AgentStatus::Done)
+                .map(Path::to_path_buf);
+            dock::play_for(change.status, !window_active, custom.as_deref());
+        }
+        let Some(delivery) = alert.toast else {
+            return;
         };
         let target = change.pane_id.clone();
+        let target_machine = machine.clone();
         let state = self.state.clone();
         let note = Notification::new()
-            .id1::<AgentToast>(SharedString::from(change.pane_id.clone()))
-            .with_type(kind)
+            .id1::<AgentToast>(toast_key(machine, &change.pane_id))
+            .icon(status::icon(change.status, cx))
             .title(format!("{}{workspace}", change.name))
             .message(message)
             .placement(Anchor::BottomRight)
@@ -274,13 +409,14 @@ impl Chrome {
             // `FocusPane` to the main window's views; it asks herdr directly.
             .on_click(move |_, _, cx| {
                 sounds::play(cues::Cue::Navigate, sounds::subtle());
+                // `pane.focus` is also what tells herdr the result was seen.
                 state.update(cx, |state, cx| {
-                    state.mark_seen(&target, cx);
-                    state.focus_pane(&target, cx).detach_and_log_err(cx);
+                    state
+                        .focus_pane(&target_machine, &target, cx)
+                        .detach_and_log_err(cx);
                 });
             });
         self.floating(cx, move |window, cx| window.push_notification(note, cx));
-        dock::play_for(change.status, !window.is_window_active());
     }
 
     pub fn toast(
@@ -327,6 +463,19 @@ impl Chrome {
         }
         self.show_menu(entries, position, window, cx);
         self.refresh_plugin_actions(cx);
+    }
+
+    /// Opens a context menu of just `entries` at `position` (main-window
+    /// coordinates), for menus about something herdr's snapshot doesn't
+    /// hold, such as a saved machine.
+    pub fn menu(
+        &mut self,
+        entries: Vec<MenuEntry>,
+        position: Point<Pixels>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.show_menu(entries, position, window, cx);
     }
 
     fn show_menu(
@@ -411,18 +560,35 @@ impl Chrome {
         cx.notify();
     }
 
+    /// The cache of `machine`; empty when it's gone.
+    fn snapshot_of<'a>(&self, machine: &MachineId, cx: &'a App) -> &'a Snapshot {
+        static EMPTY: std::sync::LazyLock<Snapshot> = std::sync::LazyLock::new(Snapshot::default);
+        self.state
+            .read(cx)
+            .machine(machine, cx)
+            .map_or(&*EMPTY, |m| m.snapshot())
+    }
+
     /// The herdr actions that make sense for `target`.
     pub fn default_entries(&self, target: &MenuTarget, cx: &App) -> Vec<MenuEntry> {
         use HerdrCommand as C;
-        let snapshot = &self.state.read(cx).snapshot;
+        let snapshot = self.snapshot_of(target.machine(), cx);
         match target {
-            MenuTarget::Pane { pane_id } => {
+            MenuTarget::Pane { machine, pane_id } => {
                 let id = || pane_id.clone();
+                let on = || machine.clone();
                 vec![
-                    MenuEntry::herdr("Focus Pane", C::FocusPane { pane_id: id() }),
+                    MenuEntry::herdr(
+                        "Focus Pane",
+                        C::FocusPane {
+                            machine: on(),
+                            pane_id: id(),
+                        },
+                    ),
                     MenuEntry::herdr(
                         "Split Right",
                         C::SplitPane {
+                            machine: on(),
                             pane_id: id(),
                             direction: SplitDirection::Right,
                         },
@@ -430,28 +596,48 @@ impl Chrome {
                     MenuEntry::herdr(
                         "Split Down",
                         C::SplitPane {
+                            machine: on(),
                             pane_id: id(),
                             direction: SplitDirection::Down,
                         },
                     ),
-                    MenuEntry::herdr("Toggle Zoom", C::ZoomPane { pane_id: id() }),
-                    MenuEntry::item("Rename Pane…", MenuCommand::Rename(target.clone())),
-                    MenuEntry::Separator,
-                    MenuEntry::herdr("Close Pane", C::ClosePane { pane_id: id() }),
-                ]
-            }
-            MenuTarget::Tab { tab_id } => {
-                let tab = snapshot.tab(tab_id);
-                let workspace_id = tab.map(|t| t.info.workspace_id.clone()).unwrap_or_default();
-                let mut entries = vec![
                     MenuEntry::herdr(
-                        "Focus Tab",
-                        C::FocusTab {
-                            tab_id: tab_id.clone(),
+                        "Toggle Zoom",
+                        C::ZoomPane {
+                            machine: on(),
+                            pane_id: id(),
                         },
                     ),
-                    MenuEntry::herdr("New Tab", C::NewTab { workspace_id }),
-                ];
+                    MenuEntry::item("Rename Pane…", MenuCommand::Rename(target.clone())),
+                    MenuEntry::Separator,
+                    MenuEntry::herdr(
+                        "Close Pane",
+                        C::ClosePane {
+                            machine: on(),
+                            pane_id: id(),
+                        },
+                    ),
+                ]
+            }
+            MenuTarget::Tab { machine, tab_id } => {
+                let on = || machine.clone();
+                let tab = snapshot.tab(tab_id);
+                let mut entries = vec![MenuEntry::herdr(
+                    "Focus Tab",
+                    C::FocusTab {
+                        machine: on(),
+                        tab_id: tab_id.clone(),
+                    },
+                )];
+                if let Some(tab) = tab {
+                    entries.push(MenuEntry::herdr(
+                        "New Tab",
+                        C::NewTab {
+                            machine: on(),
+                            workspace_id: tab.info.workspace_id.clone(),
+                        },
+                    ));
+                }
                 // A pane alone in its tab has no header to right-click, so
                 // the tab offers splitting its focused pane.
                 if let Some(pane_id) = tab.and_then(|t| t.focused_pane_id.clone()) {
@@ -462,6 +648,7 @@ impl Chrome {
                         entries.push(MenuEntry::herdr(
                             label,
                             C::SplitPane {
+                                machine: on(),
                                 pane_id: pane_id.clone(),
                                 direction,
                             },
@@ -474,44 +661,113 @@ impl Chrome {
                     MenuEntry::herdr(
                         "Close Tab",
                         C::CloseTab {
+                            machine: on(),
                             tab_id: tab_id.clone(),
                         },
                     ),
                 ]);
                 entries
             }
-            MenuTarget::Workspace { workspace_id } => {
+            MenuTarget::Workspace {
+                machine,
+                workspace_id,
+            } => {
                 let id = || workspace_id.clone();
+                let on = || machine.clone();
+                let placed = snapshot
+                    .workspace(workspace_id)
+                    .and_then(|w| worktrees::placement(machine, &w.info, cx));
                 let mut entries = vec![
-                    MenuEntry::herdr("Focus Workspace", C::FocusWorkspace { workspace_id: id() }),
-                    MenuEntry::herdr("New Tab", C::NewTab { workspace_id: id() }),
-                    MenuEntry::item("Rename Workspace…", MenuCommand::Rename(target.clone())),
-                    MenuEntry::Separator,
                     MenuEntry::herdr(
-                        "Close Workspace",
-                        C::CloseWorkspace {
+                        "Focus Workspace",
+                        C::FocusWorkspace {
+                            machine: on(),
                             workspace_id: id(),
-                            close_group: false,
                         },
                     ),
-                ];
-                if confirm::group_members(snapshot, workspace_id).len() > 1 {
-                    entries.push(MenuEntry::herdr(
-                        "Close Worktree Group",
-                        C::CloseWorkspace {
+                    MenuEntry::herdr(
+                        "New Tab",
+                        C::NewTab {
+                            machine: on(),
                             workspace_id: id(),
-                            close_group: true,
                         },
+                    ),
+                    MenuEntry::item("Rename Workspace…", MenuCommand::Rename(target.clone())),
+                ];
+                if placed.is_some() {
+                    entries.push(MenuEntry::item(
+                        "Open Worktree…",
+                        MenuCommand::Worktree(WorktreeCommand::Open {
+                            machine: on(),
+                            workspace_id: id(),
+                        }),
                     ));
+                }
+                entries.push(MenuEntry::Separator);
+                if placed.is_some_and(|p| p.linked) {
+                    entries.push(MenuEntry::item(
+                        "Remove Worktree…",
+                        MenuCommand::Worktree(WorktreeCommand::Remove {
+                            machine: on(),
+                            workspace_id: id(),
+                        }),
+                    ));
+                }
+                entries.push(MenuEntry::herdr(
+                    "Close Workspace",
+                    C::CloseWorkspace {
+                        machine: on(),
+                        workspace_id: id(),
+                    },
+                ));
+                if let Some(close_group) = self.group_close(machine, workspace_id, cx) {
+                    entries.push(MenuEntry::herdr("Close Worktree Group", close_group));
                 }
                 entries
             }
         }
     }
 
+    /// Closing the worktree group `workspace_id` heads, as the spaces list
+    /// groups it (herdr's info, else the list's own git read); `None` when
+    /// it heads none.
+    pub fn group_close(
+        &self,
+        machine: &MachineId,
+        workspace_id: &WorkspaceId,
+        cx: &App,
+    ) -> Option<HerdrCommand> {
+        let snapshot = self.snapshot_of(machine, cx);
+        let place = |info: &WorkspaceInfo| worktrees::placement(machine, info, cx);
+        let members = confirm::group_members(snapshot, workspace_id, place);
+        if members.len() < 2 {
+            return None;
+        }
+        let repo_name = snapshot
+            .workspace(workspace_id)
+            .and_then(|w| place(&w.info))
+            .map(|p| p.repo.name)?;
+        Some(HerdrCommand::CloseGroup {
+            machine: machine.clone(),
+            workspace_id: workspace_id.to_owned(),
+            repo_name,
+            members: members
+                .iter()
+                .map(|w| w.info.workspace_id.clone())
+                .collect(),
+        })
+    }
+
     /// Plugin actions declared for the target's context, invoked with it.
+    /// They are the selected machine's plugins, so another machine's
+    /// workspace gets none.
     fn plugin_entries(&self, target: &MenuTarget, cx: &App) -> Vec<MenuEntry> {
-        let snapshot = &self.state.read(cx).snapshot;
+        let state = self.state.read(cx);
+        let machine = target.machine();
+        if machine != state.selected() {
+            return Vec::new();
+        }
+        let snapshot = state.snapshot(cx);
         let (kind, context) = invocation_context(target, snapshot);
         self.plugin_actions
             .iter()
@@ -520,6 +776,7 @@ impl Chrome {
                 MenuEntry::item(
                     action.title.clone(),
                     MenuCommand::Herdr(HerdrCommand::InvokePluginAction {
+                        machine: machine.clone(),
                         action: Box::new(action.clone()),
                         context: Box::new(context.clone()),
                     }),
@@ -537,6 +794,7 @@ impl Chrome {
         match command {
             MenuCommand::Herdr(command) => self.run(command, window, cx),
             MenuCommand::Rename(target) => self.prompt_rename(target, window, cx),
+            MenuCommand::Worktree(command) => self.run_worktree_command(command, window, cx),
             MenuCommand::Action(action) => window.dispatch_action(action.boxed_clone(), cx),
             MenuCommand::Callback(callback) => callback(window, cx),
         }
@@ -545,7 +803,20 @@ impl Chrome {
     /// Sends a herdr command, asking first when it would close a running
     /// agent or a whole worktree group (herdr closes immediately).
     pub fn run(&mut self, command: HerdrCommand, window: &mut Window, cx: &mut Context<Self>) {
-        let confirmation = confirm::needed_for(&command, &self.state.read(cx).snapshot);
+        if let HerdrCommand::NewTab {
+            machine,
+            workspace_id,
+        } = &command
+        {
+            self.new_tab(machine.clone(), Some(workspace_id.clone()), window, cx);
+            return;
+        }
+        let confirm_close = crate::herdr_prefs::get(cx).confirm_close;
+        let confirmation = confirm::needed_for(
+            &command,
+            self.snapshot_of(command.machine(), cx),
+            confirm_close,
+        );
         let Some(confirmation) = confirmation else {
             self.send(command, window, cx);
             return;
@@ -560,9 +831,48 @@ impl Chrome {
         self.confirm(confirmation, send, window, cx);
     }
 
+    /// A new tab in `workspace_id` (the focused one when `None`) on
+    /// `machine`. With herdr's `ui.prompt_new_tab_name` (on by default) it
+    /// asks for the name first; an empty name lets herdr pick one.
+    pub fn new_tab(
+        &mut self,
+        machine: MachineId,
+        workspace_id: Option<WorkspaceId>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let state = self.state.clone();
+        let create = move |label: Option<String>, cx: &mut App| {
+            state
+                .read(cx)
+                .on(&machine, cx, |session, cx| {
+                    session.new_tab_named(workspace_id.as_ref(), label, cx)
+                })
+                .detach_and_log_err(cx);
+        };
+        if !crate::herdr_prefs::get(cx).prompt_new_tab_name {
+            create(None, cx);
+            return;
+        }
+        // `ask_name` reaches the chrome itself, so it opens after this update.
+        window.defer(cx, move |window, cx| {
+            crate::prompt::ask_name(
+                "New Tab",
+                "Create",
+                "",
+                move |name, _, cx| {
+                    let name = name.trim();
+                    create((!name.is_empty()).then(|| name.to_owned()), cx);
+                },
+                window,
+                cx,
+            );
+        });
+    }
+
     /// Sends without asking; a failure becomes an error toast.
     fn send(&mut self, command: HerdrCommand, _window: &mut Window, cx: &mut Context<Self>) {
-        let task = command.send(self.state.read(cx), cx);
+        let task = command.send(&self.state, cx);
         cx.spawn(async move |this, cx| {
             if let Err(error) = task.await {
                 sounds::play(cues::Cue::Error, sounds::subtle());
@@ -597,17 +907,17 @@ impl Chrome {
     }
 
     fn prompt_rename(&mut self, target: MenuTarget, _window: &mut Window, cx: &mut Context<Self>) {
-        let snapshot = &self.state.read(cx).snapshot;
+        let snapshot = self.snapshot_of(target.machine(), cx);
         let (title, current) = match &target {
-            MenuTarget::Pane { pane_id } => (
+            MenuTarget::Pane { pane_id, .. } => (
                 "Rename Pane",
                 snapshot.pane(pane_id).and_then(|p| p.label.clone()),
             ),
-            MenuTarget::Tab { tab_id } => (
+            MenuTarget::Tab { tab_id, .. } => (
                 "Rename Tab",
                 snapshot.tab(tab_id).map(|t| t.info.label.clone()),
             ),
-            MenuTarget::Workspace { workspace_id } => (
+            MenuTarget::Workspace { workspace_id, .. } => (
                 "Rename Workspace",
                 snapshot
                     .workspace(workspace_id)
@@ -695,30 +1005,103 @@ fn build_menu(
     cx: &mut App,
 ) -> Entity<PopupMenu> {
     let chrome = chrome.clone();
-    PopupMenu::build(window, cx, move |mut menu, _, _| {
-        for entry in entries {
-            menu = match entry {
-                MenuEntry::Separator => menu.separator(),
-                MenuEntry::Item {
-                    label,
-                    command,
-                    disabled,
-                } => {
+    PopupMenu::build(window, cx, move |menu, window, cx| {
+        add_entries(menu, &chrome, &entries, Submenus::Flyout, window, cx).min_w(px(200.))
+    })
+}
+
+/// Opens a menu of `entries` at `position` through the chrome of `window`
+/// (the main window), for views without a `Chrome` handle.
+pub fn open_menu(
+    entries: Vec<MenuEntry>,
+    position: Point<Pixels>,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    if entries.is_empty() {
+        return;
+    }
+    if let Some(chrome) = get(window, cx) {
+        chrome.update(cx, |chrome, cx| chrome.menu(entries, position, window, cx));
+    }
+}
+
+/// Fills a Kit popup `menu` with `entries`, run through the chrome of
+/// `window` like a context menu's. For menus Kit builds and draws itself in
+/// the main window (a dock panel's title-bar menu), so they share the
+/// floating menus' entries. A submenu shows inline as a labeled section: a
+/// flyout from a main-window menu would open under the terminals.
+pub fn fill_popup(
+    menu: PopupMenu,
+    entries: &[MenuEntry],
+    window: &mut Window,
+    cx: &mut App,
+) -> PopupMenu {
+    let Some(chrome) = get(window, cx) else {
+        return menu;
+    };
+    add_entries(
+        menu,
+        &chrome.downgrade(),
+        entries,
+        Submenus::Inline,
+        window,
+        cx,
+    )
+}
+
+/// How [`add_entries`] lays out a [`MenuEntry::Submenu`].
+#[derive(Clone, Copy)]
+enum Submenus {
+    Flyout,
+    Inline,
+}
+
+fn add_entries(
+    mut menu: PopupMenu,
+    chrome: &WeakEntity<Chrome>,
+    entries: &[MenuEntry],
+    submenus: Submenus,
+    window: &mut Window,
+    cx: &mut App,
+) -> PopupMenu {
+    for entry in entries {
+        menu = match entry {
+            MenuEntry::Separator => menu.separator(),
+            MenuEntry::Submenu { label, entries } => match submenus {
+                Submenus::Flyout => {
                     let chrome = chrome.clone();
-                    menu.item(PopupMenuItem::new(label).disabled(disabled).on_click(
-                        move |_, _, cx| {
+                    let submenu = PopupMenu::build(window, cx, move |menu, window, cx| {
+                        add_entries(menu, &chrome, entries, submenus, window, cx).min_w(px(160.))
+                    });
+                    menu.item(PopupMenuItem::submenu(label.clone(), submenu))
+                }
+                Submenus::Inline => {
+                    let menu = menu.separator().label(label.clone());
+                    add_entries(menu, chrome, entries, submenus, window, cx).separator()
+                }
+            },
+            MenuEntry::Item {
+                label,
+                command,
+                disabled,
+            } => {
+                let (chrome, command) = (chrome.clone(), command.clone());
+                menu.item(
+                    PopupMenuItem::new(label.clone())
+                        .disabled(*disabled)
+                        .on_click(move |_, _, cx| {
                             let command = command.clone();
                             update_later(&chrome, cx, move |chrome, window, cx| {
                                 chrome.close_context_menu(window, cx);
                                 chrome.run_menu_command(command, window, cx);
                             });
-                        },
-                    ))
-                }
-            };
-        }
-        menu.min_w(px(200.))
-    })
+                        }),
+                )
+            }
+        };
+    }
+    menu
 }
 
 /// Runs `f` on the chrome, with the main window, after the current update.
@@ -743,17 +1126,29 @@ fn update_later(
     });
 }
 
+/// An agent toast's id: one per pane per machine (pane ids repeat across
+/// machines).
+fn toast_key(machine: &MachineId, pane_id: &PaneId) -> SharedString {
+    format!("{machine}/{pane_id}").into()
+}
+
 fn rename_command(target: &MenuTarget, label: String) -> HerdrCommand {
     match target {
-        MenuTarget::Pane { pane_id } => HerdrCommand::RenamePane {
+        MenuTarget::Pane { machine, pane_id } => HerdrCommand::RenamePane {
+            machine: machine.clone(),
             pane_id: pane_id.clone(),
             label,
         },
-        MenuTarget::Tab { tab_id } => HerdrCommand::RenameTab {
+        MenuTarget::Tab { machine, tab_id } => HerdrCommand::RenameTab {
+            machine: machine.clone(),
             tab_id: tab_id.clone(),
             label,
         },
-        MenuTarget::Workspace { workspace_id } => HerdrCommand::RenameWorkspace {
+        MenuTarget::Workspace {
+            machine,
+            workspace_id,
+        } => HerdrCommand::RenameWorkspace {
+            machine: machine.clone(),
             workspace_id: workspace_id.clone(),
             label,
         },
@@ -762,7 +1157,7 @@ fn rename_command(target: &MenuTarget, label: String) -> HerdrCommand {
 
 /// The context `plugin.action.invoke` gets for a pane: its cwd, agent,
 /// status, tab and workspace.
-fn pane_context(snapshot: &Snapshot, pane_id: &str, source: &str) -> PluginInvocationContext {
+fn pane_context(snapshot: &Snapshot, pane_id: &PaneId, source: &str) -> PluginInvocationContext {
     let pane = snapshot.pane(pane_id);
     let workspace = pane.and_then(|p| snapshot.workspace(&p.workspace_id));
     PluginInvocationContext {
@@ -788,11 +1183,11 @@ fn invocation_context(
 ) -> (PluginActionContext, PluginInvocationContext) {
     const SOURCE: &str = "context_menu";
     match target {
-        MenuTarget::Pane { pane_id } => (
+        MenuTarget::Pane { pane_id, .. } => (
             PluginActionContext::Pane,
             pane_context(snapshot, pane_id, SOURCE),
         ),
-        MenuTarget::Tab { tab_id } => {
+        MenuTarget::Tab { tab_id, .. } => {
             let tab = snapshot.tab(tab_id);
             (
                 PluginActionContext::Tab,
@@ -805,7 +1200,7 @@ fn invocation_context(
                 },
             )
         }
-        MenuTarget::Workspace { workspace_id } => (
+        MenuTarget::Workspace { workspace_id, .. } => (
             PluginActionContext::Workspace,
             PluginInvocationContext {
                 invocation_source: Some(SOURCE.to_owned()),

@@ -14,7 +14,6 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use serde::Serialize;
-use serde::de::DeserializeOwned;
 use serde_json::Value;
 
 use crate::error::{Error, Result};
@@ -43,6 +42,9 @@ pub struct Endpoint {
     pub socket_path: PathBuf,
     /// Start `herdr [--session S] server` when nothing answers on the socket.
     pub auto_start: bool,
+    /// Where a server started here writes its output (appended). Without
+    /// one, the output is dropped and a server that fails to start says nothing.
+    pub server_log: Option<PathBuf>,
 }
 
 impl Endpoint {
@@ -73,6 +75,7 @@ impl Endpoint {
             session,
             socket_path,
             auto_start: true,
+            server_log: None,
         };
         endpoint.check_allowed()?;
         Ok(endpoint)
@@ -100,8 +103,19 @@ impl Endpoint {
         }
     }
 
-    /// Sends one request and returns its `result` object.
-    pub fn request_value<P: Serialize>(&self, method: &str, params: &P) -> Result<Value> {
+    /// Sends one request and returns its `result` object. Callers go
+    /// through `Client::send`, which types both sides.
+    pub(crate) fn request_value<P: Serialize>(&self, method: &str, params: &P) -> Result<Value> {
+        self.request_open(method, params).map(|(_, value)| value)
+    }
+
+    /// Sends one request and returns its `result` with the connection still
+    /// open, for methods whose effect lasts as long as the connection.
+    pub(crate) fn request_open<P: Serialize>(
+        &self,
+        method: &str,
+        params: &P,
+    ) -> Result<(UnixStream, Value)> {
         let stream = self.connect()?;
         stream.set_read_timeout(Some(REQUEST_TIMEOUT))?;
         stream.set_write_timeout(Some(REQUEST_TIMEOUT))?;
@@ -112,20 +126,8 @@ impl Endpoint {
         if line.is_empty() {
             return Err(Error::Closed);
         }
-        parse_response(&line, &id)
-    }
-
-    /// Sends one request and deserializes its `result` into `R`.
-    pub fn request<P: Serialize, R: DeserializeOwned>(
-        &self,
-        method: &str,
-        params: &P,
-    ) -> Result<R> {
-        let value = self.request_value(method, params)?;
-        serde_json::from_value(value).map_err(|source| Error::Decode {
-            method: method.to_owned(),
-            source,
-        })
+        let value = parse_response(&line, &id)?;
+        Ok((stream, value))
     }
 
     /// Starts the server in its own process group so it outlives this app, then waits
@@ -141,11 +143,12 @@ impl Endpoint {
         if let Some(session) = &self.session {
             cmd.arg("--session").arg(session);
         }
+        let (stdout, stderr) = self.server_output();
         cmd.arg("server")
             .env("HERDR_SOCKET_PATH", &self.socket_path)
             .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
+            .stdout(stdout)
+            .stderr(stderr)
             .process_group(0);
         let mut child = cmd
             .spawn()
@@ -173,6 +176,26 @@ impl Endpoint {
             "no answer on {} after {SERVER_START_TIMEOUT:?}",
             self.socket_path.display()
         )))
+    }
+}
+
+impl Endpoint {
+    /// stdout and stderr for a server started here: [`server_log`](Self::server_log),
+    /// or nowhere. A file, not a pipe, since the server outlives the app.
+    fn server_output(&self) -> (Stdio, Stdio) {
+        let log = self.server_log.as_ref().and_then(|path| {
+            let file = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(path)
+                .inspect_err(|err| log::warn!("herdr server log {}: {err}", path.display()))
+                .ok()?;
+            Some((file.try_clone().ok()?, file))
+        });
+        match log {
+            Some((out, err)) => (out.into(), err.into()),
+            None => (Stdio::null(), Stdio::null()),
+        }
     }
 }
 
@@ -206,7 +229,7 @@ pub fn check_dev_socket(socket: &Path, home: Option<&Path>, allow: bool) -> Resu
     Ok(())
 }
 
-fn default_socket_path(config_home: &std::path::Path, session: Option<&str>) -> PathBuf {
+pub(crate) fn default_socket_path(config_home: &std::path::Path, session: Option<&str>) -> PathBuf {
     let base = config_home.join("herdr");
     match session {
         Some(name) => base.join("sessions").join(name).join("herdr.sock"),
@@ -345,6 +368,7 @@ mod tests {
             session: None,
             socket_path: "/nonexistent/live/herdr.sock".into(),
             auto_start: true,
+            server_log: None,
         };
         // Refused before spawning: a spawn attempt would be a ServerStart error.
         // Skipped if the override happens to be set in this environment.

@@ -8,7 +8,9 @@
 - **Choice.** Appearance (Match System / Light / Dark) plus one light and one
   dark theme, like macOS and Zed. Picking a theme of the other mode while the
   appearance is fixed switches the appearance, so a pick is always visible.
-  The View menu's Toggle Light/Dark sets a fixed appearance.
+  The View menu's Toggle Light/Dark sets a fixed appearance. A fresh
+  install starts Dark in Catppuccin Macchiato, with Aurora Light as the
+  light theme (falling back to the Kit's defaults if either is missing).
 - **Saved** to `~/.config/grasslands/settings.json` (next to `ghostty.conf`;
   not `XDG_CONFIG_HOME`, which the dev scripts redirect). Unknown keys are
   kept. Nothing is written while `RT_SCRIPT` is set, since script runs
