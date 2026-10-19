@@ -106,6 +106,16 @@ impl Endpoint {
 
     /// Sends one request and returns its `result` object.
     pub fn request_value<P: Serialize>(&self, method: &str, params: &P) -> Result<Value> {
+        self.request_open(method, params).map(|(_, value)| value)
+    }
+
+    /// Sends one request and returns its `result` with the connection still
+    /// open, for methods whose effect lasts as long as the connection.
+    pub(crate) fn request_open<P: Serialize>(
+        &self,
+        method: &str,
+        params: &P,
+    ) -> Result<(UnixStream, Value)> {
         let stream = self.connect()?;
         stream.set_read_timeout(Some(REQUEST_TIMEOUT))?;
         stream.set_write_timeout(Some(REQUEST_TIMEOUT))?;
@@ -116,7 +126,8 @@ impl Endpoint {
         if line.is_empty() {
             return Err(Error::Closed);
         }
-        parse_response(&line, &id)
+        let value = parse_response(&line, &id)?;
+        Ok((stream, value))
     }
 
     /// Sends one request and deserializes its `result` into `R`.
