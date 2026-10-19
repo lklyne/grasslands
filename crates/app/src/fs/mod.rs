@@ -52,6 +52,47 @@ pub enum Removal {
     Deleted,
 }
 
+/// What a machine's file system can do, so views ask about the ability
+/// rather than which machine it is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Caps {
+    /// A notify watcher reports its changes (with canonical paths, so paths
+    /// are canonicalized to match); otherwise views poll.
+    pub watch: bool,
+    /// `remove` moves to a Trash, so it needn't ask first.
+    pub trash: bool,
+    /// A file keeps its identity (device and inode) across a rename, so a
+    /// vanished file can be found where it moved.
+    pub stable_ids: bool,
+    /// Calls are quick enough to make on the UI thread.
+    pub cheap: bool,
+}
+
+impl Caps {
+    /// This Mac's disk.
+    pub const LOCAL: Self = Self {
+        watch: true,
+        trash: true,
+        stable_ids: true,
+        cheap: true,
+    };
+    /// A saved machine's, over SSH: every call is a round trip.
+    pub const REMOTE: Self = Self {
+        watch: false,
+        trash: false,
+        stable_ids: false,
+        cheap: false,
+    };
+
+    /// The caps of `machine`'s files, also while it's offline.
+    pub fn of(machine: &MachineId) -> Self {
+        match machine {
+            MachineId::Local => Self::LOCAL,
+            MachineId::Remote(_) => Self::REMOTE,
+        }
+    }
+}
+
 /// A file system: cheap to clone, `Send + Sync`.
 #[derive(Clone)]
 pub enum Fs {
@@ -76,6 +117,10 @@ impl Fs {
             #[cfg(test)]
             Self::Fake(_) => MachineId::Remote("fake".into()),
         }
+    }
+
+    pub fn caps(&self) -> Caps {
+        Caps::of(&self.machine())
     }
 
     pub fn is_local(&self) -> bool {
@@ -258,4 +303,25 @@ fn sort_entries(entries: &mut [Entry]) {
             .cmp(&a.is_dir)
             .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn local_files_should_be_watched_trashed_and_read_inline() {
+        assert_eq!(Fs::Local.caps(), Caps::LOCAL);
+    }
+
+    #[test]
+    fn saved_machine_should_have_none_of_local_abilities() {
+        assert_eq!(Caps::of(&MachineId::Remote("m".into())), Caps::REMOTE);
+    }
+
+    #[test]
+    fn fake_files_should_act_like_a_saved_machine() {
+        let fake = Fs::Fake(Arc::new(fake::FakeFs::default()));
+        assert_eq!(fake.caps(), Caps::REMOTE);
+    }
 }

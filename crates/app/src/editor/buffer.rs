@@ -9,6 +9,7 @@ use gpui_kit::*;
 
 use super::language;
 use super::poll::Stamp;
+use crate::fs::Caps;
 use crate::state::MachineId;
 
 /// A question shown above the editor until the user answers it.
@@ -49,7 +50,7 @@ pub struct Buffer {
     saving: Option<String>,
     pub prompt: Option<Prompt>,
     /// Device and inode of the file, to recognise it after a move on disk.
-    /// Local only.
+    /// Only where ids are stable (`Caps::stable_ids`).
     file_id: Option<FileId>,
     /// The modification time and size last seen on a remote machine, for
     /// polling.
@@ -78,7 +79,10 @@ impl Buffer {
     ) -> Self {
         state.update(cx, |state, cx| state.set_value(text.clone(), window, cx));
         Self {
-            file_id: machine.is_local().then(|| file_id(&path)).flatten(),
+            file_id: Caps::of(&machine)
+                .stable_ids
+                .then(|| file_id(&path))
+                .flatten(),
             machine,
             path,
             state,
@@ -90,6 +94,11 @@ impl Buffer {
             generation: 0,
             _changes: changes,
         }
+    }
+
+    /// What the file's machine can do.
+    pub fn caps(&self) -> Caps {
+        Caps::of(&self.machine)
     }
 
     pub fn is(&self, machine: &MachineId, path: &Path) -> bool {
@@ -169,7 +178,7 @@ impl Buffer {
     /// Re-reads the file's identity; kept when the file is gone, so a later
     /// `find_moved` can still recognise it.
     pub fn refresh_file_id(&mut self) {
-        if !self.machine.is_local() {
+        if !self.caps().stable_ids {
             return;
         }
         if let Some(id) = file_id(&self.path) {
