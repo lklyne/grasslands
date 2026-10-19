@@ -70,7 +70,7 @@ pub(super) fn filter_listings(
                 .into_iter()
                 .filter(|e| !ignored.contains(&e.name))
                 .map(|e| Entry {
-                    path: dir.join(&e.name),
+                    path: dir.join(&e.file_name),
                     name: e.name,
                     is_dir: e.is_dir,
                 })
