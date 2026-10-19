@@ -10,9 +10,9 @@ use gpui_kit::*;
 
 use super::{Chrome, HerdrCommand, MenuCommand, MenuTarget, pane_context, update_later};
 use crate::actions::{FocusPane, OpenChanges, OpenSettings, Quit, ToggleTheme};
-use crate::attention::{agent_name, status_label};
 use crate::herdr::{PluginActionInfo, PluginInvocationContext, SplitDirection};
 use crate::state::AppState;
+use crate::{label, status};
 
 struct Group {
     label: &'static str,
@@ -184,8 +184,8 @@ fn groups(state: &AppState, plugin_actions: &[PluginActionInfo]) -> Vec<Group> {
             (
                 format!(
                     "Go to {} — {workspace} ({})",
-                    agent_name(agent),
-                    status_label(agent.agent_status)
+                    label::agent(snapshot, agent),
+                    status::text(agent.agent_status, &agent.state_labels)
                 )
                 .into(),
                 MenuCommand::Action(Rc::new(FocusPane {

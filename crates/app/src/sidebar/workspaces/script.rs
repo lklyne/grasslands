@@ -40,9 +40,9 @@ use gpui_kit::*;
 use super::git::Repo;
 use super::groups::{Kind, Slot};
 use super::{AgentList, WorkspaceList, agents, close_workspace, rename_workspace};
-use crate::attention::{agent_name, status_label};
 use crate::overlay;
 use crate::state::MachineId;
+use crate::{label, status};
 
 pub(super) fn start(
     spaces: WeakEntity<WorkspaceList>,
@@ -227,7 +227,7 @@ fn log(this: &WorkspaceList, label: &str, sort: Option<super::AgentSort>, cx: &A
             info.label,
             info.workspace_id,
             entry.repo.as_ref().map_or("-", |r| r.name.as_str()),
-            status_label(info.agent_status),
+            status::word(info.agent_status),
         );
         if entry.kind != Kind::Child
             && let Some(branch) = checkout.and_then(|c| c.branch.as_deref())
@@ -242,8 +242,8 @@ fn log(this: &WorkspaceList, label: &str, sort: Option<super::AgentSort>, cx: &A
         eprintln!(
             "[sidebar-script]   agent {} {} {} in {}",
             a.pane_id,
-            agent_name(a),
-            status_label(a.agent_status),
+            label::agent(&snapshot, a),
+            status::word(a.agent_status),
             a.workspace_id,
         );
     }

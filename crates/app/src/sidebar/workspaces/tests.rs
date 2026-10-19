@@ -1,14 +1,16 @@
 //! The workspace list over an injected snapshot. The herdr endpoint is
 //! offline, so clicks that would send herdr commands only show up as local
-//! effects (expansion, seen results); the live checks run against the dev
+//! effects (expansion, the actions they dispatch); the live checks run against the dev
 //! session (docs/decisions/0009-workspace-list.md).
 
+use std::cell::RefCell;
+use std::rc::Rc;
 use std::sync::Arc;
 
 use gpui_kit::component::dock::{DockArea, DockLayout, DockSkin, panel_handle};
 use gpui_kit::{
-    AppContext as _, Context, Entity, IntoElement, Modifiers, ParentElement as _, Render,
-    Styled as _, TestAppContext, VisualTestContext, Window, div,
+    AppContext as _, Context, Entity, InteractiveElement as _, IntoElement, Modifiers,
+    ParentElement as _, Render, Styled as _, TestAppContext, VisualTestContext, Window, div,
 };
 use serde_json::json;
 
@@ -17,7 +19,8 @@ use std::collections::HashSet;
 use super::agents::ordered;
 use super::git::Placement;
 use super::groups::{Kind, Slot, entries, reordered};
-use super::{AgentList, AgentSort, WorkspaceList, rolled_up};
+use super::{AgentList, AgentSort, WorkspaceList};
+use crate::actions::FocusPane;
 use crate::herdr::{Agent, AgentStatus, Snapshot, WorkspaceInfo};
 use crate::state::{AppState, offline_config};
 
@@ -194,16 +197,6 @@ fn group_should_match_repo_key_with_trailing_slash() {
     assert_eq!(rows(&infos, &[]), [">w1", "  w2"]);
 }
 
-#[test]
-fn rolled_up_status_should_follow_herdr_priority() {
-    let statuses = [AgentStatus::Working, AgentStatus::Done, AgentStatus::Idle];
-    assert_eq!(rolled_up(statuses), AgentStatus::Done);
-    assert_eq!(
-        rolled_up([AgentStatus::Done, AgentStatus::Blocked]),
-        AgentStatus::Blocked
-    );
-}
-
 fn agents_snapshot() -> Snapshot {
     let workspaces = [info("w1", 1, json!(null)), info("w2", 2, json!(null))]
         .into_iter()
@@ -269,11 +262,19 @@ fn snapshot() -> Arc<Snapshot> {
 /// Both panels in a dock, as the sidebar holds them.
 struct Fixture {
     dock: Entity<DockArea>,
+    /// Panes a `FocusPane` asked for, as the workspace would take them.
+    focused: Rc<RefCell<Vec<String>>>,
 }
 
 impl Render for Fixture {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-        div().size_full().child(self.dock.clone())
+        let focused = self.focused.clone();
+        div()
+            .size_full()
+            .on_action(move |action: &FocusPane, _, _| {
+                focused.borrow_mut().push(action.pane_id.clone());
+            })
+            .child(self.dock.clone())
     }
 }
 
@@ -281,6 +282,7 @@ struct Panels {
     spaces: Entity<WorkspaceList>,
     agents: Entity<AgentList>,
     state: Entity<AppState>,
+    focused: Rc<RefCell<Vec<String>>>,
 }
 
 fn fixture(cx: &mut TestAppContext) -> (Panels, &mut VisualTestContext) {
@@ -288,6 +290,7 @@ fn fixture(cx: &mut TestAppContext) -> (Panels, &mut VisualTestContext) {
     let state = cx.new(|cx| AppState::new(Ok(offline_config()), cx));
     let spaces = cx.new(|cx| WorkspaceList::new(state.clone(), cx));
     let agents = cx.new(|cx| AgentList::new(state.clone(), cx));
+    let focused = Rc::new(RefCell::new(Vec::new()));
     let (_, cx) = cx.add_window_view(|window, cx| {
         let (dock, _) = DockSkin::dock_area("test", None, window, cx);
         let layout = DockLayout::v_split()
@@ -300,7 +303,10 @@ fn fixture(cx: &mut TestAppContext) -> (Panels, &mut VisualTestContext) {
                 None,
             );
         dock.update(cx, |dock, cx| dock.set_center(layout, window, cx));
-        Fixture { dock }
+        Fixture {
+            dock,
+            focused: focused.clone(),
+        }
     });
     state.update(cx, |state, cx| state.replace_snapshot(snapshot(), cx));
     cx.run_until_parked();
@@ -309,6 +315,7 @@ fn fixture(cx: &mut TestAppContext) -> (Panels, &mut VisualTestContext) {
             spaces,
             agents,
             state,
+            focused,
         },
         cx,
     )
@@ -334,16 +341,15 @@ fn sort_toggle_should_switch_to_priority(cx: &mut TestAppContext) {
     assert_eq!(sort, AgentSort::Priority);
 }
 
+/// herdr turns `done` into `idle` when the pane is focused, so the click
+/// only has to focus it.
 #[gpui::test]
-fn clicking_a_finished_agent_marks_it_seen(cx: &mut TestAppContext) {
-    let (Panels { state, .. }, cx) = fixture(cx);
+fn clicking_an_agent_focuses_its_pane(cx: &mut TestAppContext) {
+    let (Panels { focused, .. }, cx) = fixture(cx);
     let row = cx.debug_bounds("agent-w2:p1").unwrap().center();
     cx.simulate_click(row, Modifiers::none());
     cx.run_until_parked();
-    let unseen = state.read_with(cx, |s, _| {
-        s.attention().is_unseen_done(s.snapshot(), "w2:p1")
-    });
-    assert!(!unseen);
+    assert_eq!(*focused.borrow(), ["w2:p1"]);
 }
 
 #[gpui::test]

@@ -18,6 +18,7 @@ use std::rc::Rc;
 use std::slice;
 use std::time::{Duration, Instant};
 
+use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::{ActiveTheme as _, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
@@ -25,13 +26,14 @@ use gpui_kit::*;
 use crate::actions::OpenContextMenu;
 use crate::chrome::{Confirmation, MenuTarget};
 use crate::herdr::{
-    AgentStatus, MachineStatus, PaneDirection, PaneInfo, PaneMoveDestination, RightClickTarget,
-    Snapshot, SplitDirection, SplitTree, Tab,
+    AgentStatus, MachineStatus, PaneDirection, PaneMoveDestination, RightClickTarget, Snapshot,
+    SplitDirection, SplitTree, Tab,
 };
 use crate::overlay;
 use crate::setup::Stage;
 use crate::sidebar::files::DraggedPath;
 use crate::state::{AppEvent, AppState, MachineId, MachineTask, RunStage};
+use crate::{label, status};
 
 use self::terminals::{AttachCommands, Launch, SetupTerminal, Terminals};
 
@@ -760,10 +762,10 @@ impl TerminalArea {
     /// Ask herdr to focus `pane_id`, and move keyboard focus to its terminal
     /// now; herdr's `pane.focused` then moves the focus ring.
     pub fn focus_pane(&mut self, pane_id: &str, window: &mut Window, cx: &mut Context<Self>) {
-        self.state.update(cx, |state, cx| {
-            state.mark_seen(pane_id, cx);
-            state.focus_pane(pane_id, cx).detach_and_log_err(cx);
-        });
+        self.state
+            .read(cx)
+            .focus_pane(pane_id, cx)
+            .detach_and_log_err(cx);
         self.focus_terminal(pane_id, window, cx);
     }
 
@@ -799,7 +801,7 @@ impl TerminalArea {
             return;
         };
         let state = self.state.clone();
-        if !is_busy(pane.agent_status) {
+        if !status::is_busy(pane.agent_status) {
             state
                 .read(cx)
                 .close_pane(&pane_id, cx)
@@ -809,7 +811,7 @@ impl TerminalArea {
         // herdr closes at once, so a running agent gets a confirmation:
         // chrome's dialog (drawn in the overlay, above the terminals), or a
         // native alert when there is no chrome (the terminal area alone).
-        let name = pane_label(pane);
+        let name = label::pane(&snapshot, pane).into_owned();
         if let Some(chrome) = crate::chrome::get(window, cx) {
             let confirmation = Confirmation {
                 title: format!("Close {name}?"),
@@ -850,7 +852,7 @@ impl TerminalArea {
         let busy = snapshot
             .panes
             .values()
-            .filter(|pane| pane.tab_id == tab_id && is_busy(pane.agent_status))
+            .filter(|pane| pane.tab_id == tab_id && status::is_busy(pane.agent_status))
             .count();
         let state = self.state.clone();
         if busy == 0 {
@@ -1168,7 +1170,7 @@ impl TerminalArea {
                     // An idle tab shows no dot; its muted label says enough.
                     .when(
                         !matches!(tab.agent_status, AgentStatus::Idle | AgentStatus::Unknown),
-                        |el| el.child(status_dot(tab.agent_status, cx)),
+                        |el| el.child(status::indicator(tab.agent_status, cx)),
                     )
                     .child(label)
                     .child(
@@ -1441,7 +1443,7 @@ impl TerminalArea {
             return div().into_any_element();
         };
         let focused = snapshot.focused_pane_id.as_deref() == Some(pane_id);
-        let label: SharedString = pane_label(pane).into();
+        let label: SharedString = label::pane_header(pane).into_owned().into();
         let terminal_id = pane.terminal_id.clone();
         let attached = self.terminals.is_attached(&terminal_id, cx);
         if attached {
@@ -1535,8 +1537,22 @@ impl TerminalArea {
             .text_sm()
             .bg(if focused { header_active } else { header_bg })
             .text_color(if focused { theme.foreground } else { muted })
-            .child(status_dot(pane.agent_status, cx))
+            .child(status::indicator(pane.agent_status, cx))
             .child(div().flex_1().min_w_0().overflow_hidden().child(label))
+            // herdr couldn't resume the pane's agent after a restart.
+            .children(pane.restore_error.as_ref().map(|error| {
+                div()
+                    .id(SharedString::from(format!("restore-error-{pane_id}")))
+                    .min_w_0()
+                    .truncate()
+                    .text_xs()
+                    .text_color(theme.danger)
+                    .child("Not restored")
+                    .tooltip({
+                        let error = SharedString::from(error.clone());
+                        move |window, cx| Tooltip::new(error.clone()).build(window, cx)
+                    })
+            }))
             .child(
                 div()
                     .id(SharedString::from(format!("pane-close-{pane_id}")))
@@ -1778,37 +1794,6 @@ struct Frame {
     snapshot: std::sync::Arc<Snapshot>,
     /// Terminal ids laid out this render.
     visible: HashSet<String>,
-}
-
-fn is_busy(status: AgentStatus) -> bool {
-    matches!(status, AgentStatus::Working | AgentStatus::Blocked)
-}
-
-fn pane_label(pane: &PaneInfo) -> String {
-    pane.label
-        .clone()
-        .or_else(|| pane.display_agent.clone())
-        .or_else(|| pane.agent.clone())
-        .or_else(|| pane.terminal_title_stripped.clone())
-        .or_else(|| pane.title.clone())
-        .filter(|label| !label.is_empty())
-        // herdr's pane id means nothing to a person; the folder does.
-        .or_else(|| {
-            let dir = std::path::Path::new(pane.working_dir()?);
-            Some(dir.file_name()?.to_string_lossy().into_owned())
-        })
-        .unwrap_or_else(|| "Terminal".to_owned())
-}
-
-fn status_dot(status: AgentStatus, cx: &App) -> impl IntoElement {
-    let theme = cx.theme();
-    let color = match status {
-        AgentStatus::Working => theme.info,
-        AgentStatus::Blocked => theme.warning,
-        AgentStatus::Done => theme.success,
-        AgentStatus::Idle | AgentStatus::Unknown => theme.muted_foreground.opacity(0.4),
-    };
-    div().size(px(7.)).flex_none().rounded_full().bg(color)
 }
 
 impl Render for TerminalArea {

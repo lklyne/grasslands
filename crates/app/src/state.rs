@@ -19,7 +19,7 @@ use std::time::Duration;
 
 use gpui_kit::*;
 
-use crate::attention::{Attention, StatusChange};
+use crate::attention::{self, Attention, StatusChange};
 use crate::fs::Fs;
 use crate::herdr::{
     self, Agent, Check, Client, ConnectionStatus, Fix, MIN_VERSION, MachineLink, MachineProfile,
@@ -113,7 +113,7 @@ pub struct Machine {
     worktree: Option<PathBuf>,
     /// The focused pane's folder `worktree` was last resolved from.
     focused_dir: Option<PathBuf>,
-    /// Status changes and unseen results, for toasts and badges.
+    /// Status changes, for toasts and sounds.
     attention: Attention,
     /// Was connected, and hasn't been since: the next connection is a
     /// reconnect.
@@ -169,10 +169,6 @@ impl Machine {
 
     pub fn focused_pane(&self) -> Option<&str> {
         self.focused_pane.as_deref()
-    }
-
-    pub fn attention(&self) -> &Attention {
-        &self.attention
     }
 
     /// The machine's files over its link; `None` for Local and while the
@@ -332,11 +328,6 @@ impl AppState {
         self.selected_machine().focused_pane()
     }
 
-    /// The selected machine's agent attention.
-    pub fn attention(&self) -> &Attention {
-        &self.selected_machine().attention
-    }
-
     /// Local and each connected machine: the ones whose agents are listed
     /// (an offline machine's last cache is stale).
     pub fn live_machines(&self) -> impl Iterator<Item = &Machine> {
@@ -345,11 +336,11 @@ impl AppState {
             .filter(|m| m.id.is_local() || m.status == MachineStatus::Connected)
     }
 
-    /// Blocked agents plus unseen finished ones on the live machines: the
-    /// dock badge count, matching the agent list.
+    /// Blocked agents plus unseen finished ones (herdr's `done`) on the live
+    /// machines: the dock badge count, matching the agent list.
     pub fn attention_count(&self) -> usize {
         self.live_machines()
-            .map(|m| m.attention.count(&m.snapshot))
+            .map(|m| attention::count(&m.snapshot))
             .sum()
     }
 
@@ -1309,22 +1300,6 @@ impl AppState {
             call(&client)
                 .inspect_err(|error| tracing::warn!("herdr call from {caller} failed: {error}"))
         })
-    }
-
-    /// The user looked at `pane_id` on the selected machine (focused it,
-    /// clicked its agent).
-    pub fn mark_seen(&mut self, pane_id: &str, cx: &mut Context<Self>) {
-        let selected = self.selected.clone();
-        self.mark_seen_on(&selected, pane_id, cx);
-    }
-
-    pub fn mark_seen_on(&mut self, machine: &MachineId, pane_id: &str, cx: &mut Context<Self>) {
-        let Some(machine) = self.machine_mut(machine) else {
-            return;
-        };
-        if machine.attention.mark_seen(&machine.snapshot, pane_id) {
-            cx.notify();
-        }
     }
 
     // Panes

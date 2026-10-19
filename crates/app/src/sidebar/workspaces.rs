@@ -42,9 +42,10 @@ use gpui_kit::*;
 
 use crate::actions::OpenContextMenu;
 use crate::chrome::{self, Callback, Chrome, HerdrCommand, MenuCommand, MenuEntry, MenuTarget};
-use crate::herdr::{Agent, AgentStatus, Snapshot, WorkspaceInfo, WorktreeParams};
+use crate::herdr::{Snapshot, WorkspaceInfo, WorktreeParams};
 use crate::machines::{self, MachineActions, MachineState, machine_header, ssh_config};
 use crate::state::{AppEvent, AppState, Machine, MachineId, MachineTask};
+use crate::status;
 use git::{Checkout, HeadWatcher, Placement, RemoteCheckouts, Repo};
 use groups::{Entry, Kind, Slot};
 
@@ -121,79 +122,6 @@ impl Render for DraggedWorkspace {
             .border_color(cx.theme().border)
             .text_sm()
             .child(self.label.clone())
-    }
-}
-
-/// herdr's `status_priority`: what needs you most ranks highest.
-fn priority(status: AgentStatus) -> u8 {
-    match status {
-        AgentStatus::Blocked => 4,
-        AgentStatus::Done => 3,
-        AgentStatus::Working => 2,
-        AgentStatus::Idle => 1,
-        AgentStatus::Unknown => 0,
-    }
-}
-
-/// The status that needs you most among `statuses`.
-fn rolled_up(statuses: impl IntoIterator<Item = AgentStatus>) -> AgentStatus {
-    statuses
-        .into_iter()
-        .max_by_key(|&s| priority(s))
-        .unwrap_or(AgentStatus::Unknown)
-}
-
-/// herdr's dots, with icons for the states that want the user: a question
-/// for blocked (herdr's "waiting for input"), a solid badge with a check for
-/// done. Every status gets the same slot so labels line up.
-fn status_icon(status: AgentStatus, cx: &App) -> Div {
-    let color = status_color(status, cx);
-    let slot = div()
-        .flex_shrink_0()
-        .size(px(12.))
-        .flex()
-        .items_center()
-        .justify_center();
-    let dot = || div().size(px(7.)).rounded_full();
-    match status {
-        AgentStatus::Blocked => slot.child(
-            Icon::new(assets::IconName::CircleQuestionMark)
-                .xsmall()
-                .text_color(color),
-        ),
-        AgentStatus::Done => slot.child(
-            div()
-                .size(px(10.))
-                .rounded_full()
-                .bg(color)
-                .flex()
-                .items_center()
-                .justify_center()
-                .child(
-                    Icon::default()
-                        .data(BOLD_CHECK)
-                        .with_size(px(7.))
-                        .text_color(cx.theme().background),
-                ),
-        ),
-        AgentStatus::Working => slot.child(dot().bg(color)),
-        AgentStatus::Idle => slot.child(dot().border_1().border_color(color)),
-        AgentStatus::Unknown => slot.child(div().size(px(3.)).rounded_full().bg(color)),
-    }
-}
-
-/// Lucide's check at a heavier stroke, legible at badge size.
-const BOLD_CHECK: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>"#;
-
-/// herdr's `status_color`, mapped onto the theme's status colors.
-fn status_color(status: AgentStatus, cx: &App) -> Hsla {
-    let theme = cx.theme();
-    match status {
-        AgentStatus::Blocked => theme.danger,
-        AgentStatus::Working => theme.warning,
-        AgentStatus::Done => theme.info,
-        AgentStatus::Idle => theme.success,
-        AgentStatus::Unknown => theme.muted_foreground,
     }
 }
 
@@ -803,21 +731,13 @@ impl WorkspaceList {
         // the one on screen.
         let focused = state.selected() == &machine_id
             && snapshot.focused_workspace_id.as_deref() == Some(id.as_str());
+        // herdr rolls a workspace's agents up itself; a folded group has no
+        // herdr counterpart, so its members roll up here.
         let members = self.members(&machine_id, snapshot, entry);
-        let agents: Vec<&Agent> = snapshot
-            .agents
-            .iter()
-            .filter(|a| members.iter().any(|m| m.workspace_id == a.workspace_id))
-            .collect();
-        let unseen = agents
-            .iter()
-            .any(|a| machine.attention().is_unseen_done(snapshot, &a.pane_id));
-        let mut status = rolled_up(members.iter().map(|m| m.agent_status));
-        // herdr's `done` means unseen; this app also counts looks herdr
-        // can't see, and a seen result is idle again.
-        if status == AgentStatus::Done && !unseen {
-            status = AgentStatus::Idle;
-        }
+        let status = match members.as_slice() {
+            [_] => info.agent_status,
+            many => status::rolled_up(many.iter().map(|m| m.agent_status)),
+        };
         let checkout = self.checkout(&machine_id, snapshot, info);
         let branch_line = (entry.kind != Kind::Child)
             .then(|| checkout.and_then(|c| c.branch.clone()))
@@ -1019,7 +939,7 @@ impl WorkspaceList {
                 this.reorder(&drop_machine, &dragged.slot, &drop_slot, cx);
             }))
             .child(div().flex_shrink_0().w(CHEVRON).child(lead))
-            .child(status_icon(status, cx))
+            .child(status::indicator(status, cx))
             .child(label)
             .children(branch)
             .when(!inert, |this| this.child(actions))
