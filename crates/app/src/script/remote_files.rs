@@ -22,7 +22,7 @@ use std::time::Duration;
 use gpui_kit::component::WindowExt as _;
 use gpui_kit::*;
 
-use super::remote::{all_attached, docker, focus, remote, shows};
+use super::machines::{all_attached, docker, focus, remote, shows};
 use super::titlebar::tab_titles;
 use super::{Cx, Run};
 use crate::actions::{OpenChanges, OpenFile};
@@ -101,10 +101,10 @@ impl Run {
         original: &str,
         shared: &Path,
     ) -> anyhow::Result<()> {
-        let state = self.read(cx, |area, _| area.state.clone())?;
+        let state = self.read(cx, |area, _| area.state().clone())?;
         let api_root = PathBuf::from(API);
         let api = self.read(cx, |area, cx| {
-            area.state
+            area.state()
                 .read(cx)
                 .machine(id)?
                 .snapshot()
@@ -142,7 +142,7 @@ impl Run {
                 .until(cx, Duration::from_secs(20), |_, _, cx| at_api(cx, &state))
                 .await;
         }
-        let root = self.read(cx, |area, cx| area.state.read(cx).active_root())?;
+        let root = self.read(cx, |area, cx| area.state().read(cx).active_root())?;
         self.check(
             rooted,
             &format!("the root is {API} on dockerbox ({root:?})"),

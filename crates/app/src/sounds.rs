@@ -35,10 +35,7 @@ pub fn cues() -> Option<&'static Cues> {
 /// Silent in tests and script runs, which drive the same code paths.
 pub fn play(cue: Cue, options: PlayOptions) {
     #[cfg(debug_assertions)]
-    PLAYED
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .push(cue);
+    played::record(cue);
     if cfg!(test) || (cfg!(debug_assertions) && std::env::var_os("RT_SCRIPT").is_some()) {
         return;
     }
@@ -47,17 +44,63 @@ pub fn play(cue: Cue, options: PlayOptions) {
     }
 }
 
-/// Every cue asked for so far, played or not (debug builds), so script
-/// runs can check the sounds they would have made.
+/// Debug builds: the cues asked for lately, played or not, so script runs
+/// can check the sounds they would have made. Only the last [`KEPT`] are
+/// kept; a scenario clears them when it starts.
 #[cfg(debug_assertions)]
-static PLAYED: std::sync::Mutex<Vec<Cue>> = std::sync::Mutex::new(Vec::new());
+pub mod played {
+    use std::collections::VecDeque;
+    use std::sync::{Mutex, MutexGuard, PoisonError};
 
-#[cfg(debug_assertions)]
-pub fn played() -> Vec<Cue> {
-    PLAYED
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .clone()
+    use cues::Cue;
+
+    pub const KEPT: usize = 256;
+
+    /// `total` counts every cue so far, so a mark stays valid after old
+    /// cues drop off.
+    struct Played {
+        total: usize,
+        recent: VecDeque<Cue>,
+    }
+
+    static PLAYED: Mutex<Played> = Mutex::new(Played {
+        total: 0,
+        recent: VecDeque::new(),
+    });
+
+    fn lock() -> MutexGuard<'static, Played> {
+        PLAYED.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    pub(super) fn record(cue: Cue) {
+        let mut played = lock();
+        if played.recent.len() == KEPT {
+            played.recent.pop_front();
+        }
+        played.recent.push_back(cue);
+        played.total += 1;
+    }
+
+    /// A point to compare later cues against ([`since`]).
+    pub fn mark() -> usize {
+        lock().total
+    }
+
+    /// The cues asked for after `mark`, as far as they are kept.
+    pub fn since(mark: usize) -> Vec<Cue> {
+        let played = lock();
+        let newer = played.total.saturating_sub(mark).min(played.recent.len());
+        played
+            .recent
+            .iter()
+            .skip(played.recent.len() - newer)
+            .copied()
+            .collect()
+    }
+
+    pub fn clear() {
+        lock().recent.clear();
+    }
 }
 
 /// Options for a frequent action.

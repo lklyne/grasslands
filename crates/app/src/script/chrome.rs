@@ -27,7 +27,7 @@ use crate::actions::CommandPalette;
 use crate::chrome::{MenuCommand, MenuTarget};
 use crate::herdr::{PaneId, SplitDirection, SplitTree, WorkspaceId, method, protocol};
 use crate::overlay;
-use crate::terminal_area::{HEADER_HEIGHT, TerminalArea};
+use crate::terminal_area::hooks::{self, HEADER_HEIGHT, Hooks};
 
 impl Run {
     pub(super) async fn chrome(&mut self, cx: &mut Cx) -> anyhow::Result<()> {
@@ -45,7 +45,7 @@ impl Run {
         // A workspace of our own with two terminals.
         let task = self.read(cx, |area, cx| {
             let home = std::env::var_os("HOME").map(PathBuf::from);
-            area.state.read(cx).new_workspace(
+            area.state().read(cx).new_workspace(
                 &area.machine(cx),
                 home,
                 Some("chrome-script".to_owned()),
@@ -59,26 +59,26 @@ impl Run {
         task.await?;
         let ours = {
             let workspace_id = workspace_id.clone();
-            move |area: &TerminalArea, cx: &App| {
-                TerminalArea::active_tab(&area.snapshot(cx))
+            move |area: &Hooks, cx: &App| {
+                Hooks::active_tab(&area.snapshot(cx))
                     .is_some_and(|tab| tab.info.workspace_id == workspace_id)
             }
         };
         let shown = self
             .until(cx, Duration::from_secs(10), |area, _, cx| {
-                ours(area, cx) && area.drawn.borrow().panes.len() == 1
+                ours(area, cx) && area.drawn().panes.len() == 1
             })
             .await;
         self.check(shown, "own workspace shows one terminal");
         let task = self.read(cx, |area, cx| {
-            area.state
+            area.state()
                 .read(cx)
                 .split_pane(&area.machine(cx), None, SplitDirection::Right, cx)
         })?;
         task.await?;
         let two = self
             .until(cx, Duration::from_secs(10), |area, _, _| {
-                area.drawn.borrow().panes.len() == 2
+                area.drawn().panes.len() == 2
             })
             .await;
         self.check(two, "split into two terminals");
@@ -109,7 +109,7 @@ impl Run {
         // Type into the second terminal, as a person would before opening
         // anything: it has the keyboard, and must get it back each time.
         let bodies = self.read(cx, |area, _| {
-            let drawn = area.drawn.borrow();
+            let drawn = area.drawn();
             (
                 drawn.panes.get(&first).copied(),
                 drawn.panes.get(&second).copied(),
@@ -121,7 +121,7 @@ impl Run {
         self.click(cx, second_body.center()).await;
         let in_terminal = self
             .until(cx, Duration::from_secs(3), |area, window, cx| {
-                area.terminals.focused(window, cx).is_some()
+                area.terminals().focused(window, cx).is_some()
             })
             .await;
         self.check(
@@ -142,7 +142,13 @@ impl Run {
         let typing = self.focused(cx);
         let area = self.area.clone();
         let on_terminal = cx
-            .update(|window, cx| area.read(cx).terminals.focused(window, cx).is_some())
+            .update(|window, cx| {
+                area.read(cx)
+                    .hooks()
+                    .terminals()
+                    .focused(window, cx)
+                    .is_some()
+            })
             .unwrap_or(false);
         self.check(
             on_terminal,
@@ -173,7 +179,7 @@ impl Run {
         self.focus_back(cx, &typing, "the menu").await;
 
         // Right-click the tab: the tab menu.
-        let tab = self.read(cx, |area, _| area.drawn.borrow().tabs.get(&tab_id).copied())?;
+        let tab = self.read(cx, |area, _| area.drawn().tabs.get(&tab_id).copied())?;
         if let Some(tab) = tab {
             self.right_click(cx, tab.center());
             let open = self.until_chrome(cx, |menu, _| menu == Some(true)).await;
@@ -207,7 +213,7 @@ impl Run {
         self.key(cx, "enter");
         let split = self
             .until(cx, Duration::from_secs(5), |area, _, _| {
-                area.drawn.borrow().panes.len() == 3
+                area.drawn().panes.len() == 3
             })
             .await;
         self.check(split, "down, down, Enter in the pane menu runs Split Right");
@@ -218,7 +224,7 @@ impl Run {
         // The terminal area's close confirmation is chrome's, in the overlay.
         cx.update(|window, cx| {
             self.area.update(cx, |area, cx| {
-                area.close_pane_confirmed(first.clone(), window, cx);
+                hooks::close_pane_confirmed(area, first.clone(), window, cx);
             });
         })
         .ok();
@@ -269,7 +275,7 @@ impl Run {
         self.palette(cx).await;
 
         let task = self.read(cx, |area, cx| {
-            area.state
+            area.state()
                 .read(cx)
                 .close_workspace(&area.machine(cx), &workspace_id, false, cx)
         })?;
@@ -290,7 +296,7 @@ impl Run {
             state,
         };
         let task = self.read(cx, |area, cx| {
-            area.state
+            area.state()
                 .read(cx)
                 .call(&area.machine(cx), cx, move |client| {
                     client.send::<method::PaneReportAgent>(&params)
@@ -395,7 +401,7 @@ impl Run {
     async fn focus_in_terminals(&mut self, cx: &mut Cx, what: &str) {
         let back = self
             .until(cx, Duration::from_secs(3), |area, window, cx| {
-                area.terminals.focused(window, cx).is_some()
+                area.terminals().focused(window, cx).is_some()
             })
             .await;
         let keys_home = cx
@@ -603,7 +609,7 @@ impl Run {
     /// The palette: type a query, arrow down, Enter runs the selected entry.
     async fn palette(&mut self, cx: &mut Cx) {
         let panes = self
-            .read(cx, |area, _| area.drawn.borrow().panes.len())
+            .read(cx, |area, _| area.drawn().panes.len())
             .unwrap_or(0);
         cx.update(|window, cx| overlay::dispatch_action(Box::new(CommandPalette), window, cx))
             .ok();
@@ -651,7 +657,7 @@ impl Run {
         self.check(shut, "Enter closes the palette");
         let ran = self
             .until(cx, Duration::from_secs(5), |area, _, _| {
-                area.drawn.borrow().panes.len() == panes + 1
+                area.drawn().panes.len() == panes + 1
             })
             .await;
         self.check(ran, "Enter runs the selected entry (a split)");

@@ -21,6 +21,8 @@ mod logging;
 mod machines;
 mod overlay;
 mod prompt;
+#[cfg(debug_assertions)]
+mod script;
 mod settings;
 mod setup;
 mod sidebar;
@@ -133,6 +135,8 @@ fn open_main_window(cx: &mut App) -> anyhow::Result<()> {
             );
         }
     })?;
+    #[cfg(debug_assertions)]
+    script::start(window, cx);
     cx.activate(true);
     Ok(())
 }

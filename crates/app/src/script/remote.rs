@@ -21,22 +21,22 @@ use std::time::Duration;
 
 use gpui_kit::*;
 
-use super::remote::{all_attached, docker, focus, remote, shows};
+use super::machines::{all_attached, docker, focus, remote, shows};
 use super::{Cx, Run};
 use crate::chrome::HerdrCommand;
 use crate::herdr::WorkspaceId;
 use crate::sidebar;
 use crate::state::{MachineId, MachineTask, RunStage, Status};
-use crate::terminal_area::TerminalArea;
+use crate::terminal_area::hooks::Hooks;
 
 const CONTAINER: &str = "herdr-remote-test";
 const SCRATCH: &str = "wire-script";
 const LOCAL_WORKSPACE: &str = "wire-local";
 
 impl Run {
-    pub(super) async fn remote_ui(&mut self, cx: &mut Cx) -> anyhow::Result<()> {
+    pub(super) async fn remote(&mut self, cx: &mut Cx) -> anyhow::Result<()> {
         eprintln!("script: remote");
-        let state = self.read(cx, |area, _| area.state.clone())?;
+        let state = self.read(cx, |area, _| area.state().clone())?;
         let connected = self
             .until(cx, Duration::from_secs(60), |area, _, cx| {
                 area.snapshot(cx).generation > 0
@@ -54,7 +54,7 @@ impl Run {
         // A Local workspace, so both groups have rows; closed at the end.
         let created = self
             .read(cx, |area, cx| {
-                area.state.read(cx).new_workspace(
+                area.state().read(cx).new_workspace(
                     &MachineId::Local,
                     None,
                     Some(LOCAL_WORKSPACE.into()),
@@ -114,8 +114,8 @@ impl Run {
             "clicking api on dockerbox shows its attached terminal",
         );
         let remote_selected = self.read(cx, |area, cx| {
-            area.state.read(cx).active_worktree().is_none()
-                && !area.state.read(cx).selected().is_local()
+            area.state().read(cx).active_worktree().is_none()
+                && !area.state().read(cx).selected().is_local()
         })?;
         self.check(
             remote_selected,
@@ -173,7 +173,7 @@ impl Run {
         let made = self
             .until(cx, Duration::from_secs(10), |area, _, cx| {
                 remote(area, cx).is_some_and(|m| m.snapshot().workspaces.len() > 3)
-                    && area.state.read(cx).selected() == &id
+                    && area.state().read(cx).selected() == &id
             })
             .await;
         let scratch = self.read(cx, |area, cx| {
@@ -282,8 +282,8 @@ impl Run {
         let back = self
             .until(cx, Duration::from_secs(90), |area, _, cx| {
                 remote(area, cx).is_some_and(|m| m.status().is_usable())
-                    && area.state.read(cx).selected() == &id
-                    && !area.drawn.borrow().panes.is_empty()
+                    && area.state().read(cx).selected() == &id
+                    && !area.drawn().panes.is_empty()
                     && all_attached(area, cx)
             })
             .await;
@@ -299,7 +299,7 @@ impl Run {
         }
         if let Some(workspace) = local_workspace {
             let close = self.read(cx, |area, cx| {
-                area.state
+                area.state()
                     .read(cx)
                     .close_workspace(&MachineId::Local, &workspace, false, cx)
             })?;
@@ -311,7 +311,7 @@ impl Run {
     /// Adds `target` through the add run, answers its prompts in the
     /// terminal, waits for it to connect, then renames it `label`.
     async fn add_flow(&mut self, cx: &mut Cx, target: &str, label: &str) -> anyhow::Result<()> {
-        let state = self.read(cx, |area, _| area.state.clone())?;
+        let state = self.read(cx, |area, _| area.state().clone())?;
         let host = target.to_owned();
         cx.update(|_, cx| {
             state.update(cx, |state, cx| {
@@ -330,14 +330,14 @@ impl Run {
         }
         let settled = self
             .until(cx, Duration::from_secs(90), |area, _, cx| {
-                area.state
+                area.state()
                     .read(cx)
                     .machine_run()
                     .is_some_and(|r| matches!(r.stage, RunStage::Done | RunStage::Failed))
             })
             .await;
         let run = self.read(cx, |area, cx| {
-            area.state
+            area.state()
                 .read(cx)
                 .machine_run()
                 .map(|r| (r.stage.clone(), r.machine.clone()))
@@ -357,7 +357,7 @@ impl Run {
         let renamed = rename.await.is_ok()
             && self
                 .until(cx, Duration::from_secs(40), |area, _, cx| {
-                    area.state
+                    area.state()
                         .read(cx)
                         .machine(&added)
                         .is_some_and(|m| m.label() == label)
@@ -366,7 +366,7 @@ impl Run {
         self.check(renamed, &format!("the new machine is renamed {label}"));
         let connected = self
             .until(cx, Duration::from_secs(60), |area, _, cx| {
-                area.state
+                area.state()
                     .read(cx)
                     .machine(&added)
                     .is_some_and(|m| m.status().is_usable())
@@ -420,7 +420,13 @@ impl Run {
     fn paste_machine_terminal(&self, cx: &mut Cx, text: &str) -> anyhow::Result<()> {
         let area = self.area.clone();
         cx.update(|_, cx| {
-            let terminal = area.read(cx).machine_terminal.read(cx).terminal().cloned();
+            let terminal = area
+                .read(cx)
+                .hooks()
+                .machine_terminal()
+                .read(cx)
+                .terminal()
+                .cloned();
             if let Some(terminal) = terminal {
                 terminal.update(cx, |terminal, _| terminal.paste_text(text));
             }
@@ -430,12 +436,12 @@ impl Run {
 
 /// The id of the workspace labelled `label` on `machine`.
 fn workspace_named(
-    area: &TerminalArea,
+    area: &Hooks,
     cx: &App,
     machine: &MachineId,
     label: &str,
 ) -> Option<WorkspaceId> {
-    area.state
+    area.state()
         .read(cx)
         .machine(machine)?
         .snapshot()

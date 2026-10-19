@@ -89,7 +89,7 @@ impl Run {
 
         let bin = self
             .read(cx, |area, cx| {
-                area.state
+                area.state()
                     .read(cx)
                     .herdr_config
                     .as_ref()

@@ -148,6 +148,10 @@ impl Workspace {
         &self.editor
     }
 
+    pub fn terminal_area(&self) -> &Entity<TerminalArea> {
+        &self.terminal_area
+    }
+
     /// The Changes tab, while it is open.
     pub fn changes(&self) -> Option<&Entity<Changes>> {
         self.changes.as_ref()

@@ -17,7 +17,7 @@ use gpui_kit::*;
 use super::{Cx, Run, capture};
 use crate::overlay;
 use crate::settings;
-use crate::terminal_area::TerminalArea;
+use crate::terminal_area::hooks::Hooks;
 use crate::theme::{self, Appearance};
 
 impl Run {
@@ -25,7 +25,7 @@ impl Run {
         eprintln!("script: settings");
         let connected = self
             .until(cx, Duration::from_secs(20), |area, _, cx| {
-                area.snapshot(cx).generation > 0 && area.terminals.len() > 0
+                area.snapshot(cx).generation > 0 && area.terminals().len() > 0
             })
             .await;
         self.check(connected, "connected to herdr with a terminal");
@@ -53,8 +53,8 @@ impl Run {
         let reused = cx.update(|_, cx| settings::window(cx))? == Some(first);
         self.check(reused, "cmd-, again brings the same window forward");
 
-        let read_config = |area: &TerminalArea| {
-            area.terminals
+        let read_config = |area: &Hooks| {
+            area.terminals()
                 .iter()
                 .next()
                 .and_then(|(_, view)| std::fs::read_to_string(view.config_path()).ok())
