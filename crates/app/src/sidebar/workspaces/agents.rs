@@ -82,6 +82,7 @@ pub struct AgentList {
 impl AgentList {
     pub fn new(state: Entity<AppState>, cx: &mut Context<Self>) -> Self {
         Self {
+            // It lists every live machine's agents, so any change redraws it.
             _observe: cx.observe(&state, |_, _, cx| cx.notify()),
             _observe_prefs: cx.observe_global::<HerdrPrefs>(|_, cx| cx.notify()),
             state,

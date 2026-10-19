@@ -268,11 +268,21 @@ impl TerminalArea {
         let setup = state.read(cx).setup().clone();
         let setup_terminal = crate::setup::fix_terminal(&setup, window, cx);
         let machine_terminal = crate::machines::run_terminal(&state, window, cx);
+        // What render reads, and what announces each change (it doesn't
+        // observe `AppState`, so another machine's snapshot doesn't wake it):
+        // - the selected machine's snapshot, id and focused pane:
+        //   `SnapshotReplaced` (which follows `MachineSelected`);
+        // - the selected machine's label and status, Local's connection
+        //   problem: `MachinesChanged`;
+        // - the machine run and its machine: `MachineRunChanged`,
+        //   `MachinesChanged`;
+        // - the setup screen: observing `Setup`; the command terminals:
+        //   observing each;
+        // - its own state (drags, overrides, attaches): its own `notify`.
         let subscriptions = vec![
             cx.observe(&setup, |_, _, cx| cx.notify()),
             cx.observe(&setup_terminal, |_, _, cx| cx.notify()),
             cx.observe(&machine_terminal, |_, _, cx| cx.notify()),
-            cx.observe(&state, |_, _, cx| cx.notify()),
             // Coming back to the window after fixing herdr elsewhere (a
             // terminal, a Nix rebuild) checks again.
             cx.observe_window_activation(window, |this, window, cx| {
@@ -496,11 +506,20 @@ impl TerminalArea {
         cx.notify();
     }
 
-    /// Drops views on other machines whose panes closed, and every view on a
-    /// machine that's gone from the list. Their live views stay attached, so
-    /// switching back doesn't re-attach them.
-    fn sync_other_machines(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        for machine in self.terminals.other_machines() {
+    /// Drops views on other machines (or just `only`) whose panes closed,
+    /// and every view on a machine that's gone from the list. Their live
+    /// views stay attached, so switching back doesn't re-attach them.
+    fn sync_other_machines(
+        &mut self,
+        only: Option<&MachineId>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let machines = self.terminals.other_machines();
+        for machine in machines
+            .into_iter()
+            .filter(|m| only.is_none_or(|only| only == m))
+        {
             let snapshot = self
                 .state
                 .read(cx)
@@ -522,10 +541,19 @@ impl TerminalArea {
     fn on_app_event(&mut self, event: &AppEvent, window: &mut Window, cx: &mut Context<Self>) {
         match event {
             AppEvent::SnapshotReplaced => self.sync_with_snapshot(window, cx),
-            AppEvent::MachinesChanged => self.sync_other_machines(window, cx),
+            AppEvent::MachinesChanged => {
+                self.sync_other_machines(None, window, cx);
+                cx.notify();
+            }
+            AppEvent::MachineSnapshot(machine) if machine != self.terminals.selected() => {
+                self.sync_other_machines(Some(machine), window, cx);
+            }
             AppEvent::MachineConnected(machine) => self.reattach_machine(machine, window, cx),
             AppEvent::MachineRestarted(machine) => self.terminals.forget_machine(machine, cx),
-            AppEvent::MachineRunChanged => self.sync_command_terminals(cx),
+            AppEvent::MachineRunChanged => {
+                self.sync_command_terminals(cx);
+                cx.notify();
+            }
             // Keyboard focus follows herdr's focus, but only if it is already
             // in the terminal area: an agent focusing a pane must not pull
             // typing out of the editor.

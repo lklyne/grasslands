@@ -28,10 +28,20 @@ else in the module is yours.
 - `AppState` (one `Entity`, created in `main`) holds the herdr config, the
   connection status, the snapshot cache, the focused pane and the active
   worktree. Views hold the entity and read it in `render`.
-- Redraw on any change: `cx.observe(&state, |_, _, cx| cx.notify())`.
-- React to discrete changes: `cx.subscribe(&state, ...)` on `AppEvent`
-  (`ActiveRootChanged(Option<ActiveRoot>)`, `SnapshotReplaced`; add variants
-  as needed).
+- Every change is announced as an `AppEvent`. A view that shows one machine
+  subscribes (`cx.subscribe(&state, ...)`) to the events for exactly what its
+  render reads and calls `cx.notify()` itself, so another machine's traffic
+  doesn't wake it: `SnapshotReplaced` (the selected machine's cache; it also
+  follows `MachineSelected`), `MachineSnapshot(machine)` (any machine's
+  cache), `MachinesChanged` (the list, a label or a status),
+  `ActiveRootChanged`, `FocusedPaneChanged`, `MachineRunChanged`, ... Write
+  the list of what render reads next to the subscription (`TerminalArea`
+  does), and add a variant when something it reads has none: a missed event
+  is stale UI.
+- Only views that list every machine (the sidebar's workspace and agent
+  lists) redraw on any change, with `cx.observe(&state, ...)`.
+- Local's herdr setup is its own entity (`AppState::setup`, decision 0018);
+  the terminal area observes it for the setup screen.
 - `crate::herdr` re-exports `herdr-client` types under the names views use
   (`Snapshot` = `herdr_client::State`, `Agent`, `AgentStatus`, `SplitTree`,
   `ConnectionStatus`, `Config` = `Endpoint`, ...). `AppState::new` starts

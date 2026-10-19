@@ -4,9 +4,10 @@
 //! machines; see docs/decisions/0019-remote-machines.md), which one is
 //! selected, and each machine's active worktree. `snapshot`, `call` and the command
 //! methods act on the selected machine. Views keep an
-//! `Entity<AppState>`, read it in `render`, and `cx.observe` it to re-render.
-//! Discrete changes that views must react to (not just redraw) are emitted
-//! as `AppEvent`s; views `cx.subscribe` to those.
+//! `Entity<AppState>` and read it in `render`. Every change is announced as
+//! an `AppEvent`; a view that shows one machine subscribes to the events
+//! for what it reads, so another machine's traffic doesn't wake it. Only
+//! views that list every machine (the sidebar) `cx.observe` it.
 //!
 //! The herdr connection runs on `herdr-client`'s own thread (`SessionSync`);
 //! its updates are applied here on the foreground. Commands go through the
@@ -63,10 +64,12 @@ pub enum AppEvent {
         machine: MachineId,
         change: StatusChange,
     },
-    /// The machine list, a machine's label or status, or a machine's cache
-    /// changed. Views listing every machine (the sidebar) redraw from
-    /// `AppState::machines`.
+    /// The machine list, or a machine's label or status, changed (not its
+    /// cache: see `MachineSnapshot`).
     MachinesChanged,
+    /// A machine's herdr cache was replaced, whichever machine is selected.
+    /// For the selected one, `SnapshotReplaced` comes first.
+    MachineSnapshot(MachineId),
     /// A machine's link (re)connected. Terminals whose attach died with the
     /// old connection attach again.
     MachineConnected(MachineId),
@@ -1116,7 +1119,7 @@ impl AppState {
         if selected {
             cx.emit(AppEvent::SnapshotReplaced);
         }
-        cx.emit(AppEvent::MachinesChanged);
+        cx.emit(AppEvent::MachineSnapshot(id.clone()));
         for change in changes {
             cx.emit(AppEvent::AgentStatusChanged {
                 machine: id.clone(),
@@ -1804,6 +1807,58 @@ mod tests {
             state.select_machine(&remote(), cx);
         });
         assert_eq!(roots.borrow().as_slice(), &[Some(remote())]);
+    }
+
+    /// The events `AppState` emits while `f` runs, by kind.
+    fn emitted(
+        state: &gpui_kit::Entity<AppState>,
+        cx: &mut TestAppContext,
+        f: impl FnOnce(&mut AppState, &mut gpui_kit::Context<AppState>),
+    ) -> Vec<String> {
+        let events = Rc::new(RefCell::new(Vec::new()));
+        let _subscription = cx.update(|cx| {
+            let events = events.clone();
+            cx.subscribe(state, move |_, event, _| {
+                events.borrow_mut().push(format!("{event:?}"));
+            })
+        });
+        state.update(cx, f);
+        events.take()
+    }
+
+    fn remote_snapshot() -> Arc<Snapshot> {
+        Arc::new(Snapshot {
+            generation: 8,
+            ..Snapshot::default()
+        })
+    }
+
+    #[gpui::test]
+    fn a_background_machines_snapshot_isnt_the_selected_ones(cx: &mut TestAppContext) {
+        let state = with_remote(cx);
+        let events = emitted(&state, cx, |state, cx| {
+            state.apply_snapshot(&remote(), remote_snapshot(), cx);
+        });
+        assert_eq!(
+            events,
+            [format!("{:?}", AppEvent::MachineSnapshot(remote()))]
+        );
+    }
+
+    #[gpui::test]
+    fn the_selected_machines_snapshot_is_announced_first(cx: &mut TestAppContext) {
+        let state = with_remote(cx);
+        state.update(cx, |state, cx| state.select_machine(&remote(), cx));
+        let events = emitted(&state, cx, |state, cx| {
+            state.apply_snapshot(&remote(), remote_snapshot(), cx);
+        });
+        assert_eq!(
+            events,
+            [
+                format!("{:?}", AppEvent::SnapshotReplaced),
+                format!("{:?}", AppEvent::MachineSnapshot(remote())),
+            ]
+        );
     }
 
     #[gpui::test]
