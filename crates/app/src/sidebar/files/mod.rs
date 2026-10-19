@@ -46,6 +46,7 @@ use self::watch::RootWatcher;
 use crate::actions::{OpenChanges, OpenFile, OpenFileAt};
 use crate::chrome::{self, Confirmation, MenuCommand, MenuEntry};
 use crate::fs::{Caps, Fs, Removal, git, search};
+use crate::sidebar::INDENT;
 use crate::state::{ActiveRoot, AppEvent, AppState, MachineId};
 
 /// Watcher events arriving within this window are folded into one re-list.
@@ -58,7 +59,6 @@ const GIT_THROTTLE: Duration = Duration::from_secs(1);
 const GIT_REFRESH: Duration = Duration::from_secs(5);
 /// How often a saved machine's shown folders and footer are re-read.
 const REMOTE_POLL: Duration = Duration::from_secs(3);
-const INDENT: f32 = 12.;
 const ROW_HEIGHT: Pixels = px(24.);
 /// The chevron's column; files leave it empty so names line up.
 const CHEVRON: Pixels = px(12.);
@@ -1130,7 +1130,7 @@ fn render_row(
     cx: &App,
 ) -> ListItem {
     let item = entry.item();
-    let indent = px(6. + INDENT * entry.depth() as f32);
+    let indent = px(6.) + INDENT * entry.depth() as f32;
     let muted = cx.theme().muted_foreground;
     let row = ListItem::new(ix)
         .h(ROW_HEIGHT)
@@ -1272,7 +1272,7 @@ fn render_results(results: &search::Results, machine: &MachineId, cx: &App) -> A
         h_flex()
             .id(id)
             .h(ROW_HEIGHT)
-            .pl(px(6. + INDENT * depth))
+            .pl(px(6.) + INDENT * depth)
             .pr_2()
             .gap_1()
             .rounded_sm()

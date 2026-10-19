@@ -46,6 +46,7 @@ use crate::herdr::config::AgentPanelSort;
 use crate::herdr::{Snapshot, WorkspaceId, WorkspaceInfo, WorktreeParams};
 use crate::machines::{self, MachineActions, MachineState, machine_header, ssh_config};
 use crate::prompt::NewWorktree;
+use crate::sidebar::INDENT;
 use crate::state::{AppEvent, AppState, Machine, MachineId, MachineTask, On};
 use crate::status;
 use git::{Checkout, HeadWatcher, Placement, RemoteCheckouts, Repo};
@@ -868,7 +869,7 @@ impl WorkspaceList {
             _ => div().into_any_element(),
         };
         let indent = if entry.kind == Kind::Child {
-            CHEVRON
+            INDENT
         } else {
             px(0.)
         };

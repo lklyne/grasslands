@@ -11,6 +11,9 @@ use gpui_kit::*;
 
 use crate::state::AppState;
 
+/// One nesting level in the sidebar's trees: file depth and linked worktrees.
+pub(crate) const INDENT: Pixels = px(16.);
+
 pub fn init(cx: &mut App) {
     workspaces::init(cx);
     files::init(cx);
