@@ -188,13 +188,19 @@ add an SSH channel per pane to each switch.
 
 ## App model
 
-- `AppState` holds one connection per machine: Local plus each enabled saved
-  machine, each with its own `SessionSync`, snapshot and status.
+- Each machine is an `Entity<Session>` (`state::session`): Local plus each
+  enabled saved machine, each with its own link, `SessionSync`, client,
+  snapshot, focused pane, worktree, status and caches, and its own herdr
+  commands. `AppState` holds the list (Local first, then herdr's order), the
+  selection and the machine run, and relays each session's changes with its
+  machine (decision 0002). A saved machine whose profile changed gets a new
+  session; a removed one is retired, so a view still holding it gets a
+  failed task for every command.
 - **One status per machine.** herdr-client keeps two state machines: the
   link's `MachineStatus` (saved machines) and the sync's `ConnectionStatus`
   (every machine); each drives its own retries, so they stay apart there.
   The app asks only `state::Status`, derived in one place
-  (`Machine::refresh_status`): a saved machine's from its link, which
+  (`Session::refresh_status`): a saved machine's from its link, which
   already probes herdr there; Local's, which has no link, from the setup
   check and then its sync. It answers "usable?" (`is_usable`), "why not?"
   in herdr's words (`reason`), and whether it's retrying (`Offline {
@@ -203,9 +209,10 @@ add an SSH channel per pane to each switch.
   Sound cues still follow the raw transitions: the link's for saved
   machines, the sync's for Local.
 - One machine is **selected**, as in herdr: the one whose workspace is
-  active. `snapshot`, `call` and the terminal area all refer to the selected
-  machine, so most existing code is unchanged. Activating a workspace on
-  another machine selects that machine first.
+  active. The terminal area shows the selected session (and follows it on
+  `MachineSelected`); `AppState::snapshot` is the selected machine's cache.
+  Commands always name their machine. Activating a workspace on another
+  machine selects that machine first.
 - Terminals and anything else keyed by herdr IDs are keyed by machine plus ID.
 - The sidebar groups workspaces by machine. Agents stay one list, each row
   with its machine's label once there is more than one machine.

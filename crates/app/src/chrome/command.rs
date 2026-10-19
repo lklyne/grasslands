@@ -1,5 +1,5 @@
 //! herdr commands the chrome offers in menus and the palette, as data, so an
-//! entry can be confirmed before it runs. Each maps onto an `AppState` method.
+//! entry can be confirmed before it runs. Each maps onto a `Session` method.
 //! Every command names the machine it was built for: herdr ids repeat across
 //! machines, and the selection can move while a confirmation is open.
 

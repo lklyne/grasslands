@@ -1,7 +1,7 @@
 //! herdr's tab bar and the active tab's split tree of Ghostty terminals.
 //!
 //! herdr is the source of truth: the area renders the focused workspace's
-//! active tab from `AppState::snapshot` and turns every user action into a
+//! active tab from the selected machine's `Session` and turns every user action into a
 //! herdr call, then re-renders from the snapshot that follows. The only local
 //! state is a divider's ratio while it is being dragged (sent on release) and
 //! until herdr's layout reflects it. See

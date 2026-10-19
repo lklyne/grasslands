@@ -56,7 +56,8 @@ pub enum SetupEvent {
 }
 
 /// What Local's herdr needs before the app can use it, and the fix running.
-/// `AppState` owns it and starts Local's sync on [`SetupEvent::HerdrReady`];
+/// `AppState` owns it and starts Local's sync on [`SetupEvent::HerdrReady`]
+/// (Local's `Session` reads it for its status);
 /// the terminal area draws its screen and runs its fixes.
 pub struct Setup {
     /// Local's herdr; `None` when the endpoint was refused (nothing to check).
