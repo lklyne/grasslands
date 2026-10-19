@@ -1322,8 +1322,8 @@ impl AppState {
         self.call(machine, cx, move |c| c.pane_focus(&pane_id))
     }
 
-    /// Splits `pane_id` (herdr's focused pane when `None`). New panes forward
-    /// right-clicks to the program in them; our context menu handles the rest.
+    /// Splits `pane_id` (herdr's focused pane when `None`) and focuses the new
+    /// pane. `TerminalArea` sets its right-click target, as for every pane.
     #[track_caller]
     pub fn split_pane(
         &self,
@@ -1335,7 +1335,6 @@ impl AppState {
         sounds::play(Cue::Open, sounds::subtle());
         let mut split = herdr::PaneSplit::new(pane_id.map(str::to_owned), direction);
         split.focus = true;
-        split.right_click = Some(herdr::RightClickTarget::Pane);
         self.call(machine, cx, move |c| c.pane_split(&split))
     }
 

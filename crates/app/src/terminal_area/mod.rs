@@ -655,7 +655,9 @@ impl TerminalArea {
         }
 
         // `right_click: "pane"`: programs in the pane get right-clicks; our
-        // context menu is on the pane header.
+        // context menu is on the pane header. This is the only place that
+        // sets it, for every pane however it was made (split, new tab, an
+        // agent's `pane.split`).
         self.right_click_set
             .retain(|(on, pane_id)| on != &machine || snapshot.panes.contains_key(pane_id));
         for pane_id in snapshot.panes.keys() {
