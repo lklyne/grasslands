@@ -138,11 +138,11 @@ RT_SIDEBAR_SCRIPT='wait 2000; focus w2; wait 800; log after' scripts/dev-run car
 
 The remote checks run against `dockerbox`, the `herdr-remote-test` container (`ssh://lyle@127.0.0.1:2222`), saved as a machine in herdr. `machines`, `remote` and `remote-files` stop and start the container, which ends whatever else is connected to it; `machine-ui` uses fixtures only.
 
-The link itself has ignored tests in `crates/herdr-client/tests/machine_link.rs`. The agent tests also need `GRASSLANDS_TEST_AGENT`, the socket of a throwaway `ssh-agent` holding a throwaway key (never your own agent). They force forwarding with `RT_FORWARD_AGENT=1`, which debug builds of the app take too:
+The link itself has ignored tests in `crates/herdr-client/tests/machine_link.rs`. The agent tests also need `GRASSLANDS_TEST_AGENT`, the socket of a throwaway `ssh-agent` holding a throwaway key (never your own agent). They force forwarding with `RT_FORWARD_AGENT=1`, which debug builds of the app take too. The tests share one container and some stop or restart it, so run them one at a time. macOS caps socket paths at 104 bytes, so put the agent's socket somewhere short, such as under `/tmp`:
 
 ```sh
 GRASSLANDS_SSH_TEST_TARGET=ssh://lyle@127.0.0.1:2222 GRASSLANDS_TEST_AGENT=/path/to/agent.sock \
-  scripts/dev-run cargo test -p herdr-client --test machine_link -- --ignored --nocapture
+  scripts/dev-run cargo test -p herdr-client --test machine_link -- --ignored --test-threads=1 --nocapture
 ```
 
 ### Held for the final pass
