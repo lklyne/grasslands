@@ -999,7 +999,7 @@ fn build_menu(
 ) -> Entity<PopupMenu> {
     let chrome = chrome.clone();
     PopupMenu::build(window, cx, move |menu, window, cx| {
-        add_entries(menu, &chrome, &entries, window, cx).min_w(px(200.))
+        add_entries(menu, &chrome, &entries, Submenus::Flyout, window, cx).min_w(px(200.))
     })
 }
 
@@ -1022,7 +1022,8 @@ pub fn open_menu(
 /// Fills a Kit popup `menu` with `entries`, run through the chrome of
 /// `window` like a context menu's. For menus Kit builds and draws itself in
 /// the main window (a dock panel's title-bar menu), so they share the
-/// floating menus' entries.
+/// floating menus' entries. A submenu shows inline as a labeled section: a
+/// flyout from a main-window menu would open under the terminals.
 pub fn fill_popup(
     menu: PopupMenu,
     entries: &[MenuEntry],
@@ -1032,26 +1033,47 @@ pub fn fill_popup(
     let Some(chrome) = get(window, cx) else {
         return menu;
     };
-    add_entries(menu, &chrome.downgrade(), entries, window, cx)
+    add_entries(
+        menu,
+        &chrome.downgrade(),
+        entries,
+        Submenus::Inline,
+        window,
+        cx,
+    )
+}
+
+/// How [`add_entries`] lays out a [`MenuEntry::Submenu`].
+#[derive(Clone, Copy)]
+enum Submenus {
+    Flyout,
+    Inline,
 }
 
 fn add_entries(
     mut menu: PopupMenu,
     chrome: &WeakEntity<Chrome>,
     entries: &[MenuEntry],
+    submenus: Submenus,
     window: &mut Window,
     cx: &mut App,
 ) -> PopupMenu {
     for entry in entries {
         menu = match entry {
             MenuEntry::Separator => menu.separator(),
-            MenuEntry::Submenu { label, entries } => {
-                let chrome = chrome.clone();
-                let submenu = PopupMenu::build(window, cx, move |menu, window, cx| {
-                    add_entries(menu, &chrome, entries, window, cx).min_w(px(160.))
-                });
-                menu.item(PopupMenuItem::submenu(label.clone(), submenu))
-            }
+            MenuEntry::Submenu { label, entries } => match submenus {
+                Submenus::Flyout => {
+                    let chrome = chrome.clone();
+                    let submenu = PopupMenu::build(window, cx, move |menu, window, cx| {
+                        add_entries(menu, &chrome, entries, submenus, window, cx).min_w(px(160.))
+                    });
+                    menu.item(PopupMenuItem::submenu(label.clone(), submenu))
+                }
+                Submenus::Inline => {
+                    let menu = menu.separator().label(label.clone());
+                    add_entries(menu, chrome, entries, submenus, window, cx).separator()
+                }
+            },
             MenuEntry::Item {
                 label,
                 command,
