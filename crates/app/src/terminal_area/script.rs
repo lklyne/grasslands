@@ -26,6 +26,7 @@ use serde_json::json;
 
 mod chrome;
 mod drags;
+mod herdr_prefs;
 mod machines;
 mod remote;
 mod remote_files;
@@ -48,6 +49,7 @@ pub fn start(scenario: String, area: Entity<TerminalArea>, window: &mut Window, 
         "chrome",
         "titlebar",
         "settings",
+        "herdr-prefs",
         "drags",
         "setup",
         "machine-ui",
@@ -79,6 +81,7 @@ pub fn start(scenario: String, area: Entity<TerminalArea>, window: &mut Window, 
                 "chrome" => run.chrome(cx).await,
                 "titlebar" => run.titlebar(cx).await,
                 "settings" => run.settings(cx).await,
+                "herdr-prefs" => run.herdr_prefs(cx).await,
                 "drags" => run.drags(cx).await,
                 "setup" => run.setup(cx).await,
                 "machine-ui" => run.machine_ui(cx).await,

@@ -230,7 +230,8 @@ fn writable(path: &Path) -> Result<(), String> {
     }
     if cfg!(debug_assertions) && std::env::var(ALLOW_LIVE_ENV).is_err() {
         let home = std::env::var_os("HOME").map(PathBuf::from);
-        let dev = home.is_some_and(|home| path.is_absolute() && path.starts_with(home.join(DEV_ROOT)));
+        let dev =
+            home.is_some_and(|home| path.is_absolute() && path.starts_with(home.join(DEV_ROOT)));
         if !dev {
             return Err(format!(
                 "debug builds only write herdr configs under ~/{DEV_ROOT}; {} is not (set {ALLOW_LIVE_ENV}=1 to override)",
@@ -255,31 +256,21 @@ pub fn set(edit: Edit, cx: &mut App) {
         tracing::info!("herdr config: not written ({why}): {edit:?}");
         return;
     }
-    let write = cx.background_executor().spawn({
-        let path = path.clone();
-        let edit = edit.clone();
-        async move { config::write(&path, &edit) }
-    });
-    cx.spawn(async move |cx| {
-        let written = write.await;
-        cx.update(|cx| {
-            let global = cx.default_global::<HerdrPrefs>();
-            match written {
-                Ok(()) => {
-                    tracing::info!("herdr config: wrote {edit:?} to {}", path.display());
-                    global.write_error = None;
-                    reload_server(cx);
-                }
-                Err(error) => {
-                    tracing::warn!("herdr config: {error}");
-                    global.write_error = Some(error.to_string());
-                    // Show what the file really says again.
-                    reload(cx);
-                }
-            }
-        });
-    })
-    .detach();
+    // On this thread, so quick edits land one after another and none
+    // overwrites another's read of the file; it's one small file.
+    match config::write(&path, &edit) {
+        Ok(()) => {
+            tracing::info!("herdr config: wrote {edit:?} to {}", path.display());
+            cx.default_global::<HerdrPrefs>().write_error = None;
+            reload_server(cx);
+        }
+        Err(error) => {
+            tracing::warn!("herdr config: {error}");
+            cx.default_global::<HerdrPrefs>().write_error = Some(error.to_string());
+            // Show what the file really says again.
+            reload(cx);
+        }
+    }
 }
 
 /// Asks Local's herdr to reread its config (`server.reload_config`).
@@ -406,7 +397,16 @@ mod tests {
 
     #[test]
     fn the_workspace_in_view_should_get_no_sound() {
-        assert!(!alert(&Prefs::default(), Some("claude"), SAME_WORKSPACE, true, false).sound);
+        assert!(
+            !alert(
+                &Prefs::default(),
+                Some("claude"),
+                SAME_WORKSPACE,
+                true,
+                false
+            )
+            .sound
+        );
     }
 
     #[test]

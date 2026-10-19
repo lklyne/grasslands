@@ -201,7 +201,10 @@ fn toml_that_does_not_parse_should_give_defaults() {
 
 #[test]
 fn unknown_agent_keys_should_be_ignored_not_rejected() {
-    let parsed = parse("[ui.sound.agents]\nopencode = \"off\"\nclaude = \"off\"\n", None);
+    let parsed = parse(
+        "[ui.sound.agents]\nopencode = \"off\"\nclaude = \"off\"\n",
+        None,
+    );
     assert_eq!(
         (
             parsed.using_defaults,
@@ -369,7 +372,11 @@ fn removing_a_missing_key_should_change_nothing() {
 
 #[test]
 fn an_edit_should_write_into_an_inline_table() {
-    let edited = apply("ui = { confirm_close = true }\n", &Edit::PromptNewTabName(false)).unwrap();
+    let edited = apply(
+        "ui = { confirm_close = true }\n",
+        &Edit::PromptNewTabName(false),
+    )
+    .unwrap();
     assert_eq!(
         parse(&edited, None).prefs,
         Prefs {
@@ -398,7 +405,10 @@ fn an_edit_should_refuse_a_value_in_a_tables_place() {
 #[test]
 fn the_toast_delay_should_be_clamped_to_herdrs_range() {
     let edited = apply("", &Edit::ToastDelay(99_999)).unwrap();
-    assert_eq!(parse(&edited, None).prefs.toast.delay_seconds, MAX_TOAST_DELAY);
+    assert_eq!(
+        parse(&edited, None).prefs.toast.delay_seconds,
+        MAX_TOAST_DELAY
+    );
 }
 
 #[test]
@@ -486,11 +496,14 @@ fn check_report_should_read_ok() {
 fn check_report_should_see_herdr_falling_back_to_defaults() {
     let output = "config: issues found\nconfig parse error: TOML parse error at line 2\n  |\ninvalid type\n; using defaults\n";
     let report = CheckReport::from_output(output);
-    assert!(!report.ok && report.using_defaults && report.details.starts_with("config parse error"));
+    assert!(
+        !report.ok && report.using_defaults && report.details.starts_with("config parse error")
+    );
 }
 
 #[test]
 fn check_report_should_keep_warnings_without_defaults() {
-    let output = "config: issues found\nunknown config key ui.sound.agents.opencode; ignoring key\n";
+    let output =
+        "config: issues found\nunknown config key ui.sound.agents.opencode; ignoring key\n";
     assert!(!CheckReport::from_output(output).using_defaults);
 }

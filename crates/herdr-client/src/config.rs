@@ -304,11 +304,16 @@ pub fn parse(text: &str, config_dir: Option<&Path>) -> Parsed {
         }
     };
     let mut agents = BTreeMap::new();
-    if let Some(table) = reader.get(&["ui", "sound", "agents"]).and_then(Item::as_table_like) {
+    if let Some(table) = reader
+        .get(&["ui", "sound", "agents"])
+        .and_then(Item::as_table_like)
+    {
         for (agent, item) in table.iter() {
             let key = format!("ui.sound.agents.{agent}");
             if !SOUND_AGENTS.contains(&agent) {
-                reader.problems.push(format!("unknown config key {key}; ignored"));
+                reader
+                    .problems
+                    .push(format!("unknown config key {key}; ignored"));
                 continue;
             }
             if let Some(sound) = reader.variant(&key, item, AgentSound::from_key) {
@@ -454,7 +459,10 @@ impl<'a> Reader<'a> {
 pub enum Edit {
     SoundEnabled(bool),
     /// `Default` removes the agent's key.
-    AgentSound { agent: String, sound: AgentSound },
+    AgentSound {
+        agent: String,
+        sound: AgentSound,
+    },
     ToastDelivery(ToastDelivery),
     /// Clamped to herdr's 0–3600.
     ToastDelay(u64),
@@ -488,10 +496,9 @@ impl Edit {
             ),
             Self::ConfirmClose(on) => (vec!["ui", "confirm_close"], Some((*on).into())),
             Self::PromptNewTabName(on) => (vec!["ui", "prompt_new_tab_name"], Some((*on).into())),
-            Self::PromptNewWorkspaceName(on) => (
-                vec!["ui", "prompt_new_workspace_name"],
-                Some((*on).into()),
-            ),
+            Self::PromptNewWorkspaceName(on) => {
+                (vec!["ui", "prompt_new_workspace_name"], Some((*on).into()))
+            }
         }
     }
 
@@ -508,7 +515,9 @@ impl Edit {
                 }
             }
             Self::ToastDelivery(delivery) => prefs.toast.delivery = *delivery,
-            Self::ToastDelay(seconds) => prefs.toast.delay_seconds = (*seconds).min(MAX_TOAST_DELAY),
+            Self::ToastDelay(seconds) => {
+                prefs.toast.delay_seconds = (*seconds).min(MAX_TOAST_DELAY)
+            }
             Self::AgentPanelSort(sort) => prefs.agent_panel_sort = *sort,
             Self::StatusIndicators(indicators) => prefs.status_indicators = *indicators,
             Self::ConfirmClose(on) => prefs.confirm_close = *on,

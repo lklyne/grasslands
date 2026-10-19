@@ -740,8 +740,11 @@ impl Chrome {
             return;
         }
         let confirm_close = crate::herdr_prefs::get(cx).confirm_close;
-        let confirmation =
-            confirm::needed_for(&command, self.snapshot_of(command.machine(), cx), confirm_close);
+        let confirmation = confirm::needed_for(
+            &command,
+            self.snapshot_of(command.machine(), cx),
+            confirm_close,
+        );
         let Some(confirmation) = confirmation else {
             self.send(command, window, cx);
             return;

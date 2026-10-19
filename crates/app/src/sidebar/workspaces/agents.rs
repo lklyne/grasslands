@@ -293,13 +293,11 @@ impl Panel for AgentList {
         .fold(menu.label("Sort"), |menu, (label, sort)| {
             let current = self.sort(cx);
             let this = cx.entity().downgrade();
-            menu.item(
-                PopupMenuItem::new(label)
-                    .checked(current == sort)
-                    .on_click(move |_, _, cx| {
-                        let _ = this.update(cx, |this, cx| this.set_sort(sort, cx));
-                    }),
-            )
+            menu.item(PopupMenuItem::new(label).checked(current == sort).on_click(
+                move |_, _, cx| {
+                    let _ = this.update(cx, |this, cx| this.set_sort(sort, cx));
+                },
+            ))
         })
     }
 

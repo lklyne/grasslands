@@ -168,7 +168,9 @@ impl Run {
 
         // New Workspace on › dockerbox, then rename and close it through the
         // chrome's commands, which go to dockerbox.
-        self.spaces(cx, |spaces, window, cx| spaces.new_workspace_on(&id, window, cx))?;
+        self.spaces(cx, |spaces, window, cx| {
+            spaces.new_workspace_on(&id, window, cx)
+        })?;
         let made = self
             .until(cx, Duration::from_secs(10), |area, _, cx| {
                 remote(area, cx).is_some_and(|m| m.snapshot().workspaces.len() > 3)

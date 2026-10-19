@@ -117,9 +117,13 @@ fn play_file_now(path: &Path) -> bool {
             return false;
         }
         let file = NSString::from_str(&path.to_string_lossy());
-        let Some(sound) = NSSound::initWithContentsOfFile_byReference(NSSound::alloc(), &file, true)
+        let Some(sound) =
+            NSSound::initWithContentsOfFile_byReference(NSSound::alloc(), &file, true)
         else {
-            tracing::warn!("herdr custom sound {}: AppKit can't play it", path.display());
+            tracing::warn!(
+                "herdr custom sound {}: AppKit can't play it",
+                path.display()
+            );
             return false;
         };
         let started = sound.play();

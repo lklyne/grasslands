@@ -5,10 +5,10 @@
 //! Appearance and Sounds are grasslands' own (`settings.json`); the herdr
 //! page shows and edits herdr's `config.toml` (`crate::herdr_prefs`).
 
+use gpui_kit::component::button::Button;
 use gpui_kit::component::setting::{
     NumberFieldOptions, SettingField, SettingGroup, SettingItem, SettingPage, Settings,
 };
-use gpui_kit::component::button::Button;
 use gpui_kit::component::{
     ActiveTheme as _, Disableable as _, Icon, IconName, Sizable as _, ThemeMode, ThemeRegistry,
     TitleBar, h_flex, v_flex,
