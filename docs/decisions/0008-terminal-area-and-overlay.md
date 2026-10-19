@@ -26,9 +26,11 @@ Background and spike results are in 0001.
 - **Hidden behind a file tab.** `TerminalArea::set_visible(false)` hides
   every view and keeps them hidden until `set_visible(true)`; the workspace
   calls it when a titlebar file tab is selected (0002).
-- **The attach command** is `$bin [--session S] terminal attach <id> --takeover`,
+- **The attach command** is `$bin [--session S] terminal attach <id>`,
   built from `AppState::herdr_config`. With no config (the socket guard refused
-  the endpoint), nothing is spawned.
+  the endpoint), nothing is spawned. Without `--takeover`, herdr refuses a
+  terminal another client has attached, and the pane shows "Detached"; only
+  Reattach adds `--takeover` (0019, "Terminal ownership").
 - **When the attach dies** (another client took the terminal over), the view is
   kept and the pane shows "Detached" with a Reattach button. Respawning on its
   own would fight the other client.

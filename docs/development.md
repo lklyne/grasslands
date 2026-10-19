@@ -55,7 +55,7 @@ The herdr-client integration tests create and close workspaces in your dev sessi
 
 ## Running it for real
 
-> **Warning.** The app attaches to every herdr terminal with `herdr terminal attach <id> --takeover`. herdr allows one controller per terminal, so the app takes each terminal away from any herdr TUI attached to it, and the TUI loses control of those panes. If you open a herdr TUI and attach again, the TUI takes it back and the app's pane shows "Detached" with a Reattach button. Don't run both against the same panes. The app also sends real commands. × on a pane or tab closes it in herdr, and that kills its process (it asks first when an agent is working or blocked).
+> **Warning.** The app attaches to every herdr terminal with `herdr terminal attach <id>`. herdr allows one direct-attach client per terminal. A herdr TUI isn't one (it draws panes another way), so the app and a TUI share a session fine. Another direct attach is: a second app instance on the same session, `herdr agent attach`, or `herdr terminal attach`. The app never takes a terminal from one of those on its own; the pane shows "Detached", and its Reattach button takes the terminal over (`--takeover`), which detaches the other client. The app also sends real commands. × on a pane or tab closes it in herdr, and that kills its process (it asks first when an agent is working or blocked).
 
 Release builds are not socket-guarded. They connect to whatever `HERDR_BIN`, `HERDR_SESSION` and `HERDR_SOCKET_PATH` point at, and with none set, to your default herdr session. Upgrade it to 0.9.5 first (above).
 
