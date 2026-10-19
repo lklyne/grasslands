@@ -24,7 +24,7 @@ set -eu
 FEED_URL="https://github.com/lklyne/grasslands/releases/latest/download/appcast.xml"
 # The public half of the EdDSA key updates are signed with. The private half
 # is in the maintainer's login keychain under the account `grasslands`.
-UPDATE_PUBLIC_KEY=""
+UPDATE_PUBLIC_KEY="+m8OK3lwrqYHhiUIMkIqVfGvta11nuB0GGL/U60i9UY="
 
 root=$(cd "$(dirname "$0")/.." && pwd)
 app="$root/target/bundle/grasslands.app"
