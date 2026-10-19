@@ -643,7 +643,8 @@ impl Run {
         self.check_views(cx, "after swap");
         self.shoot(cx, "after-swap");
 
-        // A second tab, then drag its pane's header onto the first tab.
+        // A second tab, split so its panes have headers (a pane alone in its
+        // tab has none), then drag one's header onto the first tab.
         self.dispatch(cx, Box::new(NewTab));
         let second = self
             .until(cx, Duration::from_secs(10), |area, _, cx| {
@@ -653,10 +654,18 @@ impl Run {
             })
             .await;
         self.check(second, "a second tab to move from");
+        self.dispatch(cx, Box::new(SplitRight));
+        let split = self
+            .until(cx, Duration::from_secs(10), |area, _, _| {
+                let drawn = area.drawn();
+                drawn.panes.len() == 2 && drawn.headers.len() == 2
+            })
+            .await;
+        self.check(split, "the second tab split in two, with headers");
         Self::sleep(cx, 500).await;
         Self::settle(cx).await;
         let (moving, header, tab) = self.drawn(cx, |d| {
-            let pane = d.panes.keys().next().cloned();
+            let pane = d.headers.keys().next().cloned();
             let header = pane.as_ref().and_then(|p| d.headers.get(p).copied());
             (pane, header, d.tabs.get(first_tab).copied())
         })?;

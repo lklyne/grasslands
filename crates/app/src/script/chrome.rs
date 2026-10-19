@@ -27,6 +27,7 @@ use crate::actions::CommandPalette;
 use crate::chrome::{MenuCommand, MenuTarget};
 use crate::herdr::{PaneId, SplitDirection, SplitTree, WorkspaceId, method, protocol};
 use crate::overlay;
+use crate::terminal_area::NewTab;
 use crate::terminal_area::hooks::{self, HEADER_HEIGHT, Hooks};
 
 impl Run {
@@ -262,6 +263,19 @@ impl Run {
             })
             .await;
         self.check(working, "agent reported on the second pane");
+        // herdr raises no popup for the tab in view (0022): look at a new
+        // tab, so the agent's is in the background.
+        let agent_tab = self.read(cx, |area, cx| {
+            area.snapshot(cx).pane(&second).map(|p| p.tab_id.clone())
+        })?;
+        self.dispatch(cx, Box::new(NewTab));
+        let away = self
+            .until(cx, Duration::from_secs(10), |area, _, cx| {
+                let snapshot = area.snapshot(cx);
+                snapshot.focused_tab_id.is_some() && snapshot.focused_tab_id != agent_tab
+            })
+            .await;
+        self.check(away, "a new tab puts the agent's tab in the background");
         self.report_agent(cx, &second, protocol::ReportedState::Blocked)
             .await?;
         let toast = self

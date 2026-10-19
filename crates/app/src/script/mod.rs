@@ -79,12 +79,16 @@ fn start_scenario(scenario: String, window: AnyWindowHandle, cx: &mut App) {
     // Each run checks only the cues it caused.
     crate::sounds::played::clear();
     // herdr's `ui.prompt_new_tab_name` and `ui.prompt_new_workspace_name`
-    // would stop cmd-t and New Workspace at a name dialog; the scenarios
-    // check what follows. `herdr-prefs` checks the prefs themselves.
+    // would stop cmd-t and New Workspace at a name dialog, and its default
+    // `ui.toast.delivery = "off"` (with a 1 s delay) would hide the agent
+    // toasts; the scenarios check what follows. `herdr-prefs` checks the
+    // prefs themselves.
     if scenario != "herdr-prefs" {
-        use crate::herdr::config::Edit;
+        use crate::herdr::config::{Edit, ToastDelivery};
         crate::herdr_prefs::override_for_script(Edit::PromptNewTabName(false), cx);
         crate::herdr_prefs::override_for_script(Edit::PromptNewWorkspaceName(false), cx);
+        crate::herdr_prefs::override_for_script(Edit::ToastDelivery(ToastDelivery::Herdr), cx);
+        crate::herdr_prefs::override_for_script(Edit::ToastDelay(0), cx);
     }
     let name = scenario.clone();
     let started = window.update(cx, |_, window, cx| {
