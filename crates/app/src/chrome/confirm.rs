@@ -1,5 +1,6 @@
 //! Confirmations. herdr's close calls act at once, so the app asks before a
-//! close would end a running agent or take a whole worktree group with it.
+//! close would end a running agent, and, as herdr's `ui.confirm_close` says
+//! (on by default), before closing any workspace or worktree group.
 
 use gpui_kit::component::WindowExt as _;
 use gpui_kit::component::button::ButtonVariant;
@@ -122,7 +123,14 @@ fn group_confirmation(
 }
 
 /// The confirmation `command` needs, or `None` when it can run straight away.
-pub(super) fn needed_for(command: &Command, snapshot: &Snapshot) -> Option<Confirmation> {
+/// `confirm_close` is herdr's `ui.confirm_close`: every workspace close asks
+/// when it's on, none does when it's off (as in herdr). Closing a pane or a
+/// tab asks only when it would stop an agent.
+pub(super) fn needed_for(
+    command: &Command,
+    snapshot: &Snapshot,
+    confirm_close: bool,
+) -> Option<Confirmation> {
     match command {
         Command::ClosePane { pane_id, .. } => {
             let agent = find_agent(snapshot, pane_id)?;
@@ -149,6 +157,9 @@ pub(super) fn needed_for(command: &Command, snapshot: &Snapshot) -> Option<Confi
             close_group,
             ..
         } => {
+            if !confirm_close {
+                return None;
+            }
             let members = if *close_group {
                 group_members(snapshot, workspace_id)
             } else {
@@ -161,9 +172,14 @@ pub(super) fn needed_for(command: &Command, snapshot: &Snapshot) -> Option<Confi
             let label = snapshot
                 .workspace(workspace_id)
                 .map_or("workspace", |w| w.info.label.as_str());
-            (!names.is_empty()).then(|| Confirmation {
+            let message = if names.is_empty() {
+                "This closes the workspace and every terminal in it.".to_owned()
+            } else {
+                agent_summary(&names)
+            };
+            Some(Confirmation {
                 title: format!("Close {label}?"),
-                message: agent_summary(&names),
+                message,
                 confirm_label: "Close Workspace".into(),
             })
         }
@@ -243,7 +259,7 @@ mod tests {
             machine: crate::state::MachineId::Local,
             pane_id: "w1:p1".into(),
         };
-        assert!(needed_for(&command, &snapshot()).is_some());
+        assert!(needed_for(&command, &snapshot(), true).is_some());
     }
 
     #[test]
@@ -252,7 +268,7 @@ mod tests {
             machine: crate::state::MachineId::Local,
             pane_id: "w1:p2".into(),
         };
-        assert_eq!(needed_for(&command, &snapshot()), None);
+        assert_eq!(needed_for(&command, &snapshot(), true), None);
     }
 
     #[test]
@@ -261,7 +277,7 @@ mod tests {
             machine: crate::state::MachineId::Local,
             tab_id: "w1:t2".into(),
         };
-        assert_eq!(needed_for(&command, &snapshot()), None);
+        assert_eq!(needed_for(&command, &snapshot(), true), None);
     }
 
     #[test]
@@ -271,7 +287,7 @@ mod tests {
             workspace_id: "w1".into(),
             close_group: true,
         };
-        let confirmation = needed_for(&command, &snapshot()).map(|c| c.message);
+        let confirmation = needed_for(&command, &snapshot(), true).map(|c| c.message);
         assert_eq!(
             confirmation.as_deref(),
             Some(
@@ -293,7 +309,37 @@ mod tests {
             workspace_id: "w2".into(),
             close_group: true,
         };
-        assert_eq!(needed_for(&command, &snapshot()), None);
+        let title = needed_for(&command, &snapshot(), true).map(|c| c.title);
+        assert_eq!(title.as_deref(), Some("Close ws-w2?"));
+    }
+
+    #[test]
+    fn closing_an_empty_workspace_asks_when_confirm_close_is_on() {
+        let command = Command::CloseWorkspace {
+            machine: crate::state::MachineId::Local,
+            workspace_id: "w3".into(),
+            close_group: false,
+        };
+        assert!(needed_for(&command, &snapshot(), true).is_some());
+    }
+
+    #[test]
+    fn confirm_close_off_closes_workspaces_straight_away() {
+        let command = Command::CloseWorkspace {
+            machine: crate::state::MachineId::Local,
+            workspace_id: "w1".into(),
+            close_group: true,
+        };
+        assert_eq!(needed_for(&command, &snapshot(), false), None);
+    }
+
+    #[test]
+    fn confirm_close_off_still_asks_before_stopping_an_agent_pane() {
+        let command = Command::ClosePane {
+            machine: crate::state::MachineId::Local,
+            pane_id: "w1:p1".into(),
+        };
+        assert!(needed_for(&command, &snapshot(), false).is_some());
     }
 
     #[test]

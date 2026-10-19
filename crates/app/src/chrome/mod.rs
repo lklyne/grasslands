@@ -731,7 +731,9 @@ impl Chrome {
     /// Sends a herdr command, asking first when it would close a running
     /// agent or a whole worktree group (herdr closes immediately).
     pub fn run(&mut self, command: HerdrCommand, window: &mut Window, cx: &mut Context<Self>) {
-        let confirmation = confirm::needed_for(&command, self.snapshot_of(command.machine(), cx));
+        let confirm_close = crate::herdr_prefs::get(cx).confirm_close;
+        let confirmation =
+            confirm::needed_for(&command, self.snapshot_of(command.machine(), cx), confirm_close);
         let Some(confirmation) = confirmation else {
             self.send(command, window, cx);
             return;

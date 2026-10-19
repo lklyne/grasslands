@@ -199,6 +199,11 @@ impl Run {
                 .await;
             self.check(renamed, "renaming a dockerbox workspace renames it there");
             self.shoot(cx, "remote-new-workspace");
+            // herdr's `ui.confirm_close` would ask first; this checks the
+            // close itself (in memory only: script runs don't write it).
+            cx.update(|_, cx| {
+                crate::herdr_prefs::set(crate::herdr::config::Edit::ConfirmClose(false), cx);
+            })?;
             self.chrome_run(
                 cx,
                 HerdrCommand::CloseWorkspace {
