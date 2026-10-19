@@ -10,13 +10,12 @@ pub mod machines {
     reason = "the views pick these up as they are filled in"
 )]
 pub use herdr_client::{
-    AgentInfo as Agent, AgentStatus, Check, Client, ConnectionStatus, Error, Event, Fix,
-    FixCommand, InstallMethod, LayoutDescription, MIN_VERSION, MachineLink, MachineProfile,
-    MachineStatus, NewTab, NewWorkspace, PaneDirection, PaneId, PaneInfo, PaneMoveDestination,
-    PaneSplit, PluginActionContext, PluginActionInfo, PluginInvocationContext, RightClickTarget,
-    SessionSync, SplitDirection, SplitRef, SplitTree, State as Snapshot, Tab, TabId, TabInfo,
-    Update, Version, Workspace, WorkspaceId, WorkspaceInfo, WorkspaceWorktreeInfo, WorktreeInfo,
-    WorktreeParams,
+    AgentInfo as Agent, AgentStatus, Check, Client, ConnectionStatus, Error, Fix, FixCommand,
+    InstallMethod, LayoutDescription, MIN_VERSION, MachineLink, MachineProfile, MachineStatus,
+    NewTab, NewWorkspace, PaneDirection, PaneId, PaneInfo, PaneMoveDestination, PaneSplit,
+    PluginActionContext, PluginActionInfo, PluginInvocationContext, RightClickTarget, SessionSync,
+    SplitDirection, SplitRef, SplitTree, State as Snapshot, Tab, TabId, TabInfo, Update, Version,
+    Workspace, WorkspaceId, WorkspaceInfo, WorkspaceWorktreeInfo, WorktreeInfo, WorktreeParams,
 };
 
 /// Where to find herdr: `HERDR_BIN`, `HERDR_SESSION`, `HERDR_SOCKET_PATH`

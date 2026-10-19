@@ -15,8 +15,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::io::{BufRead, BufReader};
 use std::net::Shutdown;
 use std::os::unix::net::UnixStream;
+use std::sync::Arc;
 use std::sync::mpsc::{self, RecvTimeoutError};
-use std::sync::{Arc, Mutex, PoisonError};
 use std::thread;
 use std::time::Duration;
 
@@ -25,7 +25,7 @@ use serde_json::json;
 use crate::client::Client;
 use crate::endpoint::{self, Endpoint};
 use crate::error::{Error, Result};
-use crate::events::{self, Event};
+use crate::events;
 use crate::state::State;
 use crate::types::{LayoutDescription, TabId};
 
@@ -33,6 +33,8 @@ const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
 /// Bursts of events (a split emits several) are folded into one re-read.
 const COALESCE_WINDOW: Duration = Duration::from_millis(10);
 const READ_ATTEMPTS: usize = 4;
+/// Most `layout.export` calls in flight at once. Over ssh each is ~0.2 s.
+const LAYOUT_WORKERS: usize = 8;
 const BACKOFF_MIN: Duration = Duration::from_millis(100);
 const BACKOFF_MAX: Duration = Duration::from_secs(5);
 
@@ -54,24 +56,19 @@ pub enum ConnectionStatus {
 /// Sent to the app on [`SessionSync::updates`].
 #[derive(Debug, Clone)]
 pub enum Update {
-    /// The cache was replaced. Also available from [`SessionSync::state`].
+    /// The cache was replaced.
     State(Arc<State>),
-    /// An event as it arrived, before the re-read it triggers. Use it for things
-    /// the cache cannot express, like "this pane just got focus" or toasts.
-    Event(Box<Event>),
+    /// An event arrived (its kind, e.g. `pane_created`), before the re-read it
+    /// triggers. The cache is the source of truth; this is for diagnostics.
+    Event {
+        kind: String,
+    },
     Status(ConnectionStatus),
-}
-
-#[derive(Debug)]
-struct Shared {
-    state: Mutex<Arc<State>>,
-    status: Mutex<ConnectionStatus>,
 }
 
 /// Handle to the background sync thread. Dropping it stops the thread.
 #[derive(Debug)]
 pub struct SessionSync {
-    shared: Arc<Shared>,
     inbox: mpsc::Sender<Msg>,
     updates: async_channel::Receiver<Update>,
     client: Client,
@@ -79,19 +76,16 @@ pub struct SessionSync {
 
 impl SessionSync {
     /// Spawns the sync thread and returns immediately. The first state arrives as
-    /// an [`Update::State`]; until then [`state`](Self::state) has generation 0.
+    /// an [`Update::State`] with generation 1.
     pub fn start(endpoint: Endpoint) -> Result<Self> {
-        let shared = Arc::new(Shared {
-            state: Mutex::new(Arc::new(State::default())),
-            status: Mutex::new(ConnectionStatus::Connecting),
-        });
         let (inbox, inbox_rx) = mpsc::channel();
         let (updates_tx, updates) = async_channel::unbounded();
         let client = Client::new(endpoint.clone());
         let engine = Engine {
             endpoint,
             client: client.clone(),
-            shared: Arc::clone(&shared),
+            state: Arc::new(State::default()),
+            status: ConnectionStatus::Connecting,
             inbox: inbox.clone(),
             inbox_rx,
             updates: updates_tx,
@@ -102,30 +96,10 @@ impl SessionSync {
             .name("herdr-sync".into())
             .spawn(move || engine.run())?;
         Ok(Self {
-            shared,
             inbox,
             updates,
             client,
         })
-    }
-
-    /// The latest cache. Cheap: clones an `Arc`.
-    pub fn state(&self) -> Arc<State> {
-        Arc::clone(
-            &self
-                .shared
-                .state
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner),
-        )
-    }
-
-    pub fn status(&self) -> ConnectionStatus {
-        self.shared
-            .status
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .clone()
     }
 
     /// Update stream. Works with `recv().await` on any executor (GPUI's included)
@@ -187,7 +161,9 @@ impl From<Error> for Stop {
 struct Engine {
     endpoint: Endpoint,
     client: Client,
-    shared: Arc<Shared>,
+    /// The last published cache.
+    state: Arc<State>,
+    status: ConnectionStatus,
     inbox: mpsc::Sender<Msg>,
     inbox_rx: mpsc::Receiver<Msg>,
     updates: async_channel::Sender<Update>,
@@ -200,7 +176,7 @@ impl Engine {
         let mut backoff = BACKOFF_MIN;
         loop {
             let stop = self.connected();
-            if self.status() == ConnectionStatus::Connected {
+            if self.status == ConnectionStatus::Connected {
                 backoff = BACKOFF_MIN;
             }
             let reason = match stop {
@@ -258,8 +234,8 @@ impl Engine {
             Msg::Refresh => Ok(true),
             Msg::Closed { sub } if Some(sub) == current => Err(Stop::Lost(Error::Closed)),
             Msg::Line { sub, line } if Some(sub) == current => {
-                if let Some(event) = Event::parse(&line) {
-                    let _ = self.updates.try_send(Update::Event(Box::new(event)));
+                if let Some(kind) = events::kind(&line) {
+                    let _ = self.updates.try_send(Update::Event { kind });
                     return Ok(true);
                 }
                 let request_id = self
@@ -351,66 +327,30 @@ impl Engine {
 
     fn read_state(&self) -> Result<State> {
         let snapshot = self.client.session_snapshot()?;
-        let mut layouts: BTreeMap<TabId, LayoutDescription> = BTreeMap::new();
-        for tab in &snapshot.tabs {
-            match self.client.layout_export(Some(&tab.tab_id)) {
-                Ok(layout) => {
-                    layouts.insert(tab.tab_id.clone(), layout);
-                }
-                // The tab closed after the snapshot; the next read will settle it.
-                Err(Error::Server { code, .. })
-                    if code == "not_found" || code == "tab_not_found" => {}
-                Err(err) => return Err(err),
-            }
-        }
+        let tab_ids: Vec<&TabId> = snapshot.tabs.iter().map(|tab| &tab.tab_id).collect();
+        let layouts = export_layouts(&self.client, &tab_ids)?;
         Ok(State::build(0, snapshot, &layouts))
     }
 
-    fn publish(&self, mut state: State) {
-        let mut current = self
-            .shared
-            .state
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
-        state.generation = current.generation;
-        if state == **current {
+    fn publish(&mut self, mut state: State) {
+        state.generation = self.state.generation;
+        if state == *self.state {
             return;
         }
         state.generation += 1;
-        let state = Arc::new(state);
-        *current = Arc::clone(&state);
-        drop(current);
-        let _ = self.updates.try_send(Update::State(state));
+        self.state = Arc::new(state);
+        let _ = self
+            .updates
+            .try_send(Update::State(Arc::clone(&self.state)));
     }
 
     fn known_panes(&self) -> BTreeSet<String> {
-        self.shared
-            .state
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .panes
-            .keys()
-            .cloned()
-            .collect()
+        self.state.panes.keys().cloned().collect()
     }
 
-    fn status(&self) -> ConnectionStatus {
-        self.shared
-            .status
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .clone()
-    }
-
-    fn set_status(&self, status: ConnectionStatus) {
-        let mut current = self
-            .shared
-            .status
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
-        if *current != status {
-            *current = status.clone();
-            drop(current);
+    fn set_status(&mut self, status: ConnectionStatus) {
+        if self.status != status {
+            self.status = status.clone();
             let _ = self.updates.try_send(Update::Status(status));
         }
     }
@@ -430,6 +370,50 @@ impl Engine {
             }
         }
     }
+}
+
+/// Exports every tab's layout, up to [`LAYOUT_WORKERS`] at a time. Tabs that
+/// closed after the snapshot are skipped; the consistency retry in
+/// [`Engine::reread`] settles them.
+fn export_layouts(
+    client: &Client,
+    tab_ids: &[&TabId],
+) -> Result<BTreeMap<TabId, LayoutDescription>> {
+    let export = |tab_id: &TabId| match client.layout_export(Some(tab_id)) {
+        Ok(layout) => Ok(Some(layout)),
+        Err(Error::Server { code, .. }) if code == "not_found" || code == "tab_not_found" => {
+            Ok(None)
+        }
+        Err(err) => Err(err),
+    };
+    let results: Vec<Result<Option<LayoutDescription>>> = if tab_ids.len() <= 1 {
+        tab_ids.iter().map(|tab_id| export(tab_id)).collect()
+    } else {
+        let chunk = tab_ids.len().div_ceil(LAYOUT_WORKERS);
+        thread::scope(|scope| {
+            let workers: Vec<_> = tab_ids
+                .chunks(chunk)
+                .map(|tabs| {
+                    scope.spawn(|| tabs.iter().map(|tab_id| export(tab_id)).collect::<Vec<_>>())
+                })
+                .collect();
+            workers
+                .into_iter()
+                .flat_map(|worker| {
+                    worker
+                        .join()
+                        .unwrap_or_else(|panic| std::panic::resume_unwind(panic))
+                })
+                .collect()
+        })
+    };
+    let mut layouts = BTreeMap::new();
+    for (tab_id, result) in tab_ids.iter().zip(results) {
+        if let Some(layout) = result? {
+            layouts.insert((*tab_id).clone(), layout);
+        }
+    }
+    Ok(layouts)
 }
 
 fn read_events(mut reader: BufReader<UnixStream>, sub: u64, inbox: &mpsc::Sender<Msg>) {

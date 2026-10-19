@@ -7,7 +7,7 @@ use std::process::Command;
 
 use herdr_client::*;
 
-use common::{dev_endpoint, wait_for};
+use common::{Watch, dev_endpoint};
 
 #[test]
 fn sync_should_reconnect_after_server_stop() {
@@ -15,9 +15,9 @@ fn sync_should_reconnect_after_server_stop() {
         return;
     };
     let sync = SessionSync::start(endpoint.clone()).unwrap();
-    let updates = sync.updates();
-    wait_for(&sync, "first read", |s| s.generation > 0);
-    assert_eq!(sync.status(), ConnectionStatus::Connected);
+    let mut watch = Watch::new(&sync);
+    watch.wait_for("first read", |s| s.generation > 0);
+    assert_eq!(watch.status(), Some(&ConnectionStatus::Connected));
 
     // Only ever the isolated dev session (checked by dev_endpoint).
     let status = Command::new(&endpoint.bin)
@@ -31,15 +31,14 @@ fn sync_should_reconnect_after_server_stop() {
         .unwrap();
     assert!(status.success());
 
-    let mut saw_reconnecting = false;
-    loop {
-        let update = updates.recv_blocking().unwrap();
-        match update {
-            Update::Status(ConnectionStatus::Reconnecting { .. }) => saw_reconnecting = true,
-            Update::Status(ConnectionStatus::Connected) if saw_reconnecting => break,
-            _ => {}
-        }
-    }
+    let seen = watch.statuses.len();
+    watch.wait("reconnect", common::TIMEOUT, |w| {
+        let after = &w.statuses[seen..];
+        after
+            .iter()
+            .position(|s| matches!(s, ConnectionStatus::Reconnecting { .. }))
+            .is_some_and(|i| after[i..].contains(&ConnectionStatus::Connected))
+    });
 
     // The restarted server is live and the cache follows it again.
     let created = sync
@@ -50,8 +49,6 @@ fn sync_should_reconnect_after_server_stop() {
         })
         .unwrap();
     let ws = created.workspace.workspace_id;
-    wait_for(&sync, "workspace after reconnect", |s| {
-        s.workspace(&ws).is_some()
-    });
+    watch.wait_for("workspace after reconnect", |s| s.workspace(&ws).is_some());
     sync.client().workspace_close(&ws, false).unwrap();
 }
