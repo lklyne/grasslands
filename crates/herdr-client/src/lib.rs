@@ -11,6 +11,7 @@
 //! sockets, so it works the same from GPUI, tokio or a test.
 
 mod client;
+pub mod config;
 mod endpoint;
 mod error;
 pub mod events;

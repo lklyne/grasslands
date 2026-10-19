@@ -11,9 +11,11 @@ description = "herdr socket API client: connection, server start, typed commands
 async-channel = "2.5.0"
 libc = "0.2.190"
 log = "0.4.34"
+notify = "8.2.0"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
 thiserror = "2.0.21"
+toml_edit = "0.25.17"
 
 [dev-dependencies]
 serde_json = "1.0.154"
