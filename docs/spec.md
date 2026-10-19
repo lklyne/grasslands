@@ -130,7 +130,7 @@ The upper sidebar panel lists every herdr workspace and agent, laid out like her
 - Badges count blocked agents and unseen results per row and in the "spaces" label row.
 - Footer: "new" makes a workspace in the active worktree's folder; "menu" opens the focused workspace's menu plus New Workspace, New Worktree… and the command palette.
 - **agents:** every agent as two lines (glyph, workspace and tab; then the agent's name), with "blocked" and "done" badges. "grouped" keeps herdr's workspace order with blocked first in each workspace; "priority" is herdr's attention queue (blocked, done, working, idle, newest change first). The section folds from its label.
-- Click a workspace to focus it (`workspace.focus`); the terminal area follows. Click an agent to focus its pane and mark its result seen.
+- Click a workspace to focus it (`workspace.focus`); the terminal area follows. Click an agent to focus its pane; herdr then counts its result as seen.
 - Hovering a row shows + (a worktree of that repo, `worktree.create`, asks for a branch name), … (the workspace menu: rename, new tab, close, close group) and ×. Closing asks first when agents are running there.
 - Built from `session.snapshot` (workspaces and agents) and kept current by re-reading on every event, including `pane.agent_status_changed`.
 

@@ -8,8 +8,9 @@ use gpui_kit::*;
 
 use super::Callback;
 use super::HerdrCommand as Command;
-use crate::attention::{agent_name, find_agent, status_label};
+use crate::attention::find_agent;
 use crate::herdr::{Snapshot, Workspace};
+use crate::{label, status};
 
 /// The question `Chrome::confirm` asks.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -77,7 +78,7 @@ fn agents_where(snapshot: &Snapshot, keep: impl Fn(&str, &str) -> bool) -> Vec<&
         .agents
         .iter()
         .filter(|a| keep(&a.tab_id, &a.workspace_id))
-        .map(agent_name)
+        .map(|a| label::agent(snapshot, a))
         .collect()
 }
 
@@ -126,12 +127,12 @@ pub(super) fn needed_for(command: &Command, snapshot: &Snapshot) -> Option<Confi
     match command {
         Command::ClosePane { pane_id, .. } => {
             let agent = find_agent(snapshot, pane_id)?;
-            let name = agent_name(agent);
+            let name = label::agent(snapshot, agent);
             Some(Confirmation {
                 title: format!("Close {name}?"),
                 message: format!(
                     "This pane runs {name} ({}). Closing it stops the agent.",
-                    status_label(agent.agent_status)
+                    status::text(agent.agent_status, &agent.state_labels)
                 ),
                 confirm_label: "Close Pane".into(),
             })

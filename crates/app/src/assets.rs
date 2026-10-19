@@ -9,14 +9,7 @@ use gpui_kit::*;
 icon_assets!(
     ExtraIcons,
     [
-        CircleQuestionMark,
-        GitBranch,
-        GitCompare,
-        GitMerge,
-        KeyRound,
-        Server,
-        ServerOff,
-        WifiOff
+        GitBranch, GitCompare, GitMerge, KeyRound, Server, ServerOff, WifiOff
     ]
 );
 

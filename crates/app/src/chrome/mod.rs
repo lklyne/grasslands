@@ -20,7 +20,7 @@ use gpui_kit::component::WindowExt as _;
 use gpui_kit::component::command::CommandState;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::menu::{PopupMenu, PopupMenuItem};
-use gpui_kit::component::notification::{Notification, NotificationDelivery, NotificationType};
+use gpui_kit::component::notification::{Notification, NotificationDelivery};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
@@ -32,6 +32,7 @@ use crate::herdr::{
 use crate::overlay::{self, Capture, LayerId, Overlay};
 use crate::sounds;
 use crate::state::{AppEvent, AppState, MachineId};
+use crate::status;
 
 pub use command::HerdrCommand;
 pub use confirm::Confirmation;
@@ -278,15 +279,21 @@ impl Chrome {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let (kind, message) = match change.status {
-            AgentStatus::Blocked => (NotificationType::Warning, "needs your input"),
-            AgentStatus::Done => (NotificationType::Success, "finished"),
+        let default_message = match change.status {
+            AgentStatus::Blocked => "needs your input",
+            AgentStatus::Done => "finished",
             _ => return,
         };
         let Some(snapshot) = self.state.read(cx).machine(machine).map(|m| m.snapshot()) else {
             return;
         };
-        let workspace = find_agent(snapshot, &change.pane_id)
+        let agent = find_agent(snapshot, &change.pane_id);
+        // The agent's own words for the state, when it reported some.
+        let message = agent
+            .and_then(|a| a.state_labels.get(status::word(change.status)))
+            .filter(|label| !label.trim().is_empty())
+            .map_or_else(|| default_message.to_owned(), Clone::clone);
+        let workspace = agent
             .and_then(|agent| snapshot.workspace(&agent.workspace_id))
             .map(|w| format!(" in {}", w.info.label))
             .unwrap_or_default();
@@ -300,7 +307,7 @@ impl Chrome {
         let state = self.state.clone();
         let note = Notification::new()
             .id1::<AgentToast>(toast_key(machine, &change.pane_id))
-            .with_type(kind)
+            .icon(status::icon(change.status, cx))
             .title(format!("{}{workspace}", change.name))
             .message(message)
             .placement(Anchor::BottomRight)
@@ -309,8 +316,8 @@ impl Chrome {
             // `FocusPane` to the main window's views; it asks herdr directly.
             .on_click(move |_, _, cx| {
                 sounds::play(cues::Cue::Navigate, sounds::subtle());
+                // `pane.focus` is also what tells herdr the result was seen.
                 state.update(cx, |state, cx| {
-                    state.mark_seen_on(&target_machine, &target, cx);
                     state
                         .focus_pane_on(&target_machine, &target, cx)
                         .detach_and_log_err(cx);

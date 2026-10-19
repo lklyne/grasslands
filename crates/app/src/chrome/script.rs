@@ -25,9 +25,9 @@ use gpui_kit::component::WindowExt as _;
 use gpui_kit::*;
 
 use super::{Chrome, HerdrCommand, MenuTarget};
-use crate::attention::{agent_name, status_label};
 use crate::overlay;
 use crate::state::MachineId;
+use crate::{label, status};
 
 /// Pause between steps so each one renders (and can be screenshotted).
 const STEP: Duration = Duration::from_millis(400);
@@ -246,8 +246,8 @@ fn log(chrome: &Chrome, label: &str, window: &mut Window, cx: &mut Context<Chrom
             format!(
                 "{}={}:{}",
                 a.pane_id,
-                agent_name(a),
-                status_label(a.agent_status)
+                label::agent(snapshot, a),
+                status::word(a.agent_status)
             )
         })
         .collect();

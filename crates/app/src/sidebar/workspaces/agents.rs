@@ -18,22 +18,13 @@ use gpui_kit::component::{ActiveTheme as _, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
-use super::{AgentSort, ROW, dim_text, priority, status_icon, text};
+use super::{AgentSort, ROW, dim_text, text};
 use crate::actions::OpenContextMenu;
 use crate::chrome::MenuTarget;
-use crate::herdr::{Agent, AgentStatus, Snapshot};
+use crate::herdr::{Agent, Snapshot};
+use crate::label;
 use crate::state::{AppState, Machine, MachineId};
-
-/// What herdr calls an agent in its panel.
-fn agent_label(agent: &Agent) -> &str {
-    agent
-        .display_agent
-        .as_deref()
-        .or(agent.name.as_deref())
-        .or(agent.agent.as_deref())
-        .or(agent.title.as_deref())
-        .unwrap_or("agent")
-}
+use crate::status::{self, priority};
 
 /// The agents in `sort` order.
 pub(super) fn ordered(snapshot: &Snapshot, sort: AgentSort) -> Vec<&Agent> {
@@ -95,7 +86,8 @@ impl AgentList {
         }
     }
 
-    /// Focuses the agent's pane and counts its result as seen.
+    /// Focuses the agent's pane; herdr's `pane.focus` counts its result as
+    /// seen (`done` becomes `idle`).
     pub fn activate(&mut self, pane_id: &str, window: &mut Window, cx: &mut Context<Self>) {
         let machine = self.state.read(cx).selected().clone();
         self.activate_on(&machine, pane_id, window, cx);
@@ -111,7 +103,6 @@ impl AgentList {
     ) {
         self.state.update(cx, |state, cx| {
             state.select_machine(machine, cx);
-            state.mark_seen(pane_id, cx);
         });
         window.dispatch_action(
             Box::new(crate::actions::FocusPane {
@@ -142,11 +133,6 @@ impl AgentList {
         let snapshot = machine.snapshot();
         let selected = state.selected() == machine.id();
         let focused = selected && machine.focused_pane() == Some(agent.pane_id.as_str());
-        let unseen = machine.attention().is_unseen_done(snapshot, &agent.pane_id);
-        let status = match agent.agent_status {
-            AgentStatus::Done if !unseen => AgentStatus::Idle,
-            status => status,
-        };
         let workspace = snapshot
             .workspaces
             .iter()
@@ -197,7 +183,7 @@ impl AgentList {
                     );
                 })
             })
-            .child(status_icon(status, cx))
+            .child(status::indicator(agent.agent_status, cx))
             .child(
                 div()
                     .min_w_0()
@@ -214,7 +200,7 @@ impl AgentList {
                     .min_w_0()
                     .truncate()
                     .text_color(theme.muted_foreground)
-                    .child(agent_label(agent).to_owned()),
+                    .child(label::agent(snapshot, agent).to_owned()),
             )
             .when(show_machine, |this| {
                 this.child(div().flex_1()).child(
