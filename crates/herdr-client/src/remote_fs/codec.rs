@@ -52,6 +52,7 @@ pub(super) const ATTR_ACMODTIME: u32 = 0x08;
 pub(super) const ATTR_EXTENDED: u32 = 0x8000_0000;
 
 pub(super) const S_IFMT: u32 = 0o170_000;
+pub(super) const S_IFREG: u32 = 0o100_000;
 pub(super) const S_IFDIR: u32 = 0o040_000;
 pub(super) const S_IFLNK: u32 = 0o120_000;
 
@@ -217,6 +218,10 @@ pub(super) struct Attrs {
 impl Attrs {
     pub(super) fn file_type(&self) -> Option<u32> {
         self.permissions.map(|mode| mode & S_IFMT)
+    }
+
+    pub(super) fn is_file(&self) -> bool {
+        self.file_type() == Some(S_IFREG)
     }
 
     pub(super) fn is_dir(&self) -> bool {

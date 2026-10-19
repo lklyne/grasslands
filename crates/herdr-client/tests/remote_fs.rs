@@ -188,6 +188,26 @@ fn remote_fs_should_read_write_exec_and_survive_a_restart() {
     assert_eq!(mode(&fs, &file), "640", "write keeps the mode");
     assert_eq!(names(&fs, &dir), ["a.txt"], "no temp file left behind");
 
+    fs.exec(
+        &["chmod", "444", file.to_str().unwrap()],
+        None,
+        EXEC_TIMEOUT,
+    )
+    .unwrap();
+    assert_eq!(
+        fs.write(&file, b"clobbered").unwrap_err().kind(),
+        io::ErrorKind::PermissionDenied,
+        "a read-only file isn't replaced"
+    );
+    assert_eq!(fs.read(&file).unwrap(), b"hello\n");
+    assert_eq!(names(&fs, &dir), ["a.txt"], "no temp file left behind");
+    fs.exec(
+        &["chmod", "640", file.to_str().unwrap()],
+        None,
+        EXEC_TIMEOUT,
+    )
+    .unwrap();
+
     let new = dir.join("new.txt");
     fs.write(&new, b"fresh").unwrap();
     assert_eq!(fs.read(&new).unwrap(), b"fresh");

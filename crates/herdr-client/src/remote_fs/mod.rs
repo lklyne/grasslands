@@ -138,11 +138,23 @@ impl RemoteFs {
         })
     }
 
-    /// Atomic: writes a sibling temp file, keeps the old file's permissions,
-    /// then renames over `path`.
+    /// Atomic: writes a sibling temp file and renames it over `path`, so no
+    /// one reads half a file. The new file keeps the old one's permission
+    /// bits but not its owner, group or extended attributes, and hard links
+    /// to the old file keep the old contents.
+    ///
+    /// Fails with `PermissionDenied` if `path` exists but we couldn't write
+    /// it in place, as a local write would, and with `Unsupported` if the
+    /// server can't rename over a file atomically (no posix-rename).
     pub fn write(&self, path: &Path, contents: &[u8]) -> io::Result<()> {
         let n = self.temp.fetch_add(1, Ordering::Relaxed);
         self.with_session(|s| {
+            if !s.posix_rename {
+                return Err(io::Error::new(
+                    io::ErrorKind::Unsupported,
+                    "the machine's SFTP server can't replace files atomically",
+                ));
+            }
             let path = bytes(path);
             // Write through a symlink, not over it.
             let target = match s.stat(path, LSTAT) {
@@ -150,7 +162,12 @@ impl RemoteFs {
                 _ => path.to_vec(),
             };
             let perms = match s.stat(&target, STAT) {
-                Ok(attrs) => attrs.permissions.map(|mode| mode & 0o7777),
+                Ok(attrs) => {
+                    if attrs.is_file() {
+                        s.check_writable(&target)?;
+                    }
+                    attrs.permissions.map(|mode| mode & 0o7777)
+                }
                 Err(err) if err.kind() == io::ErrorKind::NotFound => None,
                 Err(err) => return Err(err),
             };
@@ -606,21 +623,31 @@ impl Session {
         self.status_request(EXTENDED, &body)
     }
 
-    /// Renames `from` over `to`: atomic with posix-rename, else remove first.
+    /// Renames `from` over `to` atomically (posix-rename; check it first).
     fn replace(&mut self, from: &[u8], to: &[u8]) -> io::Result<()> {
-        if self.posix_rename {
-            let body = Body::new()
-                .bytes(b"posix-rename@openssh.com")
-                .bytes(from)
-                .bytes(to)
-                .0;
-            return self.status_request(EXTENDED, &body);
-        }
-        match self.status_request(REMOVE, &Body::new().bytes(to).0) {
-            Err(err) if err.kind() != io::ErrorKind::NotFound => return Err(err),
-            _ => {}
-        }
-        self.status_request(RENAME, &Body::new().bytes(from).bytes(to).0)
+        let body = Body::new()
+            .bytes(b"posix-rename@openssh.com")
+            .bytes(from)
+            .bytes(to)
+            .0;
+        self.status_request(EXTENDED, &body)
+    }
+
+    /// Opens `path` for writing without truncating it, then closes it: the
+    /// server's own answer to "could we write this in place", which covers
+    /// root, groups and ACLs that mode bits alone don't.
+    fn check_writable(&mut self, path: &[u8]) -> io::Result<()> {
+        let handle = self.open(path, FXF_WRITE, None).map_err(|err| {
+            if err.kind() == io::ErrorKind::PermissionDenied {
+                io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    format!("{} is read-only", String::from_utf8_lossy(path)),
+                )
+            } else {
+                err
+            }
+        })?;
+        self.close(&handle)
     }
 
     /// SFTP v3 reports "exists" as a bare failure; check and say so.
