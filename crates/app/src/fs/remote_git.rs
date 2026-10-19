@@ -1,20 +1,24 @@
 //! A saved machine's Changes summary and patch, worktree root and branch,
 //! from its own git (see `crate::changes::git` for the rules). Each is one
-//! command, so a poll costs one round trip.
+//! command, so a poll costs one round trip, and a patch read brings the
+//! summary with it: the footer reuses that while the Changes tab polls.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::io;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock, Mutex};
+use std::time::{Duration, Instant};
 
 use super::remote::Run;
 use crate::changes::git::{FileChange, Summary};
+use crate::state::MachineId;
 
 /// Finds the checkout's root, branch, parent and the diff's base the way
-/// `local_git` does, then prints `top\0HEAD's target\0parent\0` and runs
-/// `$1`'s diffs from the base against a copy of the index where untracked
-/// files are intent-to-add, so they count as added like Local's. Exits 3
-/// outside git.
+/// `local_git` does, then prints `top\0HEAD's target\0parent\0` and diffs
+/// from the base against a copy of the index where untracked files are
+/// intent-to-add, so they count as added like Local's: with `$1` = `patch`
+/// the patch's length, a NUL and the patch, then always the summary's
+/// numstat and name-status. Exits 3 outside git.
 const GIT: &str = r#"top=$(git rev-parse --show-toplevel 2>/dev/null) || exit 3
 [ -n "$top" ] && cd "$top" || exit 3
 h=$(git symbolic-ref -q HEAD)
@@ -54,12 +58,13 @@ diff() {
     --src-prefix=a/ --dst-prefix=b/ "$@" "$base" --
 }
 if [ "$1" = patch ]; then
-  diff
-else
-  diff --numstat -z
-  printf '\0'
-  diff --name-status -z
-fi"#;
+  diff >"$t/patch"
+  printf '%s\0' "$(wc -c <"$t/patch" | tr -d ' ')"
+  cat "$t/patch"
+fi
+diff --numstat -z
+printf '\0'
+diff --name-status -z"#;
 
 /// The checkout's root, HEAD's target and the parent, then the rest.
 struct Header<'a> {
@@ -126,10 +131,45 @@ pub(super) fn summary(run: &Run<'_>, dir: &Path) -> io::Result<Option<Summary>> 
     Ok(header.map(|header| parse_summary(&header)))
 }
 
-pub(super) fn patch(run: &Run<'_>, dir: &Path) -> io::Result<Option<String>> {
+/// The Changes tab's patch and the footer's summary, from one run.
+pub(super) fn patch(run: &Run<'_>, dir: &Path) -> io::Result<Option<(String, Summary)>> {
     let mut stdout = Vec::new();
-    let header = run_git(run, dir, "patch", &mut stdout)?;
-    Ok(header.map(|header| String::from_utf8_lossy(header.rest).into_owned()))
+    let Some(mut header) = run_git(run, dir, "patch", &mut stdout)? else {
+        return Ok(None);
+    };
+    let unexpected = || io::Error::new(io::ErrorKind::InvalidData, "unexpected git output");
+    let len: usize = take_field(&mut header.rest)
+        .and_then(|len| len.parse().ok())
+        .ok_or_else(unexpected)?;
+    let (patch, rest) = header.rest.split_at_checked(len).ok_or_else(unexpected)?;
+    let patch = String::from_utf8_lossy(patch).into_owned();
+    header.rest = rest;
+    Ok(Some((patch, parse_summary(&header))))
+}
+
+/// How long a patch read's summary stands in for the footer's own read:
+/// the poll interval, so while the Changes tab polls the footer needn't.
+const SHARE_FOR: Duration = Duration::from_secs(3);
+
+type Shared = HashMap<(MachineId, PathBuf), (Instant, Option<Summary>)>;
+
+static SHARED: LazyLock<Mutex<Shared>> = LazyLock::new(Mutex::default);
+
+/// Keeps the summary a patch read of `dir` on `machine` brought.
+pub(super) fn share(machine: &MachineId, dir: &Path, summary: Option<Summary>) {
+    let Ok(mut shared) = SHARED.lock() else {
+        return;
+    };
+    let now = Instant::now();
+    shared.retain(|_, (at, _)| now.duration_since(*at) < SHARE_FOR);
+    shared.insert((machine.clone(), dir.to_path_buf()), (now, summary));
+}
+
+/// A summary of `dir` on `machine` shared within `SHARE_FOR`.
+pub(super) fn shared(machine: &MachineId, dir: &Path) -> Option<Option<Summary>> {
+    let shared = SHARED.lock().ok()?;
+    let (at, summary) = shared.get(&(machine.clone(), dir.to_path_buf()))?;
+    (at.elapsed() < SHARE_FOR).then(|| summary.clone())
 }
 
 /// `--numstat -z` records, an empty record, then `--name-status -z` pairs.
@@ -312,7 +352,7 @@ mod tests {
     #[test]
     fn patch_should_hold_edits_and_new_files_since_parent() {
         let dir = feature_branch("remote-patch");
-        let patch = patch(&local_run, &dir).unwrap().unwrap();
+        let (patch, _) = patch(&local_run, &dir).unwrap().unwrap();
         for line in [
             "diff --git a/a.txt b/a.txt",
             " one",
@@ -323,6 +363,24 @@ mod tests {
         ] {
             assert!(patch.lines().any(|l| l == line), "{line:?} in {patch}");
         }
+    }
+
+    #[test]
+    fn patch_should_bring_the_same_summary_as_a_summary_read() {
+        let dir = feature_branch("remote-patch-summary");
+        let (_, summary) = patch(&local_run, &dir).unwrap().unwrap();
+        assert_eq!(Some(summary), remote(&dir));
+    }
+
+    #[test]
+    fn shared_summary_should_be_found_for_its_machine_and_folder_only() {
+        let (machine, dir) = (MachineId::Remote("share-test".into()), Path::new("/r"));
+        share(&machine, dir, None);
+        let other = MachineId::Remote("share-other".into());
+        assert_eq!(
+            (shared(&machine, dir), shared(&other, dir)),
+            (Some(None), None)
+        );
     }
 
     #[test]
@@ -432,6 +490,7 @@ mod tests {
             patch(&ssh_run, api)
                 .unwrap()
                 .unwrap()
+                .0
                 .contains("diff --git a/src/main.rs")
         );
         assert_eq!(

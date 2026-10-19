@@ -192,11 +192,15 @@ impl Fs {
     }
 
     /// The Changes summary for the checkout containing `dir`; `None`
-    /// outside git, an error if a saved machine couldn't be asked.
+    /// outside git, an error if a saved machine couldn't be asked. A saved
+    /// machine's comes from a `git_patch` of `dir` moments ago if there was one.
     pub fn git_summary(&self, dir: &Path) -> io::Result<Option<crate::changes::git::Summary>> {
         match self {
             Self::Local => Ok(local_git::read(dir)),
-            Self::Remote { files, .. } => remote_git::summary(&remote::runner(files), dir),
+            Self::Remote { machine, files, .. } => match remote_git::shared(machine, dir) {
+                Some(summary) => Ok(summary),
+                None => remote_git::summary(&remote::runner(files), dir),
+            },
             #[cfg(test)]
             Self::Fake(_) => Ok(None),
         }
@@ -207,7 +211,11 @@ impl Fs {
     pub fn git_patch(&self, dir: &Path) -> io::Result<Option<String>> {
         match self {
             Self::Local => Ok(local_git::patch(dir)),
-            Self::Remote { files, .. } => remote_git::patch(&remote::runner(files), dir),
+            Self::Remote { machine, files, .. } => {
+                let read = remote_git::patch(&remote::runner(files), dir)?;
+                remote_git::share(machine, dir, read.as_ref().map(|(_, s)| s.clone()));
+                Ok(read.map(|(patch, _)| patch))
+            }
             #[cfg(test)]
             Self::Fake(_) => Ok(None),
         }
