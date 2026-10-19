@@ -555,3 +555,21 @@ impl Client {
         )
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn registration_should_be_open_while_the_server_holds_it() {
+        let (stream, _server) = UnixStream::pair().unwrap();
+        assert!(SshAgentRegistration { stream }.is_open());
+    }
+
+    #[test]
+    fn registration_should_be_closed_once_the_server_hangs_up() {
+        let (stream, server) = UnixStream::pair().unwrap();
+        drop(server);
+        assert!(!SshAgentRegistration { stream }.is_open());
+    }
+}
