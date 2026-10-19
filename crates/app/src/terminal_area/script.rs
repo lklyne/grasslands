@@ -28,6 +28,7 @@ mod chrome;
 mod drags;
 mod machines;
 mod remote;
+mod remote_files;
 mod remote_ui;
 mod settings;
 mod setup;
@@ -52,6 +53,7 @@ pub fn start(scenario: String, area: Entity<TerminalArea>, window: &mut Window, 
         "machine-ui",
         "machines",
         "remote",
+        "remote-files",
     ]
     .contains(&scenario.as_str())
     {
@@ -74,6 +76,7 @@ pub fn start(scenario: String, area: Entity<TerminalArea>, window: &mut Window, 
                 "machine-ui" => run.machine_ui(cx).await,
                 "machines" => run.machines(cx).await,
                 "remote" => run.remote_ui(cx).await,
+                "remote-files" => run.remote_files(cx).await,
                 _ => run.terminals(cx).await,
             };
             if let Err(error) = result {

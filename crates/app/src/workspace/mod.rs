@@ -155,6 +155,11 @@ impl Workspace {
         &self.editor
     }
 
+    /// The Changes tab, while it is open.
+    pub fn changes(&self) -> Option<&Entity<Changes>> {
+        self.changes.as_ref()
+    }
+
     pub fn selected(&self) -> MainTab {
         self.selected
     }

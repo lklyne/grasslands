@@ -37,6 +37,10 @@ impl FileModel {
         &self.root
     }
 
+    pub fn listing(&self, dir: &Path) -> Option<&[Entry]> {
+        self.listings.get(dir).map(Vec::as_slice)
+    }
+
     pub fn is_loaded(&self, dir: &Path) -> bool {
         self.listings.contains_key(dir)
     }

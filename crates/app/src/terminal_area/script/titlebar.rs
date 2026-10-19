@@ -261,7 +261,7 @@ impl Run {
         Ok(())
     }
 
-    fn workspace<R>(
+    pub(super) fn workspace<R>(
         &self,
         cx: &mut Cx,
         f: impl FnOnce(&mut Workspace, &mut Window, &mut Context<Workspace>) -> R,
@@ -318,7 +318,7 @@ impl Run {
     }
 }
 
-fn tab_titles(workspace: &Workspace, cx: &App) -> Vec<String> {
+pub(super) fn tab_titles(workspace: &Workspace, cx: &App) -> Vec<String> {
     workspace
         .editor()
         .read(cx)

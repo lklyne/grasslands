@@ -24,6 +24,16 @@ pub fn spaces(cx: &App) -> Option<Entity<workspaces::WorkspaceList>> {
     cx.try_global::<Spaces>()?.0.upgrade()
 }
 
+/// The files panel, for the terminal area's script hooks.
+struct Files(WeakEntity<files::FileTree>);
+
+impl Global for Files {}
+
+/// The files panel, if one is open.
+pub fn files(cx: &App) -> Option<Entity<files::FileTree>> {
+    cx.try_global::<Files>()?.0.upgrade()
+}
+
 /// The three sidebar panels.
 pub struct SidebarPanels {
     pub spaces: Entity<workspaces::WorkspaceList>,
@@ -38,6 +48,7 @@ impl SidebarPanels {
         let files = cx.new(|cx| files::FileTree::new(state, window, cx));
         workspaces::start_script(spaces.downgrade(), agents.downgrade(), window, cx);
         cx.set_global(Spaces(spaces.downgrade()));
+        cx.set_global(Files(files.downgrade()));
         Self {
             spaces,
             agents,

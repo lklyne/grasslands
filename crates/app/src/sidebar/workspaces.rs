@@ -584,6 +584,17 @@ impl WorkspaceList {
             .copied()
     }
 
+    /// The branch `workspace_id`'s row shows, for script hooks.
+    pub fn branch_of(&self, machine: &MachineId, workspace_id: &str, cx: &App) -> Option<String> {
+        let snapshot = self.state.read(cx).machine(machine)?.snapshot().clone();
+        let info = &snapshot
+            .workspaces
+            .iter()
+            .find(|w| w.info.workspace_id == workspace_id)?
+            .info;
+        self.checkout(machine, &snapshot, info)?.branch.clone()
+    }
+
     /// Where a machine's header was drawn last frame, if it was.
     pub fn drawn_header(&self, machine: &MachineId) -> Option<Bounds<Pixels>> {
         self.drawn_headers.borrow().get(machine).copied()
