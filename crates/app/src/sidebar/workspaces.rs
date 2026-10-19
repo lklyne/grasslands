@@ -170,9 +170,10 @@ impl WorkspaceList {
         let subscribe = cx.subscribe(&state, |this, _, event, cx| match event {
             // Local's cache can change while another machine is selected.
             AppEvent::SnapshotReplaced | AppEvent::MachinesChanged => this.sync_checkouts(cx),
-            // The focused pane moved to another checkout; catch up on any
-            // branch change the watcher could have missed.
-            AppEvent::ActiveWorktreeChanged(_) => this.refresh_checkouts(cx),
+            // The focused pane moved to another checkout, or another machine
+            // was selected; catch up on any branch change the watcher could
+            // have missed (saved machines have no watcher).
+            AppEvent::ActiveRootChanged(_) => this.refresh_checkouts(cx),
             _ => {}
         });
         // Tests stay off notify's thread and timers, like `AppState` stays

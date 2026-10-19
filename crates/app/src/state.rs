@@ -46,13 +46,11 @@ const RUN_CHECK: Duration = Duration::from_secs(30);
 
 #[derive(Debug, Clone)]
 pub enum AppEvent {
-    /// The focused pane's worktree root changed. The file tree re-roots and
-    /// the editor swaps to that worktree's tab set. Always `None` while a
-    /// remote machine is selected.
-    ActiveWorktreeChanged(Option<PathBuf>),
     /// The active worktree, as a machine and a path, changed: the focused
-    /// pane moved, or another machine was selected. The file tree, search
-    /// and Changes follow this one, on any machine (see `AppState::fs_for`).
+    /// pane moved to another checkout, or another machine was selected (sent
+    /// on every selection, even when the root is the same). The file tree,
+    /// search, Changes, the editor's tab set and the sidebar's branch reads
+    /// follow it, on any machine (see `AppState::fs_for`).
     ActiveRootChanged(Option<ActiveRoot>),
     /// The selected machine's herdr cache was replaced (any change: startup,
     /// events, reconnect, or another machine being selected). The new one is
@@ -79,7 +77,10 @@ pub enum AppEvent {
     /// A machine's link was replaced (its target, session or enabled flag
     /// changed): its terminals' attaches died with the old link.
     MachineRestarted(MachineId),
-    /// Another machine was selected; `SnapshotReplaced` follows.
+    /// Another machine was selected. Always followed, in order, by
+    /// `SnapshotReplaced`, `FocusedPaneChanged` and `ActiveRootChanged` for
+    /// the new machine, so views keyed on those need not handle this too;
+    /// it is for views that only name the selected machine.
     MachineSelected(MachineId),
     /// The file tree renamed or moved a file or folder; open editor tabs at or
     /// under `from` follow it to `to`.
@@ -365,22 +366,17 @@ impl AppState {
             return;
         }
         tracing::info!("machine selected: {id}");
-        let was_local = self.selected.is_local();
         self.selected = id.clone();
-        self.announce_selection(was_local, cx);
+        self.announce_selection(cx);
     }
 
-    fn announce_selection(&mut self, was_local: bool, cx: &mut Context<Self>) {
+    /// The events for a new selection, in the order `AppEvent` documents.
+    fn announce_selection(&mut self, cx: &mut Context<Self>) {
         cx.emit(AppEvent::MachineSelected(self.selected.clone()));
         cx.emit(AppEvent::SnapshotReplaced);
         cx.emit(AppEvent::FocusedPaneChanged(
             self.selected_machine().focused_pane.clone(),
         ));
-        if was_local != self.selected.is_local() {
-            cx.emit(AppEvent::ActiveWorktreeChanged(
-                self.active_worktree().cloned(),
-            ));
-        }
         cx.emit(AppEvent::ActiveRootChanged(self.active_root()));
         cx.notify();
     }
@@ -469,9 +465,8 @@ impl AppState {
         }
         let selected = machine_list::reselect(&self.selected, self.machines.iter().map(|m| &m.id));
         if selected != self.selected {
-            let was_local = self.selected.is_local();
             self.selected = selected;
-            self.announce_selection(was_local, cx);
+            self.announce_selection(cx);
         } else if selected_restarted {
             // A new link starts with an empty cache.
             cx.emit(AppEvent::SnapshotReplaced);
@@ -1172,9 +1167,6 @@ impl AppState {
         machine.worktree.clone_from(&root);
         if id != &self.selected {
             return;
-        }
-        if id.is_local() {
-            cx.emit(AppEvent::ActiveWorktreeChanged(root));
         }
         cx.emit(AppEvent::ActiveRootChanged(self.active_root()));
         cx.notify();

@@ -19,7 +19,7 @@ Date: 2026-10-15. Status: accepted (app-shell, Part 2).
 - **Tab titles.** The file name, plus the fewest parent folders that make it
   unique within the tab group (`one/mod.rs`, `two/mod.rs`).
 - **Groups.** Tabs are grouped by the active worktree root (`AppState`'s
-  `ActiveWorktreeChanged`). `OpenFile` opens into the active worktree's group,
+  `ActiveRootChanged`). `OpenFile` opens into the active worktree's group,
   even if the file lies outside it. Switching worktrees swaps the titlebar's
   file tabs (herdr is selected if the new group is empty); it does not take
   focus from the terminal that caused the switch.

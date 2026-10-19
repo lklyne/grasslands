@@ -26,7 +26,7 @@ herdr's socket API has no branch and no ahead/behind (herdr's own sidebar reads 
 Results are cached per folder in `WorkspaceList`, read on the background executor, never during render:
 
 - read once when a folder first appears in a snapshot; dropped when no workspace uses it;
-- re-read for every cached folder on `AppEvent::ActiveWorktreeChanged` (the focused-pane poll in `AppState`);
+- re-read for every cached folder on `AppEvent::ActiveRootChanged` (the focused-pane poll in `AppState`, or another machine selected);
 - re-read every 5 s, for what the watcher can't see (commits, fetches and pushes move ahead/behind; herdr polls too);
 - re-read when a watched `HEAD` changes. The list runs its own small `notify` watcher on each checkout's git dir (non-recursive, `HEAD`/`HEAD.lock` only). The file tree's watcher belongs to the files agent, skips `.git`, and only covers the active worktree, so it can't see other workspaces' branches.
 
