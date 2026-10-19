@@ -83,6 +83,8 @@ pub struct WorkspaceList {
     reading: HashSet<PathBuf>,
     /// Saved machines' workspace branches.
     remote_checkouts: RemoteCheckouts,
+    /// A refresh of every saved machine's branches is out.
+    remote_refreshing: bool,
     heads: Option<HeadWatcher>,
     /// The dragged row and the row the drag last ticked over, so each new
     /// row ticks once.
@@ -281,6 +283,7 @@ impl WorkspaceList {
             checkouts: HashMap::new(),
             reading: HashSet::new(),
             remote_checkouts: RemoteCheckouts::default(),
+            remote_refreshing: false,
             heads,
             drag_tick: None,
             drawn_rows: Rc::default(),
@@ -331,8 +334,13 @@ impl WorkspaceList {
     fn refresh_checkouts(&mut self, cx: &mut Context<Self>) {
         let dirs = self.checkouts.keys().cloned().collect();
         self.read_checkouts(dirs, cx);
+        // Saved machines are asked only while the app is in front (0020),
+        // and not again while the last round is still out on a slow link.
+        if self.remote_refreshing || cx.active_window().is_none() {
+            return;
+        }
         let remote = self.remote_checkouts.dirs();
-        self.read_remote_checkouts(remote, cx);
+        self.remote_refreshing = self.read_remote_checkouts(remote, true, cx);
     }
 
     /// Reads folders of connected saved machines' workspaces seen for the
@@ -353,18 +361,24 @@ impl WorkspaceList {
             })
             .collect();
         let new = self.remote_checkouts.sync(wanted);
-        self.read_remote_checkouts(new, cx);
+        self.read_remote_checkouts(new, false, cx);
     }
 
-    /// Asks each folder's machine for its branch, off the main thread.
-    fn read_remote_checkouts(&mut self, dirs: Vec<git::RemoteDir>, cx: &mut Context<Self>) {
+    /// Asks each folder's machine for its branch, off the main thread;
+    /// whether any was asked. A `refresh` clears `remote_refreshing` when done.
+    fn read_remote_checkouts(
+        &mut self,
+        dirs: Vec<git::RemoteDir>,
+        refresh: bool,
+        cx: &mut Context<Self>,
+    ) -> bool {
         let state = self.state.read(cx);
         let reads: Vec<_> = dirs
             .into_iter()
             .filter_map(|dir| Some((state.fs_for(&dir.0)?, dir)))
             .collect();
         if reads.is_empty() {
-            return;
+            return false;
         }
         let read = cx.background_executor().spawn(async move {
             reads
@@ -378,6 +392,9 @@ impl WorkspaceList {
         cx.spawn(async move |this, cx| {
             let results = read.await;
             this.update(cx, |this, cx| {
+                if refresh {
+                    this.remote_refreshing = false;
+                }
                 if this.remote_checkouts.store(results) {
                     cx.notify();
                 }
@@ -385,6 +402,7 @@ impl WorkspaceList {
             .ok();
         })
         .detach();
+        true
     }
 
     /// Re-reads `dirs` with git2 off the main thread.
