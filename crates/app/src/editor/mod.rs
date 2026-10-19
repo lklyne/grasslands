@@ -32,7 +32,6 @@ use self::buffer::{Buffer, DiskChange, Prompt};
 use self::poll::{Check, Stamp};
 use self::watcher::FileWatcher;
 use crate::fs::Fs;
-use crate::herdr::MachineStatus;
 use crate::state::{AppEvent, AppState, MachineId};
 
 actions!(editor, [Save, CloseTab]);
@@ -165,9 +164,6 @@ pub struct Editor {
     /// A poll of remote files is running.
     polling: bool,
     watcher: Option<FileWatcher>,
-    /// Stands in for every remote machine's disk in tests.
-    #[cfg(test)]
-    fake: Option<std::sync::Arc<crate::fs::fake::FakeFs>>,
     _subscriptions: [Subscription; 2],
     _disk_changes: Task<()>,
     _poll: Option<Task<()>>,
@@ -236,8 +232,6 @@ impl Editor {
             opening: HashSet::new(),
             polling: false,
             watcher,
-            #[cfg(test)]
-            fake: None,
             _subscriptions: [events, activation],
             _disk_changes: disk_changes,
             _poll: poll,
@@ -322,35 +316,6 @@ impl Editor {
         }
     }
 
-    fn online(&self, machine: &MachineId, cx: &App) -> bool {
-        #[cfg(test)]
-        if let Some(fake) = &self.fake
-            && !machine.is_local()
-        {
-            return !fake.offline.load(std::sync::atomic::Ordering::SeqCst);
-        }
-        machine.is_local()
-            || self
-                .state
-                .read(cx)
-                .machine(machine)
-                .is_some_and(|m| m.status() == &MachineStatus::Connected)
-    }
-
-    /// `machine`'s files; `None` while it's offline.
-    fn fs(&self, machine: &MachineId, cx: &App) -> Option<Fs> {
-        if !self.online(machine, cx) {
-            return None;
-        }
-        #[cfg(test)]
-        if let Some(fake) = &self.fake
-            && !machine.is_local()
-        {
-            return Some(Fs::Fake(fake.clone()));
-        }
-        self.state.read(cx).fs_for(machine)
-    }
-
     /// Open `path` on `machine` in the visible group, or switch to its tab.
     pub fn open(
         &mut self,
@@ -406,7 +371,7 @@ impl Editor {
             self.go_to_line(line, window, cx);
             return;
         }
-        let Some(fs) = self.fs(machine, cx) else {
+        let Some(fs) = self.state.read(cx).fs_for(machine) else {
             let offline = format!("{} is offline", self.label(machine, cx));
             let message = cannot_open(self, &offline, cx);
             notify_error(message, window, cx);
@@ -573,9 +538,11 @@ impl Editor {
         let mut jobs: Vec<PollJob> = Vec::new();
         for buffer in self.groups.values().flat_map(|group| &group.buffers) {
             let machine = &buffer.machine;
-            if machine.is_local()
-                || !poll::wanted(window_active, self.online(machine, cx), buffer.is_saving())
-            {
+            if machine.is_local() {
+                continue;
+            }
+            let fs = self.state.read(cx).fs_for(machine);
+            if !poll::wanted(window_active, fs.is_some(), buffer.is_saving()) {
                 continue;
             }
             let generation = (buffer.state.entity_id(), buffer.generation());
@@ -584,7 +551,7 @@ impl Editor {
                 .find(|job| buffer.is(&job.key.0, &job.key.1))
             {
                 job.buffers.push(generation);
-            } else if let Some(fs) = self.fs(machine, cx) {
+            } else if let Some(fs) = fs {
                 jobs.push(PollJob {
                     key: (machine.clone(), buffer.path.clone()),
                     seen: buffer.stamp,
@@ -718,7 +685,7 @@ impl Editor {
             return;
         };
         let (machine, path) = (buffer.machine.clone(), buffer.path.clone());
-        let Some(fs) = self.fs(&machine, cx) else {
+        let Some(fs) = self.state.read(cx).fs_for(&machine) else {
             let message = format!(
                 "Cannot save {}: {} is offline. Your edits are kept; save again once it reconnects.",
                 path.display(),

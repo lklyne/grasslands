@@ -20,7 +20,7 @@ use std::time::Duration;
 use gpui_kit::*;
 
 use crate::attention::{self, Attention, StatusChange};
-use crate::fs::Fs;
+use crate::fs::{Fs, SummaryCache};
 use crate::herdr::{
     self, Agent, Check, Client, ConnectionStatus, Fix, MIN_VERSION, MachineLink, MachineProfile,
     MachineStatus, PaneId, SessionSync, Snapshot, Update, Version, machines,
@@ -123,6 +123,9 @@ pub struct Machine {
     client: Option<Client>,
     /// Remote machines only.
     link: Option<MachineLink>,
+    /// The Changes tab's patch reads' summaries, for the file tree's footer
+    /// (remote machines only; see `SummaryCache`).
+    summaries: Arc<SummaryCache>,
     sync: Option<(SessionSync, Task<()>)>,
     _statuses: Option<Task<()>>,
 }
@@ -142,6 +145,7 @@ impl Machine {
             lost: false,
             client: None,
             link: None,
+            summaries: Arc::default(),
             sync: None,
             _statuses: None,
         }
@@ -211,6 +215,9 @@ pub struct AppState {
     _check: Option<Task<()>>,
     _machines_poll: Option<Task<()>>,
     _quit: Option<Subscription>,
+    /// In-memory disks standing in for remote machines (see `set_test_fs`).
+    #[cfg(test)]
+    test_fs: std::collections::HashMap<MachineId, Arc<crate::fs::fake::FakeFs>>,
 }
 
 impl EventEmitter<AppEvent> for AppState {}
@@ -279,6 +286,8 @@ impl AppState {
             _check: None,
             _machines_poll: None,
             _quit: None,
+            #[cfg(test)]
+            test_fs: Default::default(),
         }
     }
 
@@ -1106,15 +1115,27 @@ impl AppState {
         if machine.is_local() {
             return Some(Fs::Local);
         }
+        #[cfg(test)]
+        if let Some(fake) = self.test_fs.get(machine) {
+            let online = !fake.offline.load(std::sync::atomic::Ordering::SeqCst);
+            return online.then(|| Fs::Fake(fake.clone()));
+        }
         let target = self.machine(machine)?;
         if target.status != MachineStatus::Connected {
             return None;
         }
         Some(Fs::Remote {
             machine: machine.clone(),
-            label: target.label.clone(),
             files: target.link.as_ref()?.remote_fs()?,
+            summaries: target.summaries.clone(),
         })
+    }
+
+    /// Makes `fs_for(machine)` an in-memory disk, offline while its
+    /// `offline` flag is set.
+    #[cfg(test)]
+    pub(crate) fn set_test_fs(&mut self, machine: MachineId, fake: Arc<crate::fs::fake::FakeFs>) {
+        self.test_fs.insert(machine, fake);
     }
 
     /// Announces a rename done in the app (see `AppEvent::FileMoved`).

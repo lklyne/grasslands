@@ -16,13 +16,10 @@
 //! folders holding a change yellow.
 
 mod model;
-pub(crate) mod search;
 mod watch;
 
 #[cfg(test)]
 mod tests;
-
-pub use search::Results as SearchResults;
 
 use std::io;
 use std::path::{Path, PathBuf};
@@ -47,9 +44,8 @@ use gpui_kit::*;
 use self::model::FileModel;
 use self::watch::RootWatcher;
 use crate::actions::{OpenChanges, OpenFile, OpenFileAt};
-use crate::changes::git;
 use crate::chrome::Confirmation;
-use crate::fs::{Fs, Removal};
+use crate::fs::{Fs, Removal, git, search};
 use crate::herdr::MachineStatus;
 use crate::state::{ActiveRoot, AppEvent, AppState, MachineId};
 
@@ -100,9 +96,6 @@ pub struct FileTree {
     /// A saved machine's poll of the shown folders still out; the next
     /// waits for it, so a stalled link doesn't pile them up.
     polling: Option<Task<()>>,
-    /// Stands in for every saved machine's files in tests.
-    #[cfg(test)]
-    fake: Option<Arc<crate::fs::fake::FakeFs>>,
     _subscriptions: [Subscription; 4],
     _fs_task: Task<()>,
     _git_timer: Task<()>,
@@ -238,8 +231,6 @@ impl FileTree {
             git_reading: None,
             git_stale: false,
             polling: None,
-            #[cfg(test)]
-            fake: None,
             _subscriptions: subscriptions,
             _fs_task: fs_task,
             _git_timer: git_timer,
@@ -332,12 +323,6 @@ impl FileTree {
 
     /// The root's files; `None` while its machine is offline.
     fn fs(&self, cx: &App) -> Option<Fs> {
-        #[cfg(test)]
-        if let Some(fake) = &self.fake
-            && !self.machine.is_local()
-        {
-            return Some(Fs::Fake(fake.clone()));
-        }
         self.state.read(cx).fs_for(&self.machine)
     }
 

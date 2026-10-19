@@ -12,8 +12,8 @@ use std::time::Duration;
 use herdr_client::{ExecOutput, RemoteEntry, RemoteFs};
 
 use super::{Entry, sort_entries};
-use crate::sidebar::files::SearchResults;
-use crate::sidebar::files::search::Collector;
+use super::SearchResults;
+use super::search::Collector;
 
 /// Runs `argv` in `cwd` on the machine.
 pub(super) type Run<'a> = dyn Fn(&[&str], Option<&Path>) -> io::Result<ExecOutput> + 'a;
@@ -297,7 +297,7 @@ mod tests {
     use super::*;
     use std::path::PathBuf;
 
-    use crate::sidebar::files::search::MAX_HITS_PER_FILE;
+    use crate::fs::search::MAX_HITS_PER_FILE;
 
     fn temp_dir(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!(

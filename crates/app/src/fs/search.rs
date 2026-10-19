@@ -8,9 +8,9 @@ use std::path::{Path, PathBuf};
 /// Caps that keep a one-letter query from listing the whole repo.
 const MAX_NAME_HITS: usize = 100;
 const MAX_LINE_HITS: usize = 500;
-pub(crate) const MAX_HITS_PER_FILE: usize = 20;
+pub(super) const MAX_HITS_PER_FILE: usize = 20;
 /// Files larger than this are matched by name only.
-pub(crate) const MAX_FILE_BYTES: u64 = 1 << 20;
+pub(super) const MAX_FILE_BYTES: u64 = 1 << 20;
 /// Lines are cut to this many characters around the match.
 const MAX_LINE_CHARS: usize = 160;
 
@@ -52,7 +52,7 @@ pub struct LineHit {
 
 /// Gathers matches under the caps from files offered in display order, so
 /// every file system's search gives the same `Results`.
-pub(crate) struct Collector {
+pub(super) struct Collector {
     matcher: Matcher,
     results: Results,
     line_hits: usize,

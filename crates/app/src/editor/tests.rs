@@ -418,8 +418,9 @@ fn save_from_the_close_prompt_writes_then_closes(cx: &mut TestAppContext) {
     );
 }
 
-// Remote machines, against an in-memory disk standing in for every remote
-// machine. "box" isn't in AppState's machine list, so its label is its id.
+// Remote machines, against an in-memory disk standing in for "box"
+// (`AppState::set_test_fs`). "box" isn't in AppState's machine list, so
+// its label is its id.
 
 fn remote() -> MachineId {
     MachineId::Remote("box".into())
@@ -428,8 +429,8 @@ fn remote() -> MachineId {
 impl Fixture {
     fn fake_remote(&self, cx: &mut TestAppContext) -> Arc<FakeFs> {
         let fake = Arc::new(FakeFs::default());
-        self.editor
-            .update(cx, |editor, _| editor.fake = Some(fake.clone()));
+        self.state
+            .update(cx, |state, _| state.set_test_fs(remote(), fake.clone()));
         fake
     }
 
