@@ -45,7 +45,7 @@ use self::model::FileModel;
 use self::watch::RootWatcher;
 use crate::actions::{OpenChanges, OpenFile, OpenFileAt};
 use crate::chrome::{self, Confirmation, MenuCommand, MenuEntry};
-use crate::fs::{Fs, Removal, git, search};
+use crate::fs::{Caps, Fs, Removal, git, search};
 use crate::herdr::MachineStatus;
 use crate::state::{ActiveRoot, AppEvent, AppState, MachineId};
 
@@ -189,8 +189,9 @@ impl FileTree {
         let git_timer = cx.spawn(async move |this, cx| {
             loop {
                 cx.background_executor().timer(GIT_REFRESH).await;
+                // Polled file systems refresh with their poll.
                 let refreshed = this.update(cx, |this, cx| {
-                    if this.machine.is_local() {
+                    if Caps::of(&this.machine).watch {
                         this.refresh_git(cx);
                     }
                 });
@@ -364,7 +365,7 @@ impl FileTree {
             // GPUI's test scheduler rejects wakeups from the watcher's thread;
             // tests call `on_fs_changes` directly and test the watcher alone.
             // Saved machines are polled instead.
-            if !cfg!(test) && self.machine.is_local() {
+            if !cfg!(test) && Caps::of(&self.machine).watch {
                 self.watcher = RootWatcher::new(&root, self.fs_changes.clone())
                     .inspect_err(|error| {
                         log::warn!("files: not watching {}: {error}", root.display());
@@ -382,7 +383,7 @@ impl FileTree {
     /// Re-reads a saved machine's shown folders and footer, which nothing
     /// watches. Local's watcher covers it there.
     fn poll(&mut self, cx: &mut Context<Self>) {
-        if self.machine.is_local() {
+        if Caps::of(&self.machine).watch {
             return;
         }
         let Some(model) = &self.model else { return };
@@ -840,8 +841,8 @@ impl FileTree {
         }
     }
 
-    /// Local moves to the Trash at once, so a slip is recoverable. A saved
-    /// machine has no trash, so it asks first. Which one is `scope`'s.
+    /// With a Trash, removes at once, since a slip is recoverable; without
+    /// one (a saved machine), asks first.
     fn ask_remove(
         &mut self,
         scope: &Scope,
@@ -849,7 +850,7 @@ impl FileTree {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if scope.fs.is_local() {
+        if scope.fs.caps().trash {
             self.remove(scope, path, window, cx);
         } else {
             self.confirm_remove(scope, path, window, cx);
@@ -859,7 +860,7 @@ impl FileTree {
     fn remove(&mut self, scope: &Scope, path: &Path, window: &mut Window, cx: &mut Context<Self>) {
         let removed = path.to_path_buf();
         let shown = removed.display().to_string();
-        let is_local = scope.fs.is_local();
+        let trash = scope.fs.caps().trash;
         let here = scope.clone();
         self.run_fs(
             scope,
@@ -876,7 +877,7 @@ impl FileTree {
                 this.reload_in(&here, parent.into_iter().collect(), cx);
             },
             move |err| {
-                if is_local {
+                if trash {
                     format!("Could not move {shown} to the Trash: {err}")
                 } else {
                     format!("Could not delete {shown}: {err}")
@@ -995,7 +996,7 @@ impl FileTree {
         let Some(scope) = scope.filter(|_| !model::is_placeholder(id)) else {
             return Vec::new();
         };
-        let is_local = scope.fs.is_local();
+        let trash = scope.fs.caps().trash;
         let path = PathBuf::from(id);
         let dir = if is_folder {
             path.clone()
@@ -1071,7 +1072,7 @@ impl FileTree {
             MenuEntry::Separator,
             item("Rename…", rename),
             item(
-                if is_local {
+                if trash {
                     "Move to Trash"
                 } else {
                     "Delete…"
@@ -1080,7 +1081,8 @@ impl FileTree {
             ),
             MenuEntry::Separator,
         ];
-        if is_local {
+        // Finder shows this Mac's files only.
+        if scope.machine.is_local() {
             entries.push(item("Reveal in Finder", reveal));
         }
         entries.push(item("Copy Path", copy_path));
