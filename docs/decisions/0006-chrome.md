@@ -14,11 +14,13 @@ Date: 2026-10-15. Status: accepted (chrome agent). Modules: `chrome`, `sidebar::
   herdr's effective status (`done` = finished and not yet seen). Toasts want
   the effective one. The cache is also re-read after every event, so diffing
   sees every change the events would.
-- herdr's `done` already means "not seen yet". The app adds `seen_done`: panes
-  it focused or whose agent the user clicked. Unseen = `done` and not in
-  `seen_done`. This survives an app restart because herdr keeps `done`.
-- Badge count = blocked + unseen done. It drives the agent list header, the
-  per-row badges and the dock badge.
+- herdr's `done` means "finished, not yet seen", and herdr clears it itself
+  when the app focuses the pane (`pane.focus`, `agent.focus`,
+  `workspace.focus`; probed, see 0005). The app keeps no seen state of its
+  own: an earlier local `seen_done` ledger was removed because it was lost on
+  restart and disagreed with `herdr agent list`.
+- Badge count = blocked + `done` (`attention::count`). It drives the dock
+  badge.
 
 ## Notifications
 

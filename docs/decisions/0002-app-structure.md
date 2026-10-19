@@ -13,7 +13,7 @@ Date: 2026-10-15. Status: accepted (app-shell, Part 1).
 | `editor` | `Editor` (open files per worktree + code editor; its tabs are drawn in the titlebar) | app-shell, Part 2 |
 | `terminal_area` | `TerminalArea` (herdr tab bar + split tree of Ghostty views) | ghostty-terminals agent |
 | `overlay` | the transparent overlay window above the terminals (API for chrome) | ghostty-terminals agent |
-| `chrome`, `attention` | `Chrome`: command palette, context menus, toasts, confirmations; `Attention`: status changes and unseen results (see 0006) | chrome agent (ghostty-terminals agent provides the overlay window) |
+| `chrome`, `attention` | `Chrome`: command palette, context menus, toasts, confirmations; `Attention`: status changes for toasts, and the badge count (see 0006) | chrome agent (ghostty-terminals agent provides the overlay window) |
 | `state` | `AppState`, the shared model | shared, small edits |
 | `herdr` | the only module that names herdr-client types | herdr-client integration |
 | `actions` | app-wide actions, app menu, global key bindings | shared |
