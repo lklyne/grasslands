@@ -398,6 +398,7 @@ mod tests {
         let listing = vec![
             herdr_client::RemoteEntry {
                 name: "target".into(),
+                file_name: "target".into(),
                 is_dir: true,
                 is_symlink: false,
                 len: 0,
@@ -405,6 +406,7 @@ mod tests {
             },
             herdr_client::RemoteEntry {
                 name: "notes.txt".into(),
+                file_name: "notes.txt".into(),
                 is_dir: false,
                 is_symlink: false,
                 len: 0,
