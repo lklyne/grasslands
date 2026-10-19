@@ -34,6 +34,11 @@ pub const SOUND_AGENTS: [&str; 20] = [
 /// Agents whose sound is off unless the config turns it on.
 const MUTED_BY_DEFAULT: [&str; 1] = ["droid"];
 
+/// Whether herdr mutes `agent` unless `[ui.sound.agents]` turns it on.
+pub fn muted_by_default(agent: &str) -> bool {
+    MUTED_BY_DEFAULT.contains(&agent)
+}
+
 /// The most `ui.toast.delay_seconds` herdr accepts.
 pub const MAX_TOAST_DELAY: u64 = 3600;
 
@@ -195,7 +200,7 @@ impl SoundPrefs {
             Some(agent) => match self.agent(agent) {
                 AgentSound::On => true,
                 AgentSound::Off => false,
-                AgentSound::Default => !MUTED_BY_DEFAULT.contains(&agent),
+                AgentSound::Default => !muted_by_default(agent),
             },
             None => true,
         }

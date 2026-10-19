@@ -6,6 +6,7 @@
 //! Remote machines keep their own config on the remote; only Local's is here.
 //! See docs/decisions/0021-herdr-prefs.md.
 
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -116,6 +117,28 @@ pub fn get(cx: &App) -> &Prefs {
 /// The config file's path.
 pub fn path(cx: &App) -> Option<&Path> {
     cx.try_global::<HerdrPrefs>()?.path.as_deref()
+}
+
+/// The kinds of agent (`claude`, `codex`, …) running on Local now.
+pub fn running_agents(cx: &App) -> BTreeSet<String> {
+    let Some(state) = cx
+        .try_global::<HerdrPrefs>()
+        .and_then(|p| p.state.as_ref()?.upgrade())
+    else {
+        return BTreeSet::new();
+    };
+    let state = state.read(cx);
+    state
+        .machine(&MachineId::Local)
+        .map(|local| {
+            local
+                .snapshot()
+                .agents
+                .iter()
+                .filter_map(|agent| agent.agent.clone())
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// Everything wrong with the config right now, one entry each: reading it,
