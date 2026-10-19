@@ -8,9 +8,11 @@
 //! costs one round trip, and a patch read brings the summary with it: a
 //! saved machine's footer reuses that while the Changes tab polls.
 //!
-//! The parent is the repo's default branch: the local branch `origin/HEAD`
-//! names, else `main`, else `master`. On that branch itself the parent is
-//! its upstream. The diff runs from the merge base to the working tree, so
+//! The parent is the branch it was cut from, as its reflog's first entry
+//! names it (`git worktree add` and `git switch -c` both write it), while
+//! that branch exists. Otherwise it is the repo's default branch: the local
+//! branch `origin/HEAD` names, else `main`, else `master`. On that branch
+//! itself the parent is its upstream. The diff runs from the merge base to the working tree, so
 //! it counts commits, staged and unstaged edits and untracked files alike,
 //! like the PR the branch would become. Renames count as a deletion and an
 //! addition.
@@ -85,8 +87,14 @@ h=$(git symbolic-ref -q HEAD)
 b=${h#refs/heads/}
 d=$(git symbolic-ref -q refs/remotes/origin/HEAD)
 case $d in refs/remotes/origin/?*) d=${d#refs/remotes/origin/} ;; *) d= ;; esac
+c=
+if [ -n "$b" ]; then
+  c=$(git reflog show --format=%gs "refs/heads/$b" 2>/dev/null | tail -n 1)
+  case $c in "branch: Created from "?*) c=${c#branch: Created from } ;; *) c= ;; esac
+  case $c in HEAD|"$b") c= ;; esac
+fi
 refs=$(git for-each-ref --format='%(refname)' refs/heads/main refs/heads/master \
-  ${d:+"refs/heads/$d" "refs/remotes/origin/$d"})
+  ${d:+"refs/heads/$d" "refs/remotes/origin/$d"} ${c:+"refs/heads/$c" "refs/remotes/$c"})
 has() {
   case "
 $refs
@@ -99,7 +107,9 @@ if [ -z "$d" ]; then
   if has refs/heads/main; then d=main; elif has refs/heads/master; then d=master; fi
 fi
 p=
-if [ -n "$b" ] && [ -n "$d" ]; then
+if [ -n "$c" ] && [ "$b" != "$d" ] && { has "refs/heads/$c" || has "refs/remotes/$c"; }; then
+  p=$c
+elif [ -n "$b" ] && [ -n "$d" ]; then
   if [ "$b" != "$d" ]; then
     if has "refs/heads/$d"; then p=$d
     elif has "refs/remotes/origin/$d"; then p=origin/$d
@@ -431,6 +441,34 @@ mod tests {
         ] {
             assert!(patch.lines().any(|l| l == line), "{line:?} in {patch}");
         }
+    }
+
+    /// `feat` on `main`, then `stacked` cut from `feat` with `b.txt`.
+    fn stacked_branch(name: &str) -> TestRepo {
+        let repo = feature_branch(name);
+        repo.commit_all("new");
+        repo.git(&["switch", "-q", "-c", "stacked", "feat"]);
+        repo.write("b.txt", "b\n");
+        repo.commit_all("b");
+        repo
+    }
+
+    #[test]
+    fn summary_should_diff_a_stacked_branch_against_the_branch_it_was_cut_from() {
+        let repo = stacked_branch("git-stacked");
+        let summary = summary(&run, &repo.dir).unwrap().unwrap();
+        assert_eq!(summary.parent.as_deref(), Some("feat"));
+        assert_eq!(summary.diff, Some((1, 0)));
+        let files: Vec<_> = summary.files.keys().collect();
+        assert_eq!(files, [&repo.dir.join("b.txt")]);
+    }
+
+    #[test]
+    fn summary_should_fall_back_to_main_when_the_cut_from_branch_is_gone() {
+        let repo = stacked_branch("git-stacked-gone");
+        repo.git(&["branch", "-q", "-D", "feat"]);
+        let summary = summary(&run, &repo.dir).unwrap().unwrap();
+        assert_eq!(summary.parent.as_deref(), Some("main"));
     }
 
     #[test]
