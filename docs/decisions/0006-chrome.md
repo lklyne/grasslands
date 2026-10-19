@@ -127,7 +127,7 @@ so it shows above the Ghostty views:
   `View::new(state, window, cx)`. The terminal area uses it for its close
   confirmations (native alert only when no chrome exists).
 
-Verified with `RT_SCRIPT=chrome` (in `terminal_area/script/chrome.rs`): it
+Verified with `RT_SCRIPT=chrome` (in `script/chrome.rs`): it
 right-clicks a pane header and a tab with GPUI mouse events, opens the
 terminal area's close confirmation, raises a toast and opens the palette, and
 checks each is in the overlay and that the overlay takes and releases input.

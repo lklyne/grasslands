@@ -103,38 +103,40 @@ Per-terminal Ghostty settings (font, size, anything Ghostty accepts) go in `~/.c
 
 Terminal bindings work while you type in a terminal. Everything else, ctrl keys included, goes to the terminal. Drag a pane's header onto another pane to swap them, onto another tab to move it there, or onto `+` to give it a new tab.
 
-## Script check modes
+## Live checks
 
-Debug builds have three self-driving check modes. They run inside the app and send input through GPUI, never through the OS, so they don't touch whatever window has focus. Run them against the dev session only. The terminal script refuses when `HERDR_SESSION` is unset. Release builds don't compile them (`#[cfg(debug_assertions)]`), so `RT_SCRIPT`, `RT_CHROME_SCRIPT` and `RT_SIDEBAR_SCRIPT` do nothing there.
+Most behaviour is covered by headless unit tests (`scripts/dev-run cargo test -p app --bins`): an offline herdr endpoint, an injected snapshot, GPUI's test windows. What needs a real herdr, the native Ghostty views or the overlay window runs as a live check: a debug build drives itself from inside the app and checks what it sees. Input goes through GPUI, never through the OS, so it doesn't touch whatever window has focus. Run them against the dev session only. Release builds don't compile the harness (`#[cfg(debug_assertions)]`), so the variables below do nothing there.
 
-`RT_SCRIPT=terminals` creates a `script` workspace, runs 32 checks on the terminal area (typing, splits, divider drags, moves, hiding, a real server restart), saves window screenshots to `target/script-shots/`, cleans up and quits. `RT_SCRIPT_KEEP=1` leaves the app open afterwards.
+The harness is `crates/app/src/script/`, one file per scenario, started from `main` once the window is open. Each scenario prints `ok`/`FAIL` lines to stderr, saves window screenshots to `target/script-shots/`, ends with `script: done, N failures` and quits: exit status 0 when every check passed, 1 when one failed, 2 for an unknown scenario. `RT_SCRIPT_KEEP=1` leaves the app open afterwards. Each file's header says what it checks.
+
+| Scenario | Command | Needs |
+| --- | --- | --- |
+| `terminals`: typing, a file drop, splits, divider drags (views on their slots every step), tabs, moves, header drags, zoom, takeover and Reattach, overlay capture, theme reload, a real server restart | `RT_SCRIPT=terminals scripts/dev-run cargo run -p app` | `HERDR_SESSION` (dev-run sets it) |
+| `chrome`: pane and tab menus, the close confirmation, an agent toast, the name prompt, the rename dialog and the palette in the overlay, by keys and AppKit key events; focus comes back | `RT_SCRIPT=chrome scripts/dev-run cargo run -p app` | |
+| `titlebar`: file tabs hide the terminals, which come back on their slots; toasts on a file tab; both themes | `RT_SCRIPT=titlebar scripts/dev-run cargo run -p app` | |
+| `settings`: the Settings window, theme picks reach the app and the terminals | `RT_SCRIPT=settings scripts/dev-run cargo run -p app` | |
+| `herdr-prefs`: herdr's config.toml written as the Settings page does, comments kept, `herdr config check`, the reload, outside edits followed, the file restored | `env HERDR_CONFIG_PATH=$HOME/.local/share/grasslands-herdr/prefs-test/config.toml RT_SCRIPT=herdr-prefs scripts/dev-run cargo run -p app` | a scratch config under the dev root, and the dev server started with the same `HERDR_CONFIG_PATH` (see `script/herdr_prefs.rs`) |
+| `drags`: tab drags in the bar, released on a tab, off the bar, outside, cancelled | `RT_SCRIPT=drags scripts/dev-run cargo run -p app` | |
+| `setup`: the herdr setup screen finds what `RT_SETUP_EXPECT` says; `RT_SETUP_FIX=1` runs the fix, `RT_SETUP_FIX=fails` checks a failing one | `RT_SETUP_EXPECT=missing RT_SCRIPT=setup scripts/dev-run env HERDR_BIN=/nonexistent/herdr cargo run -p app` | `RT_SETUP_EXPECT`: `ready`, `missing`, `outdated`, `server-outdated` or `unreachable`; a stand-in `brew` first on `PATH` before any fix (see `script/setup.rs`) |
+| `machine-ui`: the remote-machine UI with fixture data, a header menu, the Add Machine dialog | `RT_SCRIPT=machine-ui scripts/dev-run cargo run -p app` | nothing remote |
+| `machines`: a live remote machine, its terminal, switching, offline and back with their cues | `GRASSLANDS_DEV_MACHINES=dockerbox RT_SCRIPT=machines scripts/dev-run cargo run -p app` | `dockerbox` (below) |
+| `remote`: the machine UI against `dockerbox`: groups, menus, routed commands, Add Machine, offline and back | `GRASSLANDS_DEV_MACHINES=dockerbox RT_SCRIPT=remote scripts/dev-run cargo run -p app` | `dockerbox`; for the real add flow also `RT_ADD_MACHINE=<ssh target> RT_ALLOW_MACHINE_EDITS=1`, optionally `RT_ADD_KEYS`, `RT_ADD_LABEL` |
+| `remote-files`: files on `dockerbox` end to end: tree, edit and save, outside change, search, Changes, create, rename, delete, offline and back | `GRASSLANDS_DEV_MACHINES=dockerbox RT_SCRIPT=remote-files scripts/dev-run cargo run -p app` | `dockerbox` |
+
+Every scenario but `herdr-prefs` turns herdr's `prompt_new_tab_name` and `prompt_new_workspace_name` off in memory, so cmd-t and New Workspace don't stop at a name dialog ([0022](decisions/0022-herdr-prefs.md)). While `RT_SCRIPT` is set, sounds are recorded instead of played and settings aren't written.
+
+### Step lists
+
+`RT_STEPS` runs `;`-separated steps after startup, for poking at one flow by hand: open a menu, press keys, drag a sidebar row, log what's open. The steps are listed at the top of `crates/app/src/script/steps.rs`; the chrome's and the sidebar's own are in `chrome/script.rs` and `sidebar/workspaces/script.rs`. `RT_CHROME_SCRIPT` and `RT_SIDEBAR_SCRIPT` are older names for the same language. They keep their pacing (a 2 s start and 400 ms between steps for the chrome's, none for the sidebar's) and their log prefixes.
 
 ```sh
-RT_SCRIPT=terminals scripts/dev-run cargo run -p app
-```
-
-`RT_CHROME_SCRIPT` runs `;`-separated steps against the menus, palette and dialogs and logs what's open. The step list is at the top of `crates/app/src/chrome/script.rs`.
-
-```sh
-RT_CHROME_SCRIPT='menu pane w1:p1; wait 1500; key escape; log after' scripts/dev-run cargo run -p app
-```
-
-`RT_SIDEBAR_SCRIPT` does the same for the workspace and agent panels. Its steps are at the top of `crates/app/src/sidebar/workspaces/script.rs`.
-
-```sh
+RT_STEPS='menu pane w1:p1; wait 1500; key escape; log after' scripts/dev-run cargo run -p app
 RT_SIDEBAR_SCRIPT='wait 2000; focus w2; wait 800; log after' scripts/dev-run cargo run -p app
 ```
 
 ### Remote machines
 
-The remote checks run against `dockerbox`, the `herdr-remote-test` container (`ssh://lyle@127.0.0.1:2222`), saved as a machine in herdr. Each driver's header under `crates/app/src/terminal_area/script/` says what it does. `machines`, `remote` and `remote-files` stop and start the container, which ends whatever else is connected to it; `machine-ui` uses fixtures only.
-
-```sh
-GRASSLANDS_DEV_MACHINES=dockerbox RT_SCRIPT=machines scripts/dev-run cargo run -p app
-GRASSLANDS_DEV_MACHINES=dockerbox RT_SCRIPT=remote scripts/dev-run cargo run -p app
-GRASSLANDS_DEV_MACHINES=dockerbox RT_SCRIPT=remote-files scripts/dev-run cargo run -p app
-RT_SCRIPT=machine-ui scripts/dev-run cargo run -p app
-```
+The remote checks run against `dockerbox`, the `herdr-remote-test` container (`ssh://lyle@127.0.0.1:2222`), saved as a machine in herdr. `machines`, `remote` and `remote-files` stop and start the container, which ends whatever else is connected to it; `machine-ui` uses fixtures only.
 
 The link itself has ignored tests in `crates/herdr-client/tests/machine_link.rs`. The agent tests also need `GRASSLANDS_TEST_AGENT`, the socket of a throwaway `ssh-agent` holding a throwaway key (never your own agent). They force forwarding with `RT_FORWARD_AGENT=1`, which debug builds of the app take too:
 
@@ -142,6 +144,20 @@ The link itself has ignored tests in `crates/herdr-client/tests/machine_link.rs`
 GRASSLANDS_SSH_TEST_TARGET=ssh://lyle@127.0.0.1:2222 GRASSLANDS_TEST_AGENT=/path/to/agent.sock \
   scripts/dev-run cargo test -p herdr-client --test machine_link -- --ignored --nocapture
 ```
+
+### Held for the final pass
+
+Live checks that recent changes still need, beyond running every scenario in the table (locally, and the `dockerbox` three) and checking each exits 0:
+
+- Worktrees ([0021](decisions/0021-worktree-lifecycle.md)):
+  - `RT_STEPS='open-worktree <workspace>; query <branch>; key enter'`: the picker lists herdr's worktrees and opens (or focuses) the one picked.
+  - `RT_STEPS='remove-worktree <workspace>; key enter'` removes it; on a dirty checkout a second `key enter` answers the force confirmation.
+  - `RT_STEPS='run close-group <workspace>; key enter'` closes the group the list shows, inferred members included.
+  - `RT_STEPS='worktree <branch> base=<ref> label=<text>'` and `repo-worktree <repo> <branch> base=… label=…` create the worktree through herdr with that base and label.
+- herdr prefs ([0022](decisions/0022-herdr-prefs.md)): `RT_SCRIPT=herdr-prefs` against a scratch config; `remote` turns `confirm_close` off in memory before it closes a workspace.
+- Setup: `RT_SCRIPT=setup` with each `RT_SETUP_EXPECT`, and with `RT_SETUP_FIX=1` and `RT_SETUP_FIX=fails`.
+- Remote add flow: `RT_SCRIPT=remote` with `RT_ADD_MACHINE` and `RT_ALLOW_MACHINE_EDITS=1` (remove what it saved with `herdr machine remove` afterwards).
+- The harness itself, since it moved out of the terminal area: every scenario starts from `main`, a failing check exits 1, `machines` still sees the Warning cue going offline and Success reconnecting, and the old `RT_CHROME_SCRIPT`/`RT_SIDEBAR_SCRIPT` commands above still run, `drag <workspace> <target|off|outside|cancel>` and `check-drag` included.
 
 ## Known gaps
 
