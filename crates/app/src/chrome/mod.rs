@@ -351,6 +351,9 @@ impl Chrome {
             AgentStatus::Done => "finished",
             _ => return,
         };
+        // A file tab hides the terminals: nothing of herdr's is in view.
+        let terminals_shown = crate::workspace::get(window, cx)
+            .is_none_or(|ws| ws.read(cx).selected() == crate::workspace::MainTab::Herdr);
         let state = self.state.read(cx);
         let Some(snapshot) = state.machine(machine, cx).map(|m| m.snapshot()) else {
             return;
@@ -370,7 +373,7 @@ impl Chrome {
             crate::herdr_prefs::Looking::at(
                 agent,
                 snapshot,
-                state.selected() == machine,
+                terminals_shown && state.selected() == machine,
                 window_active,
             )
         });
