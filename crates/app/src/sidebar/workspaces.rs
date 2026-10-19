@@ -542,7 +542,7 @@ impl WorkspaceList {
     ) {
         self.state.update(cx, |state, cx| {
             state
-                .focus_workspace_on(machine, workspace_id, cx)
+                .focus_workspace(machine, workspace_id, cx)
                 .detach_and_log_err(cx);
         });
     }
@@ -642,7 +642,7 @@ impl WorkspaceList {
         );
         if let Some(order) = groups::reordered(&entries, dragged, target) {
             state
-                .reorder_workspaces_on(machine, order, cx)
+                .reorder_workspaces(machine, order, cx)
                 .detach_and_log_err(cx);
         }
     }
@@ -693,7 +693,7 @@ impl WorkspaceList {
             state.select_machine(machine, cx);
             let cwd = state.active_worktree().cloned();
             state
-                .new_workspace_on(machine, cwd, label, cx)
+                .new_workspace(machine, cwd, label, cx)
                 .detach_and_log_err(cx);
         });
     }
@@ -772,7 +772,7 @@ impl WorkspaceList {
                 focus: true,
                 ..Default::default()
             };
-            state.create_worktree_on(machine, params, cx)
+            state.create_worktree(machine, params, cx)
         });
         cx.spawn_in(window, async move |_, cx| {
             let result = task.await;

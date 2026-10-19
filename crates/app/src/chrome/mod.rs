@@ -230,7 +230,8 @@ impl Chrome {
     }
 
     fn refresh_plugin_actions(&mut self, cx: &mut Context<Self>) {
-        let task = self.state.read(cx).plugin_actions(cx);
+        let state = self.state.read(cx);
+        let task = state.plugin_actions(state.selected(), cx);
         cx.spawn(async move |this, cx| match task.await {
             Ok(actions) => this
                 .update(cx, |this, cx| {
@@ -400,7 +401,7 @@ impl Chrome {
                 // `pane.focus` is also what tells herdr the result was seen.
                 state.update(cx, |state, cx| {
                     state
-                        .focus_pane_on(&target_machine, &target, cx)
+                        .focus_pane(&target_machine, &target, cx)
                         .detach_and_log_err(cx);
                 });
             });
@@ -834,7 +835,7 @@ impl Chrome {
         let create = move |label: Option<String>, cx: &mut App| {
             state
                 .read(cx)
-                .new_tab_named_on(&machine, workspace_id.as_deref(), label, cx)
+                .new_tab_named(&machine, workspace_id.as_deref(), label, cx)
                 .detach_and_log_err(cx);
         };
         if !crate::herdr_prefs::get(cx).prompt_new_tab_name {

@@ -486,6 +486,11 @@ impl TerminalArea {
         self.state.read(cx).snapshot().clone()
     }
 
+    /// The machine on screen, which the area's commands act on.
+    fn machine(&self, cx: &App) -> MachineId {
+        self.state.read(cx).selected().clone()
+    }
+
     /// How to attach `terminal_id` on `machine`: `None` while a remote
     /// machine's herdr isn't found yet.
     ///
@@ -660,7 +665,7 @@ impl TerminalArea {
             {
                 self.state
                     .read(cx)
-                    .set_right_click(pane_id, RightClickTarget::Pane, cx)
+                    .set_right_click(&machine, pane_id, RightClickTarget::Pane, cx)
                     .detach_and_log_err(cx);
             }
         }
@@ -769,10 +774,15 @@ impl TerminalArea {
 
     /// Ask herdr to focus `pane_id`, and move keyboard focus to its terminal
     /// now; herdr's `pane.focused` then moves the focus ring.
-    pub fn focus_pane(&mut self, pane_id: &str, window: &mut Window, cx: &mut Context<Self>) {
+    pub fn focus_pane(
+        &mut self,
+        machine: &MachineId,
+        pane_id: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.state
-            .read(cx)
-            .focus_pane(pane_id, cx)
+            .update(cx, |state, cx| state.focus_pane(machine, pane_id, cx))
             .detach_and_log_err(cx);
         self.focus_terminal(pane_id, window, cx);
     }
@@ -792,9 +802,10 @@ impl TerminalArea {
 
     fn split(&mut self, direction: SplitDirection, cx: &mut Context<Self>) {
         let target = self.target_pane(cx);
+        let machine = self.machine(cx);
         self.state
             .read(cx)
-            .split_pane(target.as_deref(), direction, cx)
+            .split_pane(&machine, target.as_deref(), direction, cx)
             .detach_and_log_err(cx);
     }
 
@@ -809,10 +820,11 @@ impl TerminalArea {
             return;
         };
         let state = self.state.clone();
+        let machine = self.machine(cx);
         if !status::is_busy(pane.agent_status) {
             state
                 .read(cx)
-                .close_pane(&pane_id, cx)
+                .close_pane(&machine, &pane_id, cx)
                 .detach_and_log_err(cx);
             return;
         }
@@ -829,7 +841,7 @@ impl TerminalArea {
             let on_confirm = move |_: &mut Window, cx: &mut App| {
                 state
                     .read(cx)
-                    .close_pane(&pane_id, cx)
+                    .close_pane(&machine, &pane_id, cx)
                     .detach_and_log_err(cx);
             };
             chrome.update(cx, |chrome, cx| {
@@ -846,7 +858,7 @@ impl TerminalArea {
         );
         cx.spawn(async move |_, cx| {
             if answer.await == Ok(0) {
-                let task = cx.update(|cx| state.read(cx).close_pane(&pane_id, cx));
+                let task = cx.update(|cx| state.read(cx).close_pane(&machine, &pane_id, cx));
                 if let Err(error) = task.await {
                     tracing::error!("close pane {pane_id}: {error}");
                 }
@@ -863,8 +875,12 @@ impl TerminalArea {
             .filter(|pane| pane.tab_id == tab_id && status::is_busy(pane.agent_status))
             .count();
         let state = self.state.clone();
+        let machine = self.machine(cx);
         if busy == 0 {
-            state.read(cx).close_tab(&tab_id, cx).detach_and_log_err(cx);
+            state
+                .read(cx)
+                .close_tab(&machine, &tab_id, cx)
+                .detach_and_log_err(cx);
             return;
         }
         let message = format!(
@@ -878,7 +894,10 @@ impl TerminalArea {
                 confirm_label: "Close Tab".into(),
             };
             let on_confirm = move |_: &mut Window, cx: &mut App| {
-                state.read(cx).close_tab(&tab_id, cx).detach_and_log_err(cx);
+                state
+                    .read(cx)
+                    .close_tab(&machine, &tab_id, cx)
+                    .detach_and_log_err(cx);
             };
             chrome.update(cx, |chrome, cx| {
                 chrome.confirm(confirmation, on_confirm, window, cx);
@@ -894,7 +913,7 @@ impl TerminalArea {
         );
         cx.spawn(async move |_, cx| {
             if answer.await == Ok(0) {
-                let task = cx.update(|cx| state.read(cx).close_tab(&tab_id, cx));
+                let task = cx.update(|cx| state.read(cx).close_tab(&machine, &tab_id, cx));
                 if let Err(error) = task.await {
                     tracing::error!("close tab {tab_id}: {error}");
                 }
@@ -913,9 +932,9 @@ impl TerminalArea {
             return;
         }
         self.focus_on_show = Some(tab_id.to_owned());
+        let machine = self.machine(cx);
         self.state
-            .read(cx)
-            .focus_tab(tab_id, cx)
+            .update(cx, |state, cx| state.focus_tab(&machine, tab_id, cx))
             .detach_and_log_err(cx);
     }
 
@@ -937,9 +956,9 @@ impl TerminalArea {
         };
         let next = (index as isize + step).rem_euclid(count) as usize;
         let tab_id = workspace.tabs[next].info.tab_id.clone();
+        let machine = self.machine(cx);
         self.state
-            .read(cx)
-            .focus_tab(&tab_id, cx)
+            .update(cx, |state, cx| state.focus_tab(&machine, &tab_id, cx))
             .detach_and_log_err(cx);
     }
 
@@ -954,7 +973,8 @@ impl TerminalArea {
         };
         let to = layout::neighbor(&from, direction, &self.drawn.borrow().panes).map(str::to_owned);
         if let Some(to) = to {
-            self.focus_pane(&to, window, cx);
+            let machine = self.machine(cx);
+            self.focus_pane(&machine, &to, window, cx);
         }
     }
 
@@ -980,9 +1000,10 @@ impl TerminalArea {
         let Some(pane_id) = self.target_pane(cx) else {
             return;
         };
+        let machine = self.machine(cx);
         self.state
             .read(cx)
-            .call(cx, move |client| {
+            .call(&machine, cx, move |client| {
                 client.pane_zoom(&pane_id, "toggle").map(drop)
             })
             .detach_and_log_err(cx);
@@ -997,9 +1018,10 @@ impl TerminalArea {
                 since: Instant::now(),
             },
         );
+        let machine = self.machine(cx);
         self.state
             .read(cx)
-            .set_split_ratio(&key.tab_id, key.path, ratio, cx)
+            .set_split_ratio(&machine, &key.tab_id, key.path, ratio, cx)
             .detach_and_log_err(cx);
         cx.notify();
     }
@@ -1245,9 +1267,10 @@ impl TerminalArea {
                         let Some(from) = order.iter().position(|id| *id == dragged.tab_id) else {
                             return;
                         };
+                        let machine = this.machine(cx);
                         this.state
                             .read(cx)
-                            .move_tab(&dragged.tab_id, tab_insert_index(from, index), cx)
+                            .move_tab(&machine, &dragged.tab_id, tab_insert_index(from, index), cx)
                             .detach_and_log_err(cx);
                     }))
                     .drag_over::<DraggedPane>(move |style, _, _, _| style.bg(drop))
@@ -1258,9 +1281,10 @@ impl TerminalArea {
                             target_pane_id: None,
                             ratio: None,
                         };
+                        let machine = this.machine(cx);
                         this.state
                             .read(cx)
-                            .move_pane(&dragged.pane_id, destination, cx)
+                            .move_pane(&machine, &dragged.pane_id, destination, cx)
                             .detach_and_log_err(cx);
                     }))
             }))
@@ -1278,9 +1302,10 @@ impl TerminalArea {
                     .on_click({
                         let workspace_id = workspace_id.clone();
                         cx.listener(move |this, _, _, cx| {
+                            let machine = this.machine(cx);
                             this.state
                                 .read(cx)
-                                .new_tab(workspace_id.as_deref(), cx)
+                                .new_tab(&machine, workspace_id.as_deref(), cx)
                                 .detach_and_log_err(cx);
                         })
                     })
@@ -1289,9 +1314,10 @@ impl TerminalArea {
                             workspace_id: workspace_id.clone(),
                             label: None,
                         };
+                        let machine = this.machine(cx);
                         this.state
                             .read(cx)
-                            .move_pane(&dragged.pane_id, destination, cx)
+                            .move_pane(&machine, &dragged.pane_id, destination, cx)
                             .detach_and_log_err(cx);
                     })),
             )
@@ -1636,9 +1662,9 @@ impl TerminalArea {
                 cx.listener(move |this, _: &MouseDownEvent, _, cx| {
                     let focused = this.snapshot(cx).focused_pane_id.clone();
                     if focused.as_deref() != Some(click_pane.as_str()) {
+                        let machine = this.machine(cx);
                         this.state
-                            .read(cx)
-                            .focus_pane(&click_pane, cx)
+                            .update(cx, |state, cx| state.focus_pane(&machine, &click_pane, cx))
                             .detach_and_log_err(cx);
                     }
                 }),
@@ -1689,9 +1715,9 @@ impl TerminalArea {
             terminal.focus(window, cx);
         });
         if snapshot.focused_pane_id.as_deref() != Some(pane_id) {
+            let machine = self.machine(cx);
             self.state
-                .read(cx)
-                .focus_pane(pane_id, cx)
+                .update(cx, |state, cx| state.focus_pane(&machine, pane_id, cx))
                 .detach_and_log_err(cx);
         }
     }
@@ -1705,9 +1731,12 @@ impl TerminalArea {
             .pane(source)
             .zip(snapshot.pane(target))
             .is_some_and(|(a, b)| a.tab_id == b.tab_id);
+        let machine = self.machine(cx);
         let state = self.state.read(cx);
         if same_tab {
-            state.swap_panes(source, target, cx).detach_and_log_err(cx);
+            state
+                .swap_panes(&machine, source, target, cx)
+                .detach_and_log_err(cx);
         } else if let Some(target_pane) = snapshot.pane(target) {
             // From another tab: move it next to the target instead.
             let destination = PaneMoveDestination::Tab {
@@ -1717,7 +1746,7 @@ impl TerminalArea {
                 ratio: None,
             };
             state
-                .move_pane(source, destination, cx)
+                .move_pane(&machine, source, destination, cx)
                 .detach_and_log_err(cx);
         }
     }
@@ -1921,7 +1950,7 @@ impl Render for TerminalArea {
                     None => this
                         .state
                         .read(cx)
-                        .new_tab(workspace.as_deref(), cx)
+                        .new_tab(&machine, workspace.as_deref(), cx)
                         .detach_and_log_err(cx),
                 }
             }))

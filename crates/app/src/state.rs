@@ -1023,7 +1023,7 @@ impl AppState {
                         .filter_map(|id| {
                             let pane_id = this.machine(&id)?.focused_pane.clone()?;
                             let request =
-                                this.call_on(&id, cx, move |client| client.pane_get(&pane_id));
+                                this.call(&id, cx, move |client| client.pane_get(&pane_id));
                             Some((id, request))
                         })
                         .collect::<Vec<_>>()
@@ -1271,21 +1271,14 @@ impl AppState {
         .detach();
     }
 
-    /// Runs one blocking herdr call on the selected machine, on the
-    /// background executor. The typed methods below cover the common ones;
-    /// use this for anything else.
+    /// Runs one blocking herdr call on `machine`, on the background executor.
+    /// The typed methods below cover the common ones; use this for anything
+    /// else.
+    ///
+    /// Every command names its machine: "the selected machine" is resolved
+    /// once, by the key binding, action or palette entry that sends it.
     #[track_caller]
     pub fn call<T: Send + 'static>(
-        &self,
-        cx: &App,
-        call: impl FnOnce(&Client) -> herdr::Result<T> + Send + 'static,
-    ) -> Task<herdr::Result<T>> {
-        self.call_on(&self.selected, cx, call)
-    }
-
-    /// [`Self::call`] on a given machine.
-    #[track_caller]
-    pub fn call_on<T: Send + 'static>(
         &self,
         machine: &MachineId,
         cx: &App,
@@ -1312,16 +1305,10 @@ impl AppState {
 
     // Panes
 
-    #[track_caller]
-    pub fn focus_pane(&self, pane_id: &str, cx: &App) -> Task<herdr::Result<()>> {
-        let pane_id = pane_id.to_owned();
-        self.call(cx, move |c| c.pane_focus(&pane_id))
-    }
-
     /// Selects `machine`, then focuses `pane_id` on it. Fails, selecting
     /// nothing, when `machine` is gone.
     #[track_caller]
-    pub fn focus_pane_on(
+    pub fn focus_pane(
         &mut self,
         machine: &MachineId,
         pane_id: &str,
@@ -1332,23 +1319,13 @@ impl AppState {
         }
         self.select_machine(machine, cx);
         let pane_id = pane_id.to_owned();
-        self.call_on(machine, cx, move |c| c.pane_focus(&pane_id))
+        self.call(machine, cx, move |c| c.pane_focus(&pane_id))
     }
 
     /// Splits `pane_id` (herdr's focused pane when `None`). New panes forward
     /// right-clicks to the program in them; our context menu handles the rest.
     #[track_caller]
     pub fn split_pane(
-        &self,
-        pane_id: Option<&str>,
-        direction: herdr::SplitDirection,
-        cx: &App,
-    ) -> Task<herdr::Result<herdr::PaneInfo>> {
-        self.split_pane_on(&self.selected, pane_id, direction, cx)
-    }
-
-    #[track_caller]
-    pub fn split_pane_on(
         &self,
         machine: &MachineId,
         pane_id: Option<&str>,
@@ -1359,16 +1336,11 @@ impl AppState {
         let mut split = herdr::PaneSplit::new(pane_id.map(str::to_owned), direction);
         split.focus = true;
         split.right_click = Some(herdr::RightClickTarget::Pane);
-        self.call_on(machine, cx, move |c| c.pane_split(&split))
+        self.call(machine, cx, move |c| c.pane_split(&split))
     }
 
     #[track_caller]
-    pub fn close_pane(&self, pane_id: &str, cx: &App) -> Task<herdr::Result<()>> {
-        self.close_pane_on(&self.selected, pane_id, cx)
-    }
-
-    #[track_caller]
-    pub fn close_pane_on(
+    pub fn close_pane(
         &self,
         machine: &MachineId,
         pane_id: &str,
@@ -1376,26 +1348,35 @@ impl AppState {
     ) -> Task<herdr::Result<()>> {
         sounds::play(Cue::Close, sounds::subtle());
         let pane_id = pane_id.to_owned();
-        self.call_on(machine, cx, move |c| c.pane_close(&pane_id))
+        self.call(machine, cx, move |c| c.pane_close(&pane_id))
     }
 
     #[track_caller]
-    pub fn swap_panes(&self, source: &str, target: &str, cx: &App) -> Task<herdr::Result<()>> {
+    pub fn swap_panes(
+        &self,
+        machine: &MachineId,
+        source: &str,
+        target: &str,
+        cx: &App,
+    ) -> Task<herdr::Result<()>> {
         sounds::play(Cue::Tap, sounds::strong());
         let (source, target) = (source.to_owned(), target.to_owned());
-        self.call(cx, move |c| c.pane_swap(&source, &target).map(drop))
+        self.call(machine, cx, move |c| {
+            c.pane_swap(&source, &target).map(drop)
+        })
     }
 
     #[track_caller]
     pub fn move_pane(
         &self,
+        machine: &MachineId,
         pane_id: &str,
         destination: herdr::PaneMoveDestination,
         cx: &App,
     ) -> Task<herdr::Result<()>> {
         sounds::play(Cue::Tap, sounds::strong());
         let pane_id = pane_id.to_owned();
-        self.call(cx, move |c| {
+        self.call(machine, cx, move |c| {
             c.pane_move(&pane_id, &destination, true).map(drop)
         })
     }
@@ -1403,78 +1384,68 @@ impl AppState {
     #[track_caller]
     pub fn set_right_click(
         &self,
+        machine: &MachineId,
         pane_id: &str,
         target: herdr::RightClickTarget,
         cx: &App,
     ) -> Task<herdr::Result<()>> {
         let pane_id = pane_id.to_owned();
-        self.call(cx, move |c| c.pane_set_right_click(&pane_id, target))
+        self.call(machine, cx, move |c| {
+            c.pane_set_right_click(&pane_id, target)
+        })
     }
 
     /// Sends a divider's final ratio. `path` comes from `SplitTree::splits`.
     #[track_caller]
     pub fn set_split_ratio(
         &self,
+        machine: &MachineId,
         tab_id: &str,
         path: Vec<bool>,
         ratio: f32,
         cx: &App,
     ) -> Task<herdr::Result<()>> {
         let tab_id = tab_id.to_owned();
-        self.call(cx, move |c| {
+        self.call(machine, cx, move |c| {
             c.layout_set_split_ratio(&tab_id, &path, ratio).map(drop)
         })
     }
 
     // Tabs
 
-    #[track_caller]
-    pub fn focus_tab(&self, tab_id: &str, cx: &App) -> Task<herdr::Result<()>> {
-        if self.snapshot().focused_tab_id.as_deref() != Some(tab_id) {
-            sounds::play(Cue::Select, PlayOptions::default());
-        }
-        let tab_id = tab_id.to_owned();
-        self.call(cx, move |c| c.tab_focus(&tab_id))
-    }
-
     /// Selects `machine`, then focuses `tab_id` on it. Fails, selecting
     /// nothing, when `machine` is gone.
     #[track_caller]
-    pub fn focus_tab_on(
+    pub fn focus_tab(
         &mut self,
         machine: &MachineId,
         tab_id: &str,
         cx: &mut Context<Self>,
     ) -> Task<herdr::Result<()>> {
-        if self.machine(machine).is_none() {
+        let Some(target) = self.machine(machine) else {
             return Task::ready(Err(gone(machine)));
+        };
+        if target.snapshot().focused_tab_id.as_deref() != Some(tab_id) {
+            sounds::play(Cue::Select, PlayOptions::default());
         }
         self.select_machine(machine, cx);
-        self.focus_tab(tab_id, cx)
+        let tab_id = tab_id.to_owned();
+        self.call(machine, cx, move |c| c.tab_focus(&tab_id))
     }
 
     #[track_caller]
     pub fn new_tab(
         &self,
-        workspace_id: Option<&str>,
-        cx: &App,
-    ) -> Task<herdr::Result<herdr::TabInfo>> {
-        self.new_tab_on(&self.selected, workspace_id, cx)
-    }
-
-    #[track_caller]
-    pub fn new_tab_on(
-        &self,
         machine: &MachineId,
         workspace_id: Option<&str>,
         cx: &App,
     ) -> Task<herdr::Result<herdr::TabInfo>> {
-        self.new_tab_named_on(machine, workspace_id, None, cx)
+        self.new_tab_named(machine, workspace_id, None, cx)
     }
 
     /// A new, focused tab named `label` (herdr names it when `None`).
     #[track_caller]
-    pub fn new_tab_named_on(
+    pub fn new_tab_named(
         &self,
         machine: &MachineId,
         workspace_id: Option<&str>,
@@ -1488,16 +1459,11 @@ impl AppState {
             focus: true,
             ..Default::default()
         };
-        self.call_on(machine, cx, move |c| c.tab_create(&params).map(|t| t.tab))
+        self.call(machine, cx, move |c| c.tab_create(&params).map(|t| t.tab))
     }
 
     #[track_caller]
-    pub fn rename_tab(&self, tab_id: &str, label: &str, cx: &App) -> Task<herdr::Result<()>> {
-        self.rename_tab_on(&self.selected, tab_id, label, cx)
-    }
-
-    #[track_caller]
-    pub fn rename_tab_on(
+    pub fn rename_tab(
         &self,
         machine: &MachineId,
         tab_id: &str,
@@ -1506,23 +1472,24 @@ impl AppState {
     ) -> Task<herdr::Result<()>> {
         sounds::play(Cue::Tap, sounds::subtle());
         let (tab_id, label) = (tab_id.to_owned(), label.to_owned());
-        self.call_on(machine, cx, move |c| c.tab_rename(&tab_id, &label))
+        self.call(machine, cx, move |c| c.tab_rename(&tab_id, &label))
     }
 
     #[track_caller]
-    pub fn move_tab(&self, tab_id: &str, index: usize, cx: &App) -> Task<herdr::Result<()>> {
+    pub fn move_tab(
+        &self,
+        machine: &MachineId,
+        tab_id: &str,
+        index: usize,
+        cx: &App,
+    ) -> Task<herdr::Result<()>> {
         sounds::play(Cue::Tap, sounds::strong());
         let tab_id = tab_id.to_owned();
-        self.call(cx, move |c| c.tab_move(&tab_id, index))
+        self.call(machine, cx, move |c| c.tab_move(&tab_id, index))
     }
 
     #[track_caller]
-    pub fn close_tab(&self, tab_id: &str, cx: &App) -> Task<herdr::Result<()>> {
-        self.close_tab_on(&self.selected, tab_id, cx)
-    }
-
-    #[track_caller]
-    pub fn close_tab_on(
+    pub fn close_tab(
         &self,
         machine: &MachineId,
         tab_id: &str,
@@ -1530,58 +1497,39 @@ impl AppState {
     ) -> Task<herdr::Result<()>> {
         sounds::play(Cue::Close, sounds::subtle());
         let tab_id = tab_id.to_owned();
-        self.call_on(machine, cx, move |c| c.tab_close(&tab_id))
+        self.call(machine, cx, move |c| c.tab_close(&tab_id))
     }
 
     // Workspaces and worktrees
-
-    /// Focuses a workspace on the selected machine.
-    #[track_caller]
-    pub fn focus_workspace(&self, workspace_id: &str, cx: &App) -> Task<herdr::Result<()>> {
-        if self.snapshot().focused_workspace_id.as_deref() != Some(workspace_id) {
-            sounds::play(Cue::Select, PlayOptions::default());
-        }
-        let id = workspace_id.to_owned();
-        self.call(cx, move |c| c.workspace_focus(&id))
-    }
 
     /// Focuses a workspace on any machine, selecting that machine first
     /// (workspace ids are per machine). Fails, selecting nothing, when
     /// `machine` is gone.
     #[track_caller]
-    pub fn focus_workspace_on(
+    pub fn focus_workspace(
         &mut self,
         machine: &MachineId,
         workspace_id: &str,
         cx: &mut Context<Self>,
     ) -> Task<herdr::Result<()>> {
-        if self.machine(machine).is_none() {
+        let Some(target) = self.machine(machine) else {
             return Task::ready(Err(gone(machine)));
+        };
+        // Sounds for a workspace not yet focused, and for any workspace on
+        // another machine (switching machines is a selection too).
+        let focused = target.snapshot().focused_workspace_id.as_deref() == Some(workspace_id);
+        if !focused || &self.selected != machine {
+            sounds::play(Cue::Select, PlayOptions::default());
         }
-        if &self.selected != machine {
-            self.select_machine(machine, cx);
-            // `focus_workspace` only sounds for a workspace not yet focused.
-            if self.snapshot().focused_workspace_id.as_deref() == Some(workspace_id) {
-                sounds::play(Cue::Select, PlayOptions::default());
-            }
-        }
-        self.focus_workspace(workspace_id, cx)
-    }
-
-    #[track_caller]
-    pub fn new_workspace(
-        &self,
-        cwd: Option<PathBuf>,
-        label: Option<String>,
-        cx: &App,
-    ) -> Task<herdr::Result<herdr::WorkspaceInfo>> {
-        self.new_workspace_on(&self.selected, cwd, label, cx)
+        self.select_machine(machine, cx);
+        let id = workspace_id.to_owned();
+        self.call(machine, cx, move |c| c.workspace_focus(&id))
     }
 
     /// A new, focused workspace on `machine`. The caller selects the machine
     /// to show it.
     #[track_caller]
-    pub fn new_workspace_on(
+    pub fn new_workspace(
         &self,
         machine: &MachineId,
         cwd: Option<PathBuf>,
@@ -1595,23 +1543,13 @@ impl AppState {
             focus: true,
             ..Default::default()
         };
-        self.call_on(machine, cx, move |c| {
+        self.call(machine, cx, move |c| {
             c.workspace_create(&params).map(|w| w.workspace)
         })
     }
 
     #[track_caller]
     pub fn rename_workspace(
-        &self,
-        workspace_id: &str,
-        label: &str,
-        cx: &App,
-    ) -> Task<herdr::Result<()>> {
-        self.rename_workspace_on(&self.selected, workspace_id, label, cx)
-    }
-
-    #[track_caller]
-    pub fn rename_workspace_on(
         &self,
         machine: &MachineId,
         workspace_id: &str,
@@ -1620,39 +1558,24 @@ impl AppState {
     ) -> Task<herdr::Result<()>> {
         sounds::play(Cue::Tap, sounds::subtle());
         let (id, label) = (workspace_id.to_owned(), label.to_owned());
-        self.call_on(machine, cx, move |c| c.workspace_rename(&id, &label))
+        self.call(machine, cx, move |c| c.workspace_rename(&id, &label))
     }
 
     /// Puts every workspace in `order` (all of them, first to last).
     #[track_caller]
-    pub fn reorder_workspaces(&self, order: Vec<String>, cx: &App) -> Task<herdr::Result<()>> {
-        self.reorder_workspaces_on(&self.selected, order, cx)
-    }
-
-    #[track_caller]
-    pub fn reorder_workspaces_on(
+    pub fn reorder_workspaces(
         &self,
         machine: &MachineId,
         order: Vec<String>,
         cx: &App,
     ) -> Task<herdr::Result<()>> {
         sounds::play(Cue::Tap, sounds::strong());
-        self.call_on(machine, cx, move |c| c.workspace_move_block(&order, None))
+        self.call(machine, cx, move |c| c.workspace_move_block(&order, None))
     }
 
     /// Closes immediately; confirm first if it holds running agents.
     #[track_caller]
     pub fn close_workspace(
-        &self,
-        workspace_id: &str,
-        close_group: bool,
-        cx: &App,
-    ) -> Task<herdr::Result<()>> {
-        self.close_workspace_on(&self.selected, workspace_id, close_group, cx)
-    }
-
-    #[track_caller]
-    pub fn close_workspace_on(
         &self,
         machine: &MachineId,
         workspace_id: &str,
@@ -1661,21 +1584,21 @@ impl AppState {
     ) -> Task<herdr::Result<()>> {
         sounds::play(Cue::Close, sounds::strong());
         let id = workspace_id.to_owned();
-        self.call_on(machine, cx, move |c| c.workspace_close(&id, close_group))
+        self.call(machine, cx, move |c| c.workspace_close(&id, close_group))
     }
 
     /// Closes each of `workspace_ids` on `machine` with its own
     /// `workspace.close`, all of them even when one fails (the first error
     /// is returned). For a group herdr's `close_group` doesn't define.
     #[track_caller]
-    pub fn close_workspaces_on(
+    pub fn close_workspaces(
         &self,
         machine: &MachineId,
         workspace_ids: Vec<String>,
         cx: &App,
     ) -> Task<herdr::Result<()>> {
         sounds::play(Cue::Close, sounds::strong());
-        self.call_on(machine, cx, move |c| {
+        self.call(machine, cx, move |c| {
             let mut outcome = Ok(());
             for id in &workspace_ids {
                 let closed = c.workspace_close(id, false);
@@ -1688,39 +1611,39 @@ impl AppState {
     }
 
     #[track_caller]
-    pub fn create_worktree_on(
+    pub fn create_worktree(
         &self,
         machine: &MachineId,
         params: herdr::WorktreeParams,
         cx: &App,
     ) -> Task<herdr::Result<herdr::WorkspaceInfo>> {
-        self.call_on(machine, cx, move |c| {
+        self.call(machine, cx, move |c| {
             c.worktree_create(&params).map(|w| w.workspace)
         })
     }
 
     /// The worktrees of `workspace_id`'s repo (`worktree.list`).
     #[track_caller]
-    pub fn list_worktrees_on(
+    pub fn list_worktrees(
         &self,
         machine: &MachineId,
         workspace_id: &str,
         cx: &App,
     ) -> Task<herdr::Result<herdr::WorktreeList>> {
         let id = workspace_id.to_owned();
-        self.call_on(machine, cx, move |c| c.worktree_list(Some(&id), None))
+        self.call(machine, cx, move |c| c.worktree_list(Some(&id), None))
     }
 
     /// Opens an existing worktree as a workspace (`worktree.open`); herdr
     /// focuses the open one if there is one.
     #[track_caller]
-    pub fn open_worktree_on(
+    pub fn open_worktree(
         &self,
         machine: &MachineId,
         params: herdr::WorktreeParams,
         cx: &App,
     ) -> Task<herdr::Result<herdr::WorkspaceCreated>> {
-        self.call_on(machine, cx, move |c| c.worktree_open(&params))
+        self.call(machine, cx, move |c| c.worktree_open(&params))
     }
 
     /// `worktree.remove`: deletes the linked worktree's checkout and closes
@@ -1732,7 +1655,7 @@ impl AppState {
     /// `worktree.list` names the checkout that workspace has open, and
     /// `worktree.open` on that path answers `already_open` and records it.
     #[track_caller]
-    pub fn remove_worktree_on(
+    pub fn remove_worktree(
         &self,
         machine: &MachineId,
         workspace_id: &str,
@@ -1744,7 +1667,7 @@ impl AppState {
             .and_then(|m| m.snapshot().workspace(workspace_id))
             .is_some_and(|w| w.info.worktree.is_none());
         let id = workspace_id.to_owned();
-        self.call_on(machine, cx, move |c| {
+        self.call(machine, cx, move |c| {
             if adopt {
                 adopt_worktree(c, &id)?;
             }
@@ -1752,21 +1675,19 @@ impl AppState {
         })
     }
 
-    // Agents and plugins
+    // Plugins
 
     #[track_caller]
-    pub fn focus_agent(&self, target: &str, cx: &App) -> Task<herdr::Result<()>> {
-        let target = target.to_owned();
-        self.call(cx, move |c| c.agent_focus(&target))
+    pub fn plugin_actions(
+        &self,
+        machine: &MachineId,
+        cx: &App,
+    ) -> Task<herdr::Result<Vec<herdr::PluginActionInfo>>> {
+        self.call(machine, cx, |c| c.plugin_action_list(None))
     }
 
     #[track_caller]
-    pub fn plugin_actions(&self, cx: &App) -> Task<herdr::Result<Vec<herdr::PluginActionInfo>>> {
-        self.call(cx, |c| c.plugin_action_list(None))
-    }
-
-    #[track_caller]
-    pub fn invoke_plugin_action_on(
+    pub fn invoke_plugin_action(
         &self,
         machine: &MachineId,
         action: &herdr::PluginActionInfo,
@@ -1774,7 +1695,7 @@ impl AppState {
         cx: &App,
     ) -> Task<herdr::Result<()>> {
         let (plugin_id, action_id) = (action.plugin_id.clone(), action.action_id.clone());
-        self.call_on(machine, cx, move |c| {
+        self.call(machine, cx, move |c| {
             c.plugin_action_invoke(Some(&plugin_id), &action_id, Some(&context))
                 .map(drop)
         })
@@ -2032,7 +1953,9 @@ mod tests {
     #[gpui::test]
     fn refused_endpoint_fails_every_call(cx: &mut TestAppContext) {
         let state = cx.new(|cx| AppState::new(Err(refused()), cx));
-        let task = cx.update(|cx| state.read(cx).focus_pane("w1:p1", cx));
+        let task = state.update(cx, |state, cx| {
+            state.focus_pane(&MachineId::Local, "w1:p1", cx)
+        });
         let result = cx.foreground_executor().block_test(task);
         assert!(matches!(result, Err(herdr::Error::Refused(_))));
     }
@@ -2045,7 +1968,7 @@ mod tests {
     fn focusing_a_pane_on_a_gone_machine_fails(cx: &mut TestAppContext) {
         let state = with_remote(cx);
         let task = state.update(cx, |state, cx| {
-            state.focus_pane_on(&gone_machine(), "w1:p1", cx)
+            state.focus_pane(&gone_machine(), "w1:p1", cx)
         });
         let result = cx.foreground_executor().block_test(task);
         assert!(matches!(result, Err(herdr::Error::Refused(m)) if m.contains("no longer saved")));
@@ -2056,7 +1979,7 @@ mod tests {
         let state = with_remote(cx);
         state.update(cx, |state, cx| {
             state.select_machine(&remote(), cx);
-            state.focus_workspace_on(&gone_machine(), "w1", cx).detach();
+            state.focus_workspace(&gone_machine(), "w1", cx).detach();
         });
         let selected = cx.read(|cx| state.read(cx).selected().clone());
         assert_eq!(selected, remote());
@@ -2065,7 +1988,7 @@ mod tests {
     #[gpui::test]
     fn a_call_on_a_gone_machine_fails_instead_of_using_the_selected_one(cx: &mut TestAppContext) {
         let state = with_remote(cx);
-        let task = cx.update(|cx| state.read(cx).close_pane_on(&gone_machine(), "w1:p1", cx));
+        let task = cx.update(|cx| state.read(cx).close_pane(&gone_machine(), "w1:p1", cx));
         let result = cx.foreground_executor().block_test(task);
         assert!(matches!(result, Err(herdr::Error::Refused(m)) if m.contains("no longer saved")));
     }

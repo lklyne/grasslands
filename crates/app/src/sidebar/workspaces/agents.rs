@@ -109,6 +109,7 @@ impl AgentList {
         });
         window.dispatch_action(
             Box::new(crate::actions::FocusPane {
+                machine: machine.clone(),
                 pane_id: pane_id.to_owned(),
             }),
             cx,

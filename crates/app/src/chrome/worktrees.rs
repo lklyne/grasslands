@@ -188,7 +188,7 @@ impl Chrome {
         let task = self
             .state
             .read(cx)
-            .list_worktrees_on(&machine, &workspace_id, cx);
+            .list_worktrees(&machine, &workspace_id, cx);
         cx.spawn(async move |this, cx| {
             let list = match task.await {
                 Ok(list) => list,
@@ -315,7 +315,7 @@ impl Chrome {
                 focus: true,
                 ..WorktreeParams::default()
             };
-            state.open_worktree_on(&machine, params, cx)
+            state.open_worktree(&machine, params, cx)
         });
         cx.spawn(async move |this, cx| match task.await {
             Ok(_) => sounds::play(cues::Cue::Success, cues::PlayOptions::default()),
@@ -368,7 +368,7 @@ impl Chrome {
         let task = self
             .state
             .read(cx)
-            .remove_worktree_on(&machine, &workspace_id, force, cx);
+            .remove_worktree(&machine, &workspace_id, force, cx);
         cx.spawn(async move |this, cx| {
             let error = match task.await {
                 Ok(_) => {

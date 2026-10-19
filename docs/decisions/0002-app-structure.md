@@ -41,13 +41,21 @@ else in the module is yours.
 - Commands to herdr go through methods on `AppState` (`focus_pane`, `split_pane`,
   `set_split_ratio`, `new_tab`, ..., or `call` for anything else; each returns a
   `Task<herdr::Result<T>>` to await or `.detach_and_log_err(cx)`), never straight from a view, so there is one place that talks
-  to the socket.
+  to the socket. `call` is the choke point: it logs every failure with the
+  caller's location (`#[track_caller]`).
+- Every command takes the `MachineId` it acts on; there is no "selected
+  machine" default. herdr ids are per machine (two servers both have a `w1`),
+  so the target is resolved once, where the intent starts: a key binding or
+  click handler (`TerminalArea` acts on the machine it shows), a palette entry
+  or menu (`HerdrCommand`/`MenuTarget` capture it when they open), an action
+  (`FocusPane`, `OpenFile` carry it). The `focus_*` commands also select their
+  machine, and fail without selecting anything when it is gone.
 - `Config::from_env` honors `HERDR_BIN`, `HERDR_SESSION`, `HERDR_SOCKET_PATH`.
 
 ## How actions flow
 
 - Cross-module intents are GPUI actions in `crate::actions`: `OpenFile { path }`,
-  `FocusPane { pane_id }`, `CommandPalette`, `ToggleTheme`, `Quit`.
+  `FocusPane { machine, pane_id }`, `CommandPalette`, `ToggleTheme`, `Quit`.
 - A view sends one with `window.dispatch_action(Box::new(OpenFile { path }), cx)`.
   Actions bubble up the focus path, not sideways, so `Workspace` handles them
   (`on_action` in its render) and forwards to the owning view

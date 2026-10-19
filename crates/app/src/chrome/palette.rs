@@ -222,6 +222,7 @@ fn groups(
                 )
                 .into(),
                 MenuCommand::Action(Rc::new(FocusPane {
+                    machine: machine(),
                     pane_id: agent.pane_id.clone(),
                 })),
             )

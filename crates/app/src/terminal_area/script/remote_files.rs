@@ -508,7 +508,8 @@ impl Run {
         };
         let text = format!("cd {dir}\r");
         let Ok(task) = cx.update(|_, cx| {
-            state.read(cx).call(cx, move |client| {
+            let state = state.read(cx);
+            state.call(state.selected(), cx, move |client| {
                 client.call("pane.send_input", &json!({ "pane_id": pane, "text": text }))
             })
         }) else {

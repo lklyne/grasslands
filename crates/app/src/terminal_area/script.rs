@@ -38,7 +38,7 @@ mod titlebar;
 use super::{ClosePane, NewTab, SplitDown, SplitRight, TerminalArea};
 use crate::herdr::{SplitDirection, SplitTree};
 use crate::overlay::{self, Capture};
-use crate::state::MachineId;
+use crate::state::{AppState, MachineId};
 
 pub fn requested() -> Option<String> {
     std::env::var("RT_SCRIPT").ok().filter(|s| !s.is_empty())
@@ -190,6 +190,23 @@ impl Run {
         cx.update(|_, cx| f(area.read(cx), cx))
     }
 
+    /// Runs `f` on the app state with the selected machine, the one the
+    /// script drives.
+    fn on_state<R>(
+        &self,
+        cx: &mut Cx,
+        f: impl FnOnce(&mut AppState, &MachineId, &mut Context<AppState>) -> R,
+    ) -> anyhow::Result<R> {
+        let area = self.area.clone();
+        cx.update(|_, cx| {
+            let state = area.read(cx).state.clone();
+            state.update(cx, |state, cx| {
+                let machine = state.selected().clone();
+                f(state, &machine, cx)
+            })
+        })
+    }
+
     /// Every screenshot goes through `scripts/capture-windows.swift`: this
     /// app's windows only, whatever else is on screen.
     fn shoot(&mut self, cx: &mut Cx, name: &str) {
@@ -334,12 +351,14 @@ impl Run {
     async fn read_pane_text(&self, cx: &mut Cx, pane_id: &str) -> String {
         let pane_id = pane_id.to_owned();
         let Ok(task) = self.read(cx, |area, cx| {
-            area.state.read(cx).call(cx, move |client| {
-                client.call(
-                    "pane.read",
-                    &json!({ "pane_id": pane_id, "source": "recent", "lines": 40 }),
-                )
-            })
+            area.state
+                .read(cx)
+                .call(&area.machine(cx), cx, move |client| {
+                    client.call(
+                        "pane.read",
+                        &json!({ "pane_id": pane_id, "source": "recent", "lines": 40 }),
+                    )
+                })
         }) else {
             return String::new();
         };
@@ -368,9 +387,12 @@ impl Run {
         // A workspace of our own, focused, with one pane.
         let task = self.read(cx, |area, cx| {
             let home = std::env::var_os("HOME").map(PathBuf::from);
-            area.state
-                .read(cx)
-                .new_workspace(home, Some("script".to_owned()), cx)
+            area.state.read(cx).new_workspace(
+                &area.machine(cx),
+                home,
+                Some("script".to_owned()),
+                cx,
+            )
         })?;
         let workspace = task.await?;
         let workspace_id = workspace.workspace_id.clone();
@@ -379,8 +401,8 @@ impl Run {
             TerminalArea::active_tab(&snapshot)
                 .is_some_and(|tab| tab.info.workspace_id == workspace_id)
         };
-        let task = self.read(cx, |area, cx| {
-            area.state.read(cx).focus_workspace(&workspace_id, cx)
+        let task = self.on_state(cx, |state, machine, cx| {
+            state.focus_workspace(machine, &workspace_id, cx)
         })?;
         task.await?;
         let shown = self
@@ -399,8 +421,10 @@ impl Run {
             anyhow::bail!("expected a single pane");
         };
         cx.update(|window, cx| {
-            self.area
-                .update(cx, |area, cx| area.focus_pane(&first, window, cx));
+            self.area.update(cx, |area, cx| {
+                let machine = area.machine(cx);
+                area.focus_pane(&machine, &first, window, cx);
+            });
         })
         .ok();
         Self::settle(cx).await;
@@ -641,6 +665,7 @@ impl Run {
         })?;
         let task = self.read(cx, |area, cx| {
             area.state.read(cx).move_pane(
+                &area.machine(cx),
                 &moving,
                 crate::herdr::PaneMoveDestination::Tab {
                     tab_id: tab_id.clone(),
@@ -777,9 +802,12 @@ impl Run {
 
         // Clean up: close the script's workspace.
         let task = self.read(cx, |area, cx| {
-            area.state
-                .read(cx)
-                .close_workspace(&workspace.workspace_id, false, cx)
+            area.state.read(cx).close_workspace(
+                &area.machine(cx),
+                &workspace.workspace_id,
+                false,
+                cx,
+            )
         })?;
         let closed = task.await;
         self.check(closed.is_ok(), "closed the script workspace");
@@ -932,8 +960,10 @@ impl Run {
             return Ok(());
         };
         cx.update(|window, cx| {
-            self.area
-                .update(cx, |area, cx| area.focus_pane(&leftmost, window, cx));
+            self.area.update(cx, |area, cx| {
+                let machine = area.machine(cx);
+                area.focus_pane(&machine, &leftmost, window, cx);
+            });
         })
         .ok();
         let on_left = self
@@ -1142,7 +1172,9 @@ impl Run {
             "dropping a header on another tab moves the pane there (pane.move), same view",
         );
         // Show the first tab again if herdr stayed on the (now gone) second.
-        let task = self.read(cx, |area, cx| area.state.read(cx).focus_tab(first_tab, cx))?;
+        let task = self.on_state(cx, |state, machine, cx| {
+            state.focus_tab(machine, first_tab, cx)
+        })?;
         task.await.ok();
         let four = self
             .until(cx, Duration::from_secs(10), |area, _, _| {
@@ -1283,8 +1315,10 @@ impl Run {
         Self::settle(cx).await;
         self.check_views(cx, "reattached");
         cx.update(|window, cx| {
-            self.area
-                .update(cx, |area, cx| area.focus_pane(&pane, window, cx));
+            self.area.update(cx, |area, cx| {
+                let machine = area.machine(cx);
+                area.focus_pane(&machine, &pane, window, cx);
+            });
         })
         .ok();
         Self::settle(cx).await;
@@ -1381,8 +1415,8 @@ impl Run {
                 .map(|w| w.info.workspace_id.clone())
         })?;
         if let Some(workspace_id) = workspace_id {
-            let task = self.read(cx, |area, cx| {
-                area.state.read(cx).focus_workspace(&workspace_id, cx)
+            let task = self.on_state(cx, |state, machine, cx| {
+                state.focus_workspace(machine, &workspace_id, cx)
             })?;
             task.await.ok();
         }

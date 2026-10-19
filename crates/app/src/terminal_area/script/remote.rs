@@ -36,9 +36,12 @@ impl Run {
         self.check(local_up, "Local connected");
         let created = self
             .read(cx, |area, cx| {
-                area.state
-                    .read(cx)
-                    .new_workspace(None, Some(LOCAL_WORKSPACE.into()), cx)
+                area.state.read(cx).new_workspace(
+                    &MachineId::Local,
+                    None,
+                    Some(LOCAL_WORKSPACE.into()),
+                    cx,
+                )
             })?
             .await;
         let Ok(local_workspace) = created.map(|w| w.workspace_id) else {
@@ -229,7 +232,7 @@ impl Run {
         let close = self.read(cx, |area, cx| {
             area.state
                 .read(cx)
-                .close_workspace(&local_workspace, false, cx)
+                .close_workspace(&MachineId::Local, &local_workspace, false, cx)
         })?;
         if close.await.is_ok() {
             eprintln!("ok   closed the script's Local workspace");
@@ -240,8 +243,10 @@ impl Run {
     /// Focuses `pane`, types `echo <text>`, and waits for `expect` in it.
     async fn type_in(&mut self, cx: &mut Cx, pane: &str, text: &str, expect: &str) -> bool {
         cx.update(|window, cx| {
-            self.area
-                .update(cx, |area, cx| area.focus_pane(pane, window, cx));
+            self.area.update(cx, |area, cx| {
+                let machine = area.machine(cx);
+                area.focus_pane(&machine, pane, window, cx);
+            });
         })
         .ok();
         Self::settle(cx).await;
@@ -269,7 +274,7 @@ pub(super) fn focus(
     cx.update(|_, cx| {
         state.update(cx, |state, cx| {
             state
-                .focus_workspace_on(machine, workspace, cx)
+                .focus_workspace(machine, workspace, cx)
                 .detach_and_log_err(cx);
         });
     })
