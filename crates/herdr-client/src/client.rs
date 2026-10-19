@@ -2,6 +2,8 @@
 //! connection; run them off the UI thread.
 
 use std::collections::BTreeMap;
+use std::io::{self, Read};
+use std::os::unix::net::UnixStream;
 
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -212,6 +214,31 @@ pub struct PluginActionInvoked {
     pub action: Option<PluginActionInfo>,
     #[serde(default)]
     pub log: Option<Value>,
+}
+
+/// A `server.ssh_agent.register` in force: herdr drops it when this
+/// connection closes, so dropping this ends it.
+#[derive(Debug)]
+pub struct SshAgentRegistration {
+    stream: UnixStream,
+}
+
+impl SshAgentRegistration {
+    /// Whether the server still holds the connection (and so the
+    /// registration). herdr sends nothing on it, so EOF or an error means
+    /// the server, or the tunnel to it, went away.
+    pub fn is_open(&self) -> bool {
+        if self.stream.set_nonblocking(true).is_err() {
+            return false;
+        }
+        let mut byte = [0u8; 1];
+        let open = match (&self.stream).read(&mut byte) {
+            Ok(n) => n > 0,
+            Err(err) => err.kind() == io::ErrorKind::WouldBlock,
+        };
+        let _ = self.stream.set_nonblocking(false);
+        open
+    }
 }
 
 #[derive(Serialize)]
@@ -521,6 +548,19 @@ impl Client {
         )
     }
 
+    // Server
+
+    /// Makes `socket_path`, an agent socket on the server's host, the SSH
+    /// agent of the server's panes (they see it through their
+    /// `SSH_AUTH_SOCK`). It lasts as long as the returned registration.
+    pub fn ssh_agent_register(&self, socket_path: &str) -> Result<SshAgentRegistration> {
+        let (stream, _) = self.endpoint.request_open(
+            "server.ssh_agent.register",
+            &json!({ "socket_path": socket_path }),
+        )?;
+        Ok(SshAgentRegistration { stream })
+    }
+
     // Notifications
 
     /// Asks herdr to show a toast. With `ui.toast.delivery = "system"` it goes to the OS.
@@ -537,5 +577,23 @@ impl Client {
     /// write it; see `crate::config`).
     pub fn server_reload_config(&self) -> Result<ConfigReload> {
         self.endpoint.request("server.reload_config", &json!({}))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn registration_should_be_open_while_the_server_holds_it() {
+        let (stream, _server) = UnixStream::pair().unwrap();
+        assert!(SshAgentRegistration { stream }.is_open());
+    }
+
+    #[test]
+    fn registration_should_be_closed_once_the_server_hangs_up() {
+        let (stream, server) = UnixStream::pair().unwrap();
+        drop(server);
+        assert!(!SshAgentRegistration { stream }.is_open());
     }
 }

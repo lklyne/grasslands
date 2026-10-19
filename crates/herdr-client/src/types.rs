@@ -360,6 +360,9 @@ pub struct ServerCapabilities {
     pub health_check: bool,
     #[serde(default)]
     pub surface_interest: bool,
+    /// Supports `server.ssh_agent.register`.
+    #[serde(default)]
+    pub ssh_agent_registration: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

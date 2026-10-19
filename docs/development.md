@@ -55,7 +55,7 @@ The herdr-client integration tests create and close workspaces in your dev sessi
 
 ## Running it for real
 
-> **Warning.** The app attaches to every herdr terminal with `herdr terminal attach <id> --takeover`. herdr allows one controller per terminal, so the app takes each terminal away from any herdr TUI attached to it, and the TUI loses control of those panes. If you open a herdr TUI and attach again, the TUI takes it back and the app's pane shows "Detached" with a Reattach button. Don't run both against the same panes. The app also sends real commands. × on a pane or tab closes it in herdr, and that kills its process (it asks first when an agent is working or blocked).
+> **Warning.** The app attaches to every herdr terminal with `herdr terminal attach <id>`. herdr allows one direct-attach client per terminal. A herdr TUI isn't one (it draws panes another way), so the app and a TUI share a session fine. Another direct attach is: a second app instance on the same session, `herdr agent attach`, or `herdr terminal attach`. The app never takes a terminal from one of those on its own; the pane shows "Detached", and its Reattach button takes the terminal over (`--takeover`), which detaches the other client. The app also sends real commands. × on a pane or tab closes it in herdr, and that kills its process (it asks first when an agent is working or blocked).
 
 Release builds are not socket-guarded. They connect to whatever `HERDR_BIN`, `HERDR_SESSION` and `HERDR_SOCKET_PATH` point at, and with none set, to your default herdr session. Upgrade it to 0.9.5 first (above).
 
@@ -123,6 +123,24 @@ RT_CHROME_SCRIPT='menu pane w1:p1; wait 1500; key escape; log after' scripts/dev
 
 ```sh
 RT_SIDEBAR_SCRIPT='wait 2000; focus w2; wait 800; log after' scripts/dev-run cargo run -p app
+```
+
+### Remote machines
+
+The remote checks run against `dockerbox`, the `herdr-remote-test` container (`ssh://lyle@127.0.0.1:2222`), saved as a machine in herdr. Each driver's header under `crates/app/src/terminal_area/script/` says what it does. `machines`, `remote` and `remote-files` stop and start the container, which ends whatever else is connected to it; `machine-ui` uses fixtures only.
+
+```sh
+GRASSLANDS_DEV_MACHINES=dockerbox RT_SCRIPT=machines scripts/dev-run cargo run -p app
+GRASSLANDS_DEV_MACHINES=dockerbox RT_SCRIPT=remote scripts/dev-run cargo run -p app
+GRASSLANDS_DEV_MACHINES=dockerbox RT_SCRIPT=remote-files scripts/dev-run cargo run -p app
+RT_SCRIPT=machine-ui scripts/dev-run cargo run -p app
+```
+
+The link itself has ignored tests in `crates/herdr-client/tests/machine_link.rs`. The agent tests also need `GRASSLANDS_TEST_AGENT`, the socket of a throwaway `ssh-agent` holding a throwaway key (never your own agent). They force forwarding with `RT_FORWARD_AGENT=1`, which debug builds of the app take too:
+
+```sh
+GRASSLANDS_SSH_TEST_TARGET=ssh://lyle@127.0.0.1:2222 GRASSLANDS_TEST_AGENT=/path/to/agent.sock \
+  scripts/dev-run cargo test -p herdr-client --test machine_link -- --ignored --nocapture
 ```
 
 ## Known gaps

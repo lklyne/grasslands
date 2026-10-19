@@ -38,6 +38,7 @@ mod titlebar;
 use super::{ClosePane, NewTab, SplitDown, SplitRight, TerminalArea};
 use crate::herdr::{SplitDirection, SplitTree};
 use crate::overlay::{self, Capture};
+use crate::state::MachineId;
 
 pub fn requested() -> Option<String> {
     std::env::var("RT_SCRIPT").ok().filter(|s| !s.is_empty())
@@ -1245,6 +1246,23 @@ impl Run {
         Self::settle(cx).await;
         self.check_views(cx, "detached: its view is hidden");
         self.shoot(cx, "detached");
+
+        // Attaching on its own (as after a reconnect), the app leaves the
+        // terminal with the other client: herdr refuses a plain attach.
+        cx.update(|window, cx| {
+            self.area.update(cx, |area, cx| {
+                area.reattach_machine(&MachineId::Local, window, cx);
+            });
+        })
+        .ok();
+        Self::sleep(cx, 2000).await;
+        let still_detached =
+            self.read(cx, |area, cx| !area.terminals.is_attached(&terminal, cx))?;
+        let other_kept = matches!(other.try_wait(), Ok(None));
+        self.check(
+            still_detached && other_kept,
+            "an automatic re-attach doesn't take the terminal back",
+        );
         let _ = other.kill();
         let _ = other.wait();
 

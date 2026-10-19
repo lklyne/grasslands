@@ -93,7 +93,7 @@ Keyboard shortcuts for splitting, focusing, resizing and closing are owned by th
 
 ## Terminals
 
-- Each herdr pane gets one gpui-libghostty view, running `herdr terminal attach <terminal_id> --takeover`. The terminal id comes from the pane records in the snapshot.
+- Each herdr pane gets one gpui-libghostty view, running `herdr terminal attach <terminal_id>` (`--takeover` only when the person clicks Reattach; decision 0019). The terminal id comes from the pane records in the snapshot.
 - Terminal views are created on `pane.created` and destroyed on `pane.closed`, and moved without restarting on `pane.moved`.
 - Each view loads its own Ghostty config file (font, theme, and later, its shader). This may need a small patch to gpui-libghostty if it still starts every view from an empty config (check `TerminalConfiguration` in 0.3.1 first).
 - Ghostty draws into native views layered over the GPUI window. The app repositions them every frame during drags and resizes, and hides views that aren't on screen.

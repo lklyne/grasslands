@@ -488,24 +488,29 @@ impl TerminalArea {
 
     /// How to attach `terminal_id` on `machine`: `None` while a remote
     /// machine's herdr isn't found yet.
+    ///
+    /// Only the person's own Reattach passes `takeover`. Attaching on its
+    /// own, the app never detaches another client (herdr refuses, and the
+    /// pane shows Detached); see docs/decisions/0019-remote-machines.md.
     fn attach_command(
         &self,
         machine: &MachineId,
         terminal_id: &str,
+        takeover: bool,
         cx: &App,
     ) -> Option<Result<String, String>> {
         match machine {
             MachineId::Local => Some(
                 self.launch
                     .as_ref()
-                    .map(|launch| launch.attach_command(terminal_id))
+                    .map(|launch| launch.attach_command(terminal_id, takeover))
                     .ok_or_else(|| "herdr is disconnected".to_owned()),
             ),
             MachineId::Remote(_) => self
                 .state
                 .read(cx)
                 .machine(machine)?
-                .attach_command(terminal_id)
+                .attach_command(terminal_id, takeover)
                 .map(Ok),
         }
     }
@@ -522,7 +527,7 @@ impl TerminalArea {
             .values()
             .filter(|pane| !self.terminals.has(machine, &pane.terminal_id))
             .filter_map(|pane| {
-                let command = self.attach_command(machine, &pane.terminal_id, cx)?;
+                let command = self.attach_command(machine, &pane.terminal_id, false, cx)?;
                 Some((pane.terminal_id.clone(), command))
             })
             .collect()
@@ -530,7 +535,8 @@ impl TerminalArea {
 
     /// Attaches again every view on `machine` whose attach ended, which is
     /// what a dropped connection does to all of them. Panes that went away
-    /// meanwhile are dropped by the next snapshot instead.
+    /// meanwhile are dropped by the next snapshot instead. Without takeover:
+    /// a terminal another client took meanwhile stays with it.
     fn reattach_machine(
         &mut self,
         machine: &MachineId,
@@ -559,7 +565,7 @@ impl TerminalArea {
             else {
                 continue;
             };
-            let Some(command) = self.attach_command(machine, &terminal_id, cx) else {
+            let Some(command) = self.attach_command(machine, &terminal_id, false, cx) else {
                 continue;
             };
             self.terminals.reattach(machine, &pane, command, window, cx);
@@ -1492,7 +1498,7 @@ impl TerminalArea {
                             .on_click(cx.listener(move |this, _, window, cx| {
                                 let machine = this.terminals.selected().clone();
                                 let command = this
-                                    .attach_command(&machine, &reattach_pane.terminal_id, cx)
+                                    .attach_command(&machine, &reattach_pane.terminal_id, true, cx)
                                     .unwrap_or_else(|| Err(format!("{machine} isn't connected")));
                                 this.terminals.reattach(
                                     &machine,

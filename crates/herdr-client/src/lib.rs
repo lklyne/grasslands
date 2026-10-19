@@ -26,8 +26,8 @@ pub use client::*;
 pub use endpoint::{ALLOW_LIVE_ENV, DEV_ROOT, Endpoint, check_dev_socket};
 pub use error::{EVENTS_LOST, Error, Result};
 pub use machines::{
-    DEV_MACHINES_ENV, MachineLink, MachineProfile, MachineStatus, dev_allowed, list_machines,
-    socket_dir,
+    DEV_MACHINES_ENV, FORWARD_AGENT_ENV, MachineLink, MachineProfile, MachineStatus, dev_allowed,
+    list_machines, socket_dir,
 };
 pub use remote_fs::{ExecOutput, RemoteEntry, RemoteFs, RemoteMetadata};
 pub use setup::{Check, Fix, FixCommand, InstallMethod, Installed, MIN_VERSION, Version};
