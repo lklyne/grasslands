@@ -13,9 +13,13 @@ pub mod fake;
 pub mod git;
 mod local;
 mod local_git;
+#[cfg(test)]
+mod parity_tests;
 mod remote;
 mod remote_git;
 pub mod search;
+#[cfg(test)]
+mod test_repo;
 
 pub use remote_git::SummaryCache;
 pub use search::Results as SearchResults;

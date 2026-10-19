@@ -1071,14 +1071,7 @@ impl FileTree {
             item("New Folder…", new_in(true)),
             MenuEntry::Separator,
             item("Rename…", rename),
-            item(
-                if trash {
-                    "Move to Trash"
-                } else {
-                    "Delete…"
-                },
-                remove,
-            ),
+            item(if trash { "Move to Trash" } else { "Delete…" }, remove),
             MenuEntry::Separator,
         ];
         // Finder shows this Mac's files only.

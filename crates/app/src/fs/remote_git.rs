@@ -9,45 +9,61 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use super::git::{FileChange, Summary};
+use super::git::{Checkout, FileChange, Summary};
 use super::remote::Run;
+use crate::worktree::{Placement, Repo};
 
-/// Finds the checkout's root, branch, parent and the diff's base the way
-/// `local_git` does, then prints `top\0HEAD's target\0parent\0` and diffs
-/// from the base against a copy of the index where untracked files are
-/// intent-to-add, so they count as added like Local's: with `$1` = `patch`
-/// the patch's length, a NUL and the patch, then always the summary's
-/// numstat and name-status. Exits 3 outside git.
-const GIT: &str = r#"top=$(git rev-parse --show-toplevel 2>/dev/null) || exit 3
+/// Finds the checkout's root, branch, parent and the diff's base (see
+/// `crate::fs::git` for the rules), then prints `top\0HEAD's target\0parent\0`
+/// and diffs from the base against a copy of the index where untracked files
+/// are intent-to-add, so they count as added: with `$1` = `patch` the patch's
+/// length, a NUL and the patch, then always the summary's `--raw --numstat`.
+/// Exits 3 outside a work tree. Each git it starts costs a few milliseconds,
+/// so it starts as few as the rules allow.
+const GIT: &str = r#"r=$(git rev-parse --show-toplevel --git-path index 2>/dev/null) || exit 3
+top=${r%%
+*}
+i=${r#*
+}
+case $i in /*) ;; *) i=$PWD/$i ;; esac
 [ -n "$top" ] && cd "$top" || exit 3
 h=$(git symbolic-ref -q HEAD)
 b=${h#refs/heads/}
 d=$(git symbolic-ref -q refs/remotes/origin/HEAD)
-d=${d#refs/remotes/origin/}
+case $d in refs/remotes/origin/?*) d=${d#refs/remotes/origin/} ;; *) d= ;; esac
+refs=$(git for-each-ref --format='%(refname)' refs/heads/main refs/heads/master \
+  ${d:+"refs/heads/$d" "refs/remotes/origin/$d"})
+has() {
+  case "
+$refs
+" in *"
+$1
+"*) return 0 ;; esac
+  return 1
+}
 if [ -z "$d" ]; then
-  for n in main master; do
-    if git show-ref -q --verify "refs/heads/$n"; then d=$n; break; fi
-  done
+  if has refs/heads/main; then d=main; elif has refs/heads/master; then d=master; fi
 fi
 p=
 if [ -n "$b" ] && [ -n "$d" ]; then
   if [ "$b" != "$d" ]; then
-    if git show-ref -q --verify "refs/heads/$d"; then p=$d
-    elif git show-ref -q --verify "refs/remotes/origin/$d"; then p=origin/$d
+    if has "refs/heads/$d"; then p=$d
+    elif has "refs/remotes/origin/$d"; then p=origin/$d
     fi
   else
     p=$(git rev-parse -q --verify --abbrev-ref "$b@{upstream}" 2>/dev/null) || p=
   fi
 fi
-base=
-c=$(git rev-parse -q --verify 'HEAD^{commit}' 2>/dev/null)
-if [ -n "$c" ]; then
-  if [ -n "$p" ]; then base=$(git merge-base "$c" "$p" 2>/dev/null); else base=$c; fi
+if [ -n "$p" ]; then
+  base=$(git merge-base HEAD "$p" 2>/dev/null)
+else
+  base=$(git rev-parse -q --verify 'HEAD^{commit}' 2>/dev/null)
 fi
 [ -n "$base" ] || base=$(git hash-object -t tree /dev/null)
 t=$(mktemp -d) || exit 4
 trap 'rm -rf "$t"' EXIT
-cp "$(git rev-parse --git-path index)" "$t/index" 2>/dev/null
+# -p keeps the index's time, by which git tells racily clean entries.
+cp -p "$i" "$t/index" 2>/dev/null
 GIT_INDEX_FILE=$t/index
 export GIT_INDEX_FILE
 git add -N . >/dev/null 2>&1
@@ -61,9 +77,7 @@ if [ "$1" = patch ]; then
   printf '%s\0' "$(wc -c <"$t/patch" | tr -d ' ')"
   cat "$t/patch"
 fi
-diff --numstat -z
-printf '\0'
-diff --name-status -z"#;
+diff --raw --numstat -z"#;
 
 /// The checkout's root, HEAD's target and the parent, then the rest.
 struct Header<'a> {
@@ -176,33 +190,32 @@ impl SummaryCache {
     }
 }
 
-/// `--numstat -z` records, an empty record, then `--name-status -z` pairs.
+/// `--raw --numstat -z` output: `:modes hashes status` and path pairs, then
+/// `added\tremoved\tpath` records.
 fn parse_summary(header: &Header<'_>) -> Summary {
     let mut records = header.rest.split(|b| *b == 0);
     let (mut added, mut removed) = (0, 0);
-    for record in records.by_ref() {
-        if record.is_empty() {
-            break;
-        }
-        // `added\tremoved\tpath`; binary files count `-`.
-        let mut counts = record.splitn(3, |b| *b == b'\t');
-        let mut count = || {
-            counts
-                .next()
-                .and_then(|n| std::str::from_utf8(n).ok())
-                .and_then(|n| n.parse::<usize>().ok())
-                .unwrap_or(0)
-        };
-        added += count();
-        removed += count();
-    }
     let mut files = BTreeMap::new();
     let mut folders = BTreeSet::new();
-    while let (Some(status), Some(path)) = (records.next(), records.next()) {
-        if path.is_empty() {
-            break;
+    while let Some(record) = records.next() {
+        if record.first() != Some(&b':') {
+            // `added\tremoved\tpath`; binary files count `-`.
+            let mut counts = record.splitn(3, |b| *b == b'\t');
+            let mut count = || {
+                counts
+                    .next()
+                    .and_then(|n| std::str::from_utf8(n).ok())
+                    .and_then(|n| n.parse::<usize>().ok())
+                    .unwrap_or(0)
+            };
+            added += count();
+            removed += count();
+            continue;
         }
-        let change = match status.first() {
+        let Some(path) = records.next().filter(|p| !p.is_empty()) else {
+            break;
+        };
+        let change = match record.last() {
             Some(b'A') => Some(FileChange::Added),
             Some(b'D') => None,
             _ => Some(FileChange::Modified),
@@ -254,6 +267,87 @@ pub(super) fn head_branch(run: &Run<'_>, dir: &Path) -> Option<Option<String>> {
         Some(1) => Some(None),
         _ => None,
     }
+}
+
+/// The checkout containing the folder: its own git dir, the common git
+/// dir (both resolved), the work tree's root (empty in a bare repo), HEAD's
+/// target, and commits ahead and behind its upstream, each NUL-terminated.
+/// Exits 3 outside git.
+const CHECKOUT: &str = r#"r=$(git rev-parse --absolute-git-dir --git-common-dir --show-toplevel 2>/dev/null)
+[ -n "$r" ] || exit 3
+g=${r%%
+*}
+r=${r#*
+}
+c=${r%%
+*}
+top=
+case $r in *"
+"*) top=${r#*
+} ;; esac
+g=$(cd "$g" && pwd -P) && c=$(cd "$c" && pwd -P) || exit 3
+h=$(git symbolic-ref -q HEAD)
+ab=
+if [ -n "$h" ]; then
+  ab=$(git rev-list --left-right --count "$h...${h#refs/heads/}@{upstream}" 2>/dev/null)
+fi
+printf '%s\0%s\0%s\0%s\0%s\0' "$g" "$c" "$top" "$h" "$ab""#;
+
+/// The checkout containing `dir`; `Ok(None)` outside git.
+pub(super) fn checkout(run: &Run<'_>, dir: &Path) -> io::Result<Option<Checkout>> {
+    let out = run(&["sh", "-c", CHECKOUT], Some(dir))
+        .inspect_err(|error| tracing::warn!("workspaces: git in {}: {error}", dir.display()))?;
+    if out.status.code() == Some(3) {
+        return Ok(None);
+    }
+    if !out.status.success() {
+        return Err(io::Error::other(format!(
+            "git in {} exited {}",
+            dir.display(),
+            out.status
+        )));
+    }
+    parse_checkout(&out.stdout)
+        .map(Some)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "unexpected git output"))
+}
+
+fn parse_checkout(stdout: &[u8]) -> Option<Checkout> {
+    let mut rest = stdout;
+    let git_dir = PathBuf::from(take_field(&mut rest)?);
+    let common = PathBuf::from(take_field(&mut rest)?);
+    let top = take_field(&mut rest)?;
+    let head = take_field(&mut rest)?;
+    let counts = take_field(&mut rest)?;
+    let linked = git_dir != common;
+    let root = if linked {
+        // A linked worktree's common dir is the main checkout's `.git`.
+        common.parent().map(Path::to_path_buf)
+    } else {
+        (!top.is_empty()).then(|| PathBuf::from(&top))
+    };
+    let placement = root.and_then(|root| {
+        Some(Placement {
+            repo: Repo {
+                key: common.to_string_lossy().into_owned(),
+                name: root.file_name()?.to_string_lossy().into_owned(),
+                root: root.to_string_lossy().into_owned(),
+            },
+            linked,
+        })
+    });
+    let mut counts = counts.split_whitespace().map(str::parse::<usize>);
+    let ahead_behind = match (counts.next(), counts.next()) {
+        (Some(Ok(ahead)), Some(Ok(behind))) => Some((ahead, behind)),
+        _ => None,
+    };
+    Some(Checkout {
+        branch: (!head.is_empty())
+            .then(|| head.strip_prefix("refs/heads/").unwrap_or(&head).to_owned()),
+        ahead_behind,
+        placement,
+        git_dir,
+    })
 }
 
 #[cfg(test)]
@@ -430,8 +524,11 @@ mod tests {
     #[test]
     fn parse_summary_should_read_fixture_output() {
         let stdout = b"/r\0refs/heads/feat\0main\0\
-            1\t1\ta.txt\0-\t-\tbin.dat\x002\t0\tlib/new.rs\0\0\
-            M\0a.txt\0A\0bin.dat\0A\0lib/new.rs\0D\0src/old/gone.txt\0";
+            :100644 100644 1111111 0000000 M\0a.txt\0\
+            :000000 100644 0000000 0000000 A\0bin.dat\0\
+            :000000 100644 0000000 0000000 A\0lib/new.rs\0\
+            :100644 000000 2222222 0000000 D\0src/old/gone.txt\0\
+            1\t1\ta.txt\0-\t-\tbin.dat\x002\t0\tlib/new.rs\x000\t0\tsrc/old/gone.txt\0";
         let summary = parse_summary(&parse_header(stdout).unwrap());
         assert_eq!(
             (

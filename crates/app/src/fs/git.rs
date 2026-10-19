@@ -13,6 +13,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use crate::worktree::Placement;
+
 /// How a file differs from the parent branch.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FileChange {
@@ -35,4 +37,17 @@ pub struct Summary {
     pub files: Arc<BTreeMap<PathBuf, FileChange>>,
     /// Folders holding a change, deleted files included, by absolute path.
     pub folders: Arc<BTreeSet<PathBuf>>,
+}
+
+/// A workspace folder's checkout, as the spaces list shows it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Checkout {
+    /// The branch HEAD names; `None` when detached, like herdr.
+    pub branch: Option<String>,
+    /// Commits ahead of and behind the branch's upstream, if it has one.
+    pub ahead_behind: Option<(usize, usize)>,
+    /// `None` for a bare repo.
+    pub placement: Option<Placement>,
+    /// This checkout's own git dir, which holds its `HEAD`.
+    pub git_dir: PathBuf,
 }

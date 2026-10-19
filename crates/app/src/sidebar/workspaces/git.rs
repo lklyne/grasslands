@@ -19,21 +19,9 @@ use std::path::{Path, PathBuf};
 use notify::{EventKind, RecommendedWatcher, RecursiveMode, Watcher as _};
 
 use crate::fs::Fs;
+pub use crate::fs::git::Checkout;
 use crate::state::MachineId;
 pub use crate::worktree::{Placement, Repo};
-
-/// What git2 found for one folder.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Checkout {
-    /// The branch HEAD names; `None` when detached, like herdr.
-    pub branch: Option<String>,
-    /// Commits ahead of and behind the branch's upstream, if it has one.
-    pub ahead_behind: Option<(usize, usize)>,
-    /// `None` for a bare repo.
-    pub placement: Option<Placement>,
-    /// This checkout's own git dir, which holds its `HEAD`.
-    pub git_dir: PathBuf,
-}
 
 /// The checkout containing `dir`, or `None` outside git.
 pub fn read(dir: &Path) -> Option<Checkout> {
