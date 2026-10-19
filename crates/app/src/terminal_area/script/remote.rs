@@ -15,7 +15,7 @@ use cues::Cue;
 use gpui_kit::*;
 
 use super::{Cx, Run};
-use crate::herdr::MachineStatus;
+use crate::herdr::{MachineStatus, PaneId, WorkspaceId};
 use crate::sounds;
 use crate::state::{AppState, MachineId};
 use crate::terminal_area::TerminalArea;
@@ -241,7 +241,7 @@ impl Run {
     }
 
     /// Focuses `pane`, types `echo <text>`, and waits for `expect` in it.
-    async fn type_in(&mut self, cx: &mut Cx, pane: &str, text: &str, expect: &str) -> bool {
+    async fn type_in(&mut self, cx: &mut Cx, pane: &PaneId, text: &str, expect: &str) -> bool {
         cx.update(|window, cx| {
             self.area.update(cx, |area, cx| {
                 let machine = area.machine(cx);
@@ -269,7 +269,7 @@ pub(super) fn focus(
     cx: &mut Cx,
     state: &Entity<AppState>,
     machine: &MachineId,
-    workspace: &str,
+    workspace: &WorkspaceId,
 ) -> anyhow::Result<()> {
     cx.update(|_, cx| {
         state.update(cx, |state, cx| {
@@ -301,7 +301,7 @@ pub(super) fn all_attached(area: &TerminalArea, cx: &App) -> bool {
 }
 
 /// The first laid-out pane and its terminal view's entity.
-fn first_view(area: &TerminalArea, cx: &App) -> Option<(String, EntityId)> {
+fn first_view(area: &TerminalArea, cx: &App) -> Option<(PaneId, EntityId)> {
     let snapshot = area.snapshot(cx);
     let pane = area.drawn.borrow().panes.keys().next().cloned()?;
     let view = area.terminals.get(&snapshot.pane(&pane)?.terminal_id)?;

@@ -26,7 +26,7 @@ use serde_json::json;
 use super::{Cx, Run};
 use crate::actions::CommandPalette;
 use crate::chrome::{MenuCommand, MenuTarget};
-use crate::herdr::{SplitDirection, SplitTree};
+use crate::herdr::{PaneId, SplitDirection, SplitTree, WorkspaceId};
 use crate::overlay;
 use crate::terminal_area::{HEADER_HEIGHT, TerminalArea};
 
@@ -86,8 +86,8 @@ impl Run {
         let Some((tab_id, tree)) = self.tab(cx)? else {
             anyhow::bail!("no tab");
         };
-        let panes: Vec<String> = match &tree {
-            SplitTree::Split { .. } => tree.pane_ids().into_iter().map(str::to_owned).collect(),
+        let panes: Vec<PaneId> = match &tree {
+            SplitTree::Split { .. } => tree.pane_ids().into_iter().map(PaneId::from).collect(),
             SplitTree::Pane(pane) => vec![pane.clone()],
         };
         let [first, second] = panes.as_slice() else {
@@ -278,7 +278,7 @@ impl Run {
     pub(super) async fn report_agent(
         &self,
         cx: &mut Cx,
-        pane_id: &str,
+        pane_id: &PaneId,
         status: &str,
     ) -> anyhow::Result<()> {
         let params = json!({
@@ -442,7 +442,7 @@ impl Run {
 
     /// The shared name prompt (`crate::prompt`): type into it, Escape it
     /// (nothing submitted), then type again and submit with Enter.
-    async fn name_prompt(&mut self, cx: &mut Cx, workspace_id: &str) {
+    async fn name_prompt(&mut self, cx: &mut Cx, workspace_id: &WorkspaceId) {
         let before = self.focused(cx);
         // Opened from an open context menu (a sidebar menu, then a click on
         // a "New Folder" button), the prompt replaces the menu.
@@ -548,7 +548,7 @@ impl Run {
 
     /// The chrome's rename dialog: select all, type a new name, Enter; herdr
     /// has the new label.
-    async fn rename_dialog(&mut self, cx: &mut Cx, workspace_id: &str) {
+    async fn rename_dialog(&mut self, cx: &mut Cx, workspace_id: &WorkspaceId) {
         let before = self.focused(cx);
         let target = MenuTarget::Workspace {
             machine: crate::state::MachineId::Local,

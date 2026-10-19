@@ -133,7 +133,7 @@ fn link_should_forward_remote_herdr_and_survive_a_restart() {
     wait_status(&link, "connected", |s| *s == MachineStatus::Connected);
     let endpoint = link.endpoint();
     assert!(endpoint.socket_path.exists());
-    let attach = link.attach_command("term_x", false).unwrap();
+    let attach = link.attach_command(&"term_x".into(), false).unwrap();
     eprintln!("attach: {attach}");
 
     let sync = SessionSync::start(endpoint.clone()).unwrap();

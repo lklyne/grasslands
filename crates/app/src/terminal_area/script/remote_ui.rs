@@ -24,7 +24,7 @@ use gpui_kit::*;
 use super::remote::{all_attached, docker, focus, remote, shows};
 use super::{Cx, Run};
 use crate::chrome::HerdrCommand;
-use crate::herdr::MachineStatus;
+use crate::herdr::{MachineStatus, WorkspaceId};
 use crate::sidebar;
 use crate::state::{MachineId, MachineTask, RunStage};
 use crate::terminal_area::TerminalArea;
@@ -442,7 +442,7 @@ fn workspace_named(
     cx: &App,
     machine: &MachineId,
     label: &str,
-) -> Option<String> {
+) -> Option<WorkspaceId> {
     area.state
         .read(cx)
         .machine(machine)?

@@ -29,8 +29,8 @@ use gpui_kit::*;
 
 use crate::attention::{StatusChange, find_agent};
 use crate::herdr::{
-    AgentStatus, PluginActionContext, PluginActionInfo, PluginInvocationContext, Snapshot,
-    SplitDirection, WorkspaceInfo,
+    AgentStatus, PaneId, PluginActionContext, PluginActionInfo, PluginInvocationContext, Snapshot,
+    SplitDirection, TabId, WorkspaceId, WorkspaceInfo,
 };
 use crate::overlay::{self, Capture, LayerId, Overlay};
 use crate::sounds;
@@ -53,15 +53,15 @@ pub fn init(_cx: &mut App) {
 pub enum MenuTarget {
     Pane {
         machine: MachineId,
-        pane_id: String,
+        pane_id: PaneId,
     },
     Tab {
         machine: MachineId,
-        tab_id: String,
+        tab_id: TabId,
     },
     Workspace {
         machine: MachineId,
-        workspace_id: String,
+        workspace_id: WorkspaceId,
     },
 }
 
@@ -611,23 +611,22 @@ impl Chrome {
             MenuTarget::Tab { machine, tab_id } => {
                 let on = || machine.clone();
                 let tab = snapshot.tab(tab_id);
-                let workspace_id = tab.map(|t| t.info.workspace_id.clone()).unwrap_or_default();
-                let mut entries = vec![
-                    MenuEntry::herdr(
-                        "Focus Tab",
-                        C::FocusTab {
-                            machine: on(),
-                            tab_id: tab_id.clone(),
-                        },
-                    ),
-                    MenuEntry::herdr(
+                let mut entries = vec![MenuEntry::herdr(
+                    "Focus Tab",
+                    C::FocusTab {
+                        machine: on(),
+                        tab_id: tab_id.clone(),
+                    },
+                )];
+                if let Some(tab) = tab {
+                    entries.push(MenuEntry::herdr(
                         "New Tab",
                         C::NewTab {
                             machine: on(),
-                            workspace_id,
+                            workspace_id: tab.info.workspace_id.clone(),
                         },
-                    ),
-                ];
+                    ));
+                }
                 // A pane alone in its tab has no header to right-click, so
                 // the tab offers splitting its focused pane.
                 if let Some(pane_id) = tab.and_then(|t| t.focused_pane_id.clone()) {
@@ -724,7 +723,7 @@ impl Chrome {
     pub fn group_close(
         &self,
         machine: &MachineId,
-        workspace_id: &str,
+        workspace_id: &WorkspaceId,
         cx: &App,
     ) -> Option<HerdrCommand> {
         let snapshot = self.snapshot_of(machine, cx);
@@ -827,7 +826,7 @@ impl Chrome {
     pub fn new_tab(
         &mut self,
         machine: MachineId,
-        workspace_id: Option<String>,
+        workspace_id: Option<WorkspaceId>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -835,7 +834,7 @@ impl Chrome {
         let create = move |label: Option<String>, cx: &mut App| {
             state
                 .read(cx)
-                .new_tab_named(&machine, workspace_id.as_deref(), label, cx)
+                .new_tab_named(&machine, workspace_id.as_ref(), label, cx)
                 .detach_and_log_err(cx);
         };
         if !crate::herdr_prefs::get(cx).prompt_new_tab_name {
@@ -1094,7 +1093,7 @@ fn update_later(
 
 /// An agent toast's id: one per pane per machine (pane ids repeat across
 /// machines).
-fn toast_key(machine: &MachineId, pane_id: &str) -> SharedString {
+fn toast_key(machine: &MachineId, pane_id: &PaneId) -> SharedString {
     format!("{machine}/{pane_id}").into()
 }
 
@@ -1123,7 +1122,7 @@ fn rename_command(target: &MenuTarget, label: String) -> HerdrCommand {
 
 /// The context `plugin.action.invoke` gets for a pane: its cwd, agent,
 /// status, tab and workspace.
-fn pane_context(snapshot: &Snapshot, pane_id: &str, source: &str) -> PluginInvocationContext {
+fn pane_context(snapshot: &Snapshot, pane_id: &PaneId, source: &str) -> PluginInvocationContext {
     let pane = snapshot.pane(pane_id);
     let workspace = pane.and_then(|p| snapshot.workspace(&p.workspace_id));
     PluginInvocationContext {

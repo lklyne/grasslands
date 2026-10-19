@@ -19,10 +19,10 @@ pub use herdr_client::{
     AgentInfo as Agent, AgentStatus, Check, Client, ConnectionStatus, Error, Fix, FixCommand,
     InstallMethod, LayoutDescription, MIN_VERSION, MachineLink, MachineProfile, MachineStatus,
     NewTab, NewWorkspace, PaneDirection, PaneId, PaneInfo, PaneMoveDestination, PaneSplit,
-    PluginActionContext, PluginActionInfo, PluginInvocationContext, RightClickTarget, SessionSync,
-    SplitDirection, SplitRef, SplitTree, State as Snapshot, Tab, TabId, TabInfo, Update, Version,
-    Workspace, WorkspaceCreated, WorkspaceId, WorkspaceInfo, WorkspaceWorktreeInfo, WorktreeInfo,
-    WorktreeList, WorktreeParams, WorktreeRemoved,
+    PluginActionContext, PluginActionInfo, PluginInvocationContext, ProfileId, RightClickTarget,
+    SessionSync, SplitDirection, SplitRef, SplitTree, State as Snapshot, Tab, TabId, TabInfo,
+    TerminalId, Update, Version, Workspace, WorkspaceCreated, WorkspaceId, WorkspaceInfo,
+    WorkspaceWorktreeInfo, WorktreeInfo, WorktreeList, WorktreeParams, WorktreeRemoved,
 };
 
 /// Where to find herdr: `HERDR_BIN`, `HERDR_SESSION`, `HERDR_SOCKET_PATH`

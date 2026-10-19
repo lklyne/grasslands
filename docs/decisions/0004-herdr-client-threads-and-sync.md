@@ -7,6 +7,10 @@ gpui-pre 0.3.9 brings its own executor (async-task, async-channel, futures); no 
 - `SessionSync::updates() -> async_channel::Receiver<Update>`: `State(Arc<State>)` (the whole immutable cache, replaced), `Event { kind }` (an event arrived; its kind only, since nothing reacts to events except through the re-read) and `Status(ConnectionStatus)`. GPUI can `recv().await` it inside `cx.spawn`; tests drain it with `try_recv()`. async-channel 2.5 is already in GPUI's tree. The engine thread keeps its own last state; the app keeps its copy from these updates.
 - `Client`: typed commands, one blocking round trip each. Call them from `cx.background_executor().spawn(...)`.
 
+## Ids
+
+herdr's ids are newtypes (`ids.rs`): `PaneId`, `TabId`, `WorkspaceId`, `TerminalId`, and `ProfileId` for a saved machine. Each is an `Arc<str>` that (de)serializes as a plain string (`#[serde(transparent)]`), borrows as `str` (so `BTreeMap<PaneId, _>` still looks up by `&str`) and derefs to `str` for reading. Anything that acts on an id (`Client`'s commands, `AppState`'s commands) takes the typed id, so a tab id can't go where a pane id belongs. Ids are only unique within one server; the app pairs them with their machine as `On<T> { machine, id }` wherever a key spans machines (terminal views, the right-click set, sidebar rows).
+
 ## Protocol facts found by probing 0.9.5 (not stated in the schema)
 
 - **One request per connection.** A second request on the same connection gets no answer. Every `Client` call opens a fresh connection (cheap on a Unix socket). Only `events.subscribe` keeps its connection open.

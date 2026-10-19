@@ -23,10 +23,10 @@ use super::{AgentSort, ROW, dim_text, text};
 use crate::actions::OpenContextMenu;
 use crate::chrome::MenuTarget;
 use crate::herdr::config::Edit;
-use crate::herdr::{Agent, Snapshot};
+use crate::herdr::{Agent, PaneId, Snapshot};
 use crate::herdr_prefs::{self, HerdrPrefs};
 use crate::label;
-use crate::state::{AppState, Machine, MachineId};
+use crate::state::{AppState, Machine, MachineId, On};
 use crate::status::{self, priority};
 
 /// The agents in `sort` order.
@@ -91,7 +91,7 @@ impl AgentList {
 
     /// Focuses the agent's pane; herdr's `pane.focus` counts its result as
     /// seen (`done` becomes `idle`).
-    pub fn activate(&mut self, pane_id: &str, window: &mut Window, cx: &mut Context<Self>) {
+    pub fn activate(&mut self, pane_id: &PaneId, window: &mut Window, cx: &mut Context<Self>) {
         let machine = self.state.read(cx).selected().clone();
         self.activate_on(&machine, pane_id, window, cx);
     }
@@ -100,7 +100,7 @@ impl AgentList {
     pub fn activate_on(
         &mut self,
         machine: &MachineId,
-        pane_id: &str,
+        pane_id: &PaneId,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -153,7 +153,8 @@ impl AgentList {
             .workspaces
             .iter()
             .find(|w| w.info.workspace_id == agent.workspace_id);
-        let mut place = workspace.map_or(agent.workspace_id.clone(), |w| w.info.label.clone());
+        let mut place =
+            workspace.map_or_else(|| agent.workspace_id.to_string(), |w| w.info.label.clone());
         if let Some(tab) = workspace
             .filter(|w| w.tabs.len() > 1)
             .and_then(|w| w.tabs.iter().find(|t| t.info.tab_id == agent.tab_id))
@@ -164,10 +165,7 @@ impl AgentList {
         let machine_id = machine.id().clone();
         let menu_machine = machine_id.clone();
         // Pane ids repeat across machines.
-        let key = match &machine_id {
-            MachineId::Local => agent.pane_id.clone(),
-            MachineId::Remote(_) => format!("{machine_id}/{}", agent.pane_id),
-        };
+        let key = On::new(machine_id.clone(), &agent.pane_id);
         let selector = format!("agent-{key}");
         h_flex()
             .id(SharedString::from(format!("agent-{key}")))

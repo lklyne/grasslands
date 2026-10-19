@@ -36,7 +36,7 @@ mod setup;
 mod titlebar;
 
 use super::{ClosePane, NewTab, SplitDown, SplitRight, TerminalArea};
-use crate::herdr::{SplitDirection, SplitTree};
+use crate::herdr::{PaneId, SplitDirection, SplitTree, TabId, TerminalId};
 use crate::overlay::{self, Capture};
 use crate::state::{AppState, MachineId};
 
@@ -340,7 +340,7 @@ impl Run {
     }
 
     /// The tab the script works in and its tree.
-    fn tab(&self, cx: &mut Cx) -> anyhow::Result<Option<(String, SplitTree)>> {
+    fn tab(&self, cx: &mut Cx) -> anyhow::Result<Option<(TabId, SplitTree)>> {
         self.read(cx, |area, cx| {
             let snapshot = area.snapshot(cx);
             TerminalArea::active_tab(&snapshot)
@@ -348,7 +348,7 @@ impl Run {
         })
     }
 
-    async fn read_pane_text(&self, cx: &mut Cx, pane_id: &str) -> String {
+    async fn read_pane_text(&self, cx: &mut Cx, pane_id: &PaneId) -> String {
         let pane_id = pane_id.to_owned();
         let Ok(task) = self.read(cx, |area, cx| {
             area.state
@@ -544,7 +544,7 @@ impl Run {
                     area.snapshot(cx)
                         .tab(&tab_id)
                         .and_then(|t| t.root.as_ref())
-                        .unwrap_or(&SplitTree::Pane(String::new())),
+                        .unwrap_or(&SplitTree::Pane("".into())),
                 )
             })?;
             let ratio_now = match ratio_now {
@@ -633,7 +633,7 @@ impl Run {
         }
 
         // A second tab: the first tab's views hide, the new one shows.
-        let before: HashSet<String> = self.read(cx, |area, _| {
+        let before: HashSet<PaneId> = self.read(cx, |area, _| {
             area.drawn.borrow().panes.keys().cloned().collect()
         })?;
         self.dispatch(cx, Box::new(NewTab));
@@ -658,7 +658,7 @@ impl Run {
             let snapshot = area.snapshot(cx);
             let terminal_id = snapshot.pane(&moving).map(|p| p.terminal_id.clone());
             let view = terminal_id
-                .as_deref()
+                .as_ref()
                 .and_then(|id| area.terminals.get(id))
                 .map(|v| v.terminal.entity_id());
             (terminal_id, view)
@@ -689,7 +689,7 @@ impl Run {
                     .values()
                     .any(|p| Some(&p.terminal_id) == terminal_id.as_ref() && p.tab_id == tab_id);
                 let view = terminal_id
-                    .as_deref()
+                    .as_ref()
                     .and_then(|id| area.terminals.get(id))
                     .map(|v| v.terminal.entity_id());
                 in_first && view.is_some() && view == view_before
@@ -719,7 +719,7 @@ impl Run {
             .until(cx, Duration::from_secs(10), |area, _, _| {
                 area.terminals.len() + 1 == count_before
                     && closing_terminal
-                        .as_deref()
+                        .as_ref()
                         .is_some_and(|id| area.terminals.get(id).is_none())
             })
             .await;
@@ -940,7 +940,7 @@ impl Run {
         self.read(cx, |area, _| f(&area.drawn.borrow()))
     }
 
-    fn focused_pane(&self, cx: &mut Cx) -> Option<String> {
+    fn focused_pane(&self, cx: &mut Cx) -> Option<PaneId> {
         self.read(cx, |area, cx| area.snapshot(cx).focused_pane_id.clone())
             .ok()
             .flatten()
@@ -974,7 +974,7 @@ impl Run {
         self.check(on_left, "focus starts on the leftmost pane");
         let expected = self.drawn(cx, |d| {
             super::layout::neighbor(&leftmost, crate::herdr::PaneDirection::Right, &d.panes)
-                .map(str::to_owned)
+                .cloned()
         })?;
         cx.update(|window, cx| {
             window.dispatch_keystroke(Keystroke::parse("cmd-alt-right").unwrap_or_default(), cx);
@@ -997,7 +997,7 @@ impl Run {
                     .as_deref()
                     .and_then(|p| snapshot.pane(p))
                     .map(|p| p.terminal_id.clone());
-                area.terminals.focused(window, cx).map(str::to_owned) == want
+                area.terminals.focused(window, cx).cloned() == want
             })
             .unwrap_or(false);
         self.check(
@@ -1020,13 +1020,13 @@ impl Run {
 
     /// Switching tabs moves keyboard focus to the new tab's terminal, so
     /// typing goes there without a click.
-    async fn tab_switch_focus(&mut self, cx: &mut Cx, first_tab: &str) -> anyhow::Result<()> {
+    async fn tab_switch_focus(&mut self, cx: &mut Cx, first_tab: &TabId) -> anyhow::Result<()> {
         let typing_in_active_tab = |area: &TerminalArea, window: &Window, cx: &App| {
             let snapshot = area.snapshot(cx);
             let want = area
                 .target_pane(cx)
                 .and_then(|p| snapshot.pane(&p).map(|p| p.terminal_id.clone()));
-            want.is_some() && area.terminals.focused(window, cx).map(str::to_owned) == want
+            want.is_some() && area.terminals.focused(window, cx).cloned() == want
         };
         let on_new = self
             .until(cx, Duration::from_secs(5), typing_in_active_tab)
@@ -1043,7 +1043,7 @@ impl Run {
         let clicked = self
             .until(cx, Duration::from_secs(5), |area, window, cx| {
                 TerminalArea::active_tab(&area.snapshot(cx))
-                    .is_some_and(|t| t.info.tab_id == first_tab)
+                    .is_some_and(|t| &t.info.tab_id == first_tab)
                     && typing_in_active_tab(area, window, cx)
             })
             .await;
@@ -1063,11 +1063,11 @@ impl Run {
 
     /// Dragging a pane header: onto another pane swaps them, onto a tab moves
     /// the pane there. The preview is drawn in the overlay, above terminals.
-    async fn header_drags(&mut self, cx: &mut Cx, first_tab: &str) -> anyhow::Result<()> {
+    async fn header_drags(&mut self, cx: &mut Cx, first_tab: &TabId) -> anyhow::Result<()> {
         let Some((_, tree)) = self.tab(cx)? else {
             anyhow::bail!("no tab for header drags");
         };
-        let order_before: Vec<String> = tree.pane_ids().into_iter().map(str::to_owned).collect();
+        let order_before: Vec<PaneId> = tree.pane_ids().into_iter().map(PaneId::from).collect();
         let (Some(a), Some(b)) = (order_before.first().cloned(), order_before.last().cloned())
         else {
             anyhow::bail!("need two panes to swap");
@@ -1124,7 +1124,7 @@ impl Run {
         let second = self
             .until(cx, Duration::from_secs(10), |area, _, cx| {
                 let snapshot = area.snapshot(cx);
-                TerminalArea::active_tab(&snapshot).is_some_and(|t| t.info.tab_id != first_tab)
+                TerminalArea::active_tab(&snapshot).is_some_and(|t| &t.info.tab_id != first_tab)
                     && area.drawn.borrow().panes.len() == 1
             })
             .await;
@@ -1147,7 +1147,7 @@ impl Run {
         })?;
         let view_before = self.read(cx, |area, _| {
             terminal
-                .as_deref()
+                .as_ref()
                 .and_then(|t| area.terminals.get(t))
                 .map(|v| v.terminal.entity_id())
         })?;
@@ -1159,9 +1159,9 @@ impl Run {
                 let in_first = snapshot
                     .panes
                     .values()
-                    .any(|p| Some(&p.terminal_id) == terminal.as_ref() && p.tab_id == first_tab);
+                    .any(|p| Some(&p.terminal_id) == terminal.as_ref() && &p.tab_id == first_tab);
                 let view = terminal
-                    .as_deref()
+                    .as_ref()
                     .and_then(|t| area.terminals.get(t))
                     .map(|v| v.terminal.entity_id());
                 in_first && view.is_some() && view == view_before
@@ -1190,7 +1190,7 @@ impl Run {
     }
 
     /// cmd-shift-enter zooms the focused pane: only it is shown, full size.
-    async fn zoom(&mut self, cx: &mut Cx, tab_id: &str) -> anyhow::Result<()> {
+    async fn zoom(&mut self, cx: &mut Cx, tab_id: &TabId) -> anyhow::Result<()> {
         let panes = self.drawn(cx, |d| d.panes.len())?;
         cx.update(|window, cx| {
             window.dispatch_keystroke(Keystroke::parse("cmd-shift-enter").unwrap_or_default(), cx);
@@ -1368,7 +1368,8 @@ impl Run {
     /// attached to the new id.
     async fn server_restart(&mut self, cx: &mut Cx, label: &str) -> anyhow::Result<()> {
         let (before, config) = self.read(cx, |area, cx| {
-            let ids: HashSet<String> = area.terminals.iter().map(|(id, _)| id.clone()).collect();
+            let ids: HashSet<TerminalId> =
+                area.terminals.iter().map(|(id, _)| id.clone()).collect();
             (ids, area.state.read(cx).herdr_config.clone())
         })?;
         let Some(config) = config else {
@@ -1389,13 +1390,9 @@ impl Run {
         let replaced = self
             .until(cx, Duration::from_secs(30), |area, _, cx| {
                 let snapshot = area.snapshot(cx);
-                let live: HashSet<&str> = snapshot
-                    .panes
-                    .values()
-                    .map(|p| p.terminal_id.as_str())
-                    .collect();
-                let views: HashSet<&str> =
-                    area.terminals.iter().map(|(id, _)| id.as_str()).collect();
+                let live: HashSet<&TerminalId> =
+                    snapshot.panes.values().map(|p| &p.terminal_id).collect();
+                let views: HashSet<&TerminalId> = area.terminals.iter().map(|(id, _)| id).collect();
                 !live.is_empty()
                     && live.iter().all(|id| !before.contains(*id))
                     && live == views

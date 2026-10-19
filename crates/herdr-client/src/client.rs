@@ -295,7 +295,7 @@ impl Client {
     // Layout
 
     /// The split tree of `tab_id` (herdr's focused tab when `None`).
-    pub fn layout_export(&self, tab_id: Option<&str>) -> Result<LayoutDescription> {
+    pub fn layout_export(&self, tab_id: Option<&TabId>) -> Result<LayoutDescription> {
         self.field("layout.export", "layout", &json!({ "tab_id": tab_id }))
     }
 
@@ -303,7 +303,7 @@ impl Client {
     /// `true` = second child; empty = root split).
     pub fn layout_set_split_ratio(
         &self,
-        tab_id: &str,
+        tab_id: &TabId,
         path: &[bool],
         ratio: f32,
     ) -> Result<LayoutDescription> {
@@ -320,7 +320,11 @@ impl Client {
         self.field("pane.split", "pane", params)
     }
 
-    pub fn pane_swap(&self, source_pane_id: &str, target_pane_id: &str) -> Result<PaneSwapResult> {
+    pub fn pane_swap(
+        &self,
+        source_pane_id: &PaneId,
+        target_pane_id: &PaneId,
+    ) -> Result<PaneSwapResult> {
         self.field(
             "pane.swap",
             "swap",
@@ -330,7 +334,7 @@ impl Client {
 
     pub fn pane_swap_direction(
         &self,
-        pane_id: &str,
+        pane_id: &PaneId,
         direction: PaneDirection,
     ) -> Result<PaneSwapResult> {
         self.field(
@@ -342,7 +346,7 @@ impl Client {
 
     pub fn pane_move(
         &self,
-        pane_id: &str,
+        pane_id: &PaneId,
         destination: &PaneMoveDestination,
         focus: bool,
     ) -> Result<PaneMoveResult> {
@@ -353,19 +357,19 @@ impl Client {
         )
     }
 
-    pub fn pane_close(&self, pane_id: &str) -> Result<()> {
+    pub fn pane_close(&self, pane_id: &PaneId) -> Result<()> {
         self.ok("pane.close", &json!({ "pane_id": pane_id }))
     }
 
-    pub fn pane_focus(&self, pane_id: &str) -> Result<()> {
+    pub fn pane_focus(&self, pane_id: &PaneId) -> Result<()> {
         self.ok("pane.focus", &json!({ "pane_id": pane_id }))
     }
 
-    pub fn pane_get(&self, pane_id: &str) -> Result<PaneInfo> {
+    pub fn pane_get(&self, pane_id: &PaneId) -> Result<PaneInfo> {
         self.field("pane.get", "pane", &json!({ "pane_id": pane_id }))
     }
 
-    pub fn pane_list(&self, workspace_id: Option<&str>) -> Result<Vec<PaneInfo>> {
+    pub fn pane_list(&self, workspace_id: Option<&WorkspaceId>) -> Result<Vec<PaneInfo>> {
         self.field(
             "pane.list",
             "panes",
@@ -373,7 +377,7 @@ impl Client {
         )
     }
 
-    pub fn pane_rename(&self, pane_id: &str, label: Option<&str>) -> Result<()> {
+    pub fn pane_rename(&self, pane_id: &PaneId, label: Option<&str>) -> Result<()> {
         self.ok(
             "pane.rename",
             &json!({ "pane_id": pane_id, "label": label }),
@@ -381,12 +385,12 @@ impl Client {
     }
 
     /// `mode` is `"toggle"`, `"on"` or `"off"`.
-    pub fn pane_zoom(&self, pane_id: &str, mode: &str) -> Result<Value> {
+    pub fn pane_zoom(&self, pane_id: &PaneId, mode: &str) -> Result<Value> {
         self.call("pane.zoom", &json!({ "pane_id": pane_id, "mode": mode }))
     }
 
     /// Chooses who gets right-clicks in the pane (`pane.input.set`).
-    pub fn pane_set_right_click(&self, pane_id: &str, target: RightClickTarget) -> Result<()> {
+    pub fn pane_set_right_click(&self, pane_id: &PaneId, target: RightClickTarget) -> Result<()> {
         self.ok(
             "pane.input.set",
             &json!({ "pane_id": pane_id, "right_click": target }),
@@ -399,30 +403,30 @@ impl Client {
         self.endpoint.request("tab.create", params)
     }
 
-    pub fn tab_list(&self, workspace_id: Option<&str>) -> Result<Vec<TabInfo>> {
+    pub fn tab_list(&self, workspace_id: Option<&WorkspaceId>) -> Result<Vec<TabInfo>> {
         self.field("tab.list", "tabs", &json!({ "workspace_id": workspace_id }))
     }
 
-    pub fn tab_get(&self, tab_id: &str) -> Result<TabInfo> {
+    pub fn tab_get(&self, tab_id: &TabId) -> Result<TabInfo> {
         self.field("tab.get", "tab", &json!({ "tab_id": tab_id }))
     }
 
-    pub fn tab_focus(&self, tab_id: &str) -> Result<()> {
+    pub fn tab_focus(&self, tab_id: &TabId) -> Result<()> {
         self.ok("tab.focus", &json!({ "tab_id": tab_id }))
     }
 
-    pub fn tab_rename(&self, tab_id: &str, label: &str) -> Result<()> {
+    pub fn tab_rename(&self, tab_id: &TabId, label: &str) -> Result<()> {
         self.ok("tab.rename", &json!({ "tab_id": tab_id, "label": label }))
     }
 
-    pub fn tab_move(&self, tab_id: &str, insert_index: usize) -> Result<()> {
+    pub fn tab_move(&self, tab_id: &TabId, insert_index: usize) -> Result<()> {
         self.ok(
             "tab.move",
             &json!({ "tab_id": tab_id, "insert_index": insert_index }),
         )
     }
 
-    pub fn tab_close(&self, tab_id: &str) -> Result<()> {
+    pub fn tab_close(&self, tab_id: &TabId) -> Result<()> {
         self.ok("tab.close", &json!({ "tab_id": tab_id }))
     }
 
@@ -436,7 +440,7 @@ impl Client {
         self.field("workspace.list", "workspaces", &Empty {})
     }
 
-    pub fn workspace_get(&self, workspace_id: &str) -> Result<WorkspaceInfo> {
+    pub fn workspace_get(&self, workspace_id: &WorkspaceId) -> Result<WorkspaceInfo> {
         self.field(
             "workspace.get",
             "workspace",
@@ -444,18 +448,18 @@ impl Client {
         )
     }
 
-    pub fn workspace_focus(&self, workspace_id: &str) -> Result<()> {
+    pub fn workspace_focus(&self, workspace_id: &WorkspaceId) -> Result<()> {
         self.ok("workspace.focus", &json!({ "workspace_id": workspace_id }))
     }
 
-    pub fn workspace_rename(&self, workspace_id: &str, label: &str) -> Result<()> {
+    pub fn workspace_rename(&self, workspace_id: &WorkspaceId, label: &str) -> Result<()> {
         self.ok(
             "workspace.rename",
             &json!({ "workspace_id": workspace_id, "label": label }),
         )
     }
 
-    pub fn workspace_move(&self, workspace_id: &str, insert_index: usize) -> Result<()> {
+    pub fn workspace_move(&self, workspace_id: &WorkspaceId, insert_index: usize) -> Result<()> {
         self.ok(
             "workspace.move",
             &json!({ "workspace_id": workspace_id, "insert_index": insert_index }),
@@ -466,8 +470,8 @@ impl Client {
     /// `before_workspace_id`, or to the end when `None`.
     pub fn workspace_move_block(
         &self,
-        workspace_ids: &[String],
-        before_workspace_id: Option<&str>,
+        workspace_ids: &[WorkspaceId],
+        before_workspace_id: Option<&WorkspaceId>,
     ) -> Result<()> {
         self.ok(
             "workspace.move_block",
@@ -476,7 +480,7 @@ impl Client {
     }
 
     /// Closes a workspace; `close_group` also closes its worktree group.
-    pub fn workspace_close(&self, workspace_id: &str, close_group: bool) -> Result<()> {
+    pub fn workspace_close(&self, workspace_id: &WorkspaceId, close_group: bool) -> Result<()> {
         self.ok(
             "workspace.close",
             &json!({ "workspace_id": workspace_id, "close_group": close_group }),
@@ -487,7 +491,7 @@ impl Client {
 
     pub fn worktree_list(
         &self,
-        workspace_id: Option<&str>,
+        workspace_id: Option<&WorkspaceId>,
         cwd: Option<&str>,
     ) -> Result<WorktreeList> {
         self.endpoint.request(
@@ -504,7 +508,11 @@ impl Client {
         self.endpoint.request("worktree.open", params)
     }
 
-    pub fn worktree_remove(&self, workspace_id: &str, force: bool) -> Result<WorktreeRemoved> {
+    pub fn worktree_remove(
+        &self,
+        workspace_id: &WorkspaceId,
+        force: bool,
+    ) -> Result<WorktreeRemoved> {
         self.endpoint.request(
             "worktree.remove",
             &json!({ "workspace_id": workspace_id, "force": force }),

@@ -18,7 +18,7 @@ use gpui_kit::*;
 
 use super::confirm::{self, Confirmation};
 use super::{Chrome, HerdrCommand, update_later};
-use crate::herdr::{self, Snapshot, WorkspaceInfo, WorktreeList, WorktreeParams};
+use crate::herdr::{self, Snapshot, WorkspaceId, WorkspaceInfo, WorktreeList, WorktreeParams};
 use crate::sounds;
 use crate::state::MachineId;
 use crate::worktree::Placement;
@@ -61,12 +61,12 @@ pub enum WorktreeCommand {
     /// Pick one of `workspace_id`'s repo's worktrees and open it.
     Open {
         machine: MachineId,
-        workspace_id: String,
+        workspace_id: WorkspaceId,
     },
     /// Remove the linked worktree `workspace_id` works in.
     Remove {
         machine: MachineId,
-        workspace_id: String,
+        workspace_id: WorkspaceId,
     },
 }
 
@@ -77,7 +77,7 @@ pub(super) struct PickerRow {
     pub label: String,
     pub path: String,
     /// The workspace already showing it, which picking focuses.
-    pub open_workspace_id: Option<String>,
+    pub open_workspace_id: Option<WorkspaceId>,
     /// Prunable: git lost its folder, so there is nothing to open.
     pub disabled: bool,
 }
@@ -120,7 +120,7 @@ pub(super) fn picker_rows(list: &WorktreeList) -> Vec<PickerRow> {
 
 /// The question before removing `workspace_id`'s worktree: what goes, and
 /// which agents stop.
-pub(super) fn remove_confirmation(snapshot: &Snapshot, workspace_id: &str) -> Confirmation {
+pub(super) fn remove_confirmation(snapshot: &Snapshot, workspace_id: &WorkspaceId) -> Confirmation {
     let info = snapshot.workspace(workspace_id).map(|w| &w.info);
     let folder = info
         .and_then(|i| i.worktree.as_ref())
@@ -180,7 +180,7 @@ impl Chrome {
     fn open_worktree_picker(
         &mut self,
         machine: MachineId,
-        workspace_id: String,
+        workspace_id: WorkspaceId,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -212,7 +212,7 @@ impl Chrome {
     fn show_worktree_picker(
         &mut self,
         machine: MachineId,
-        workspace_id: String,
+        workspace_id: WorkspaceId,
         list: WorktreeList,
         cx: &mut Context<Self>,
     ) {
@@ -294,7 +294,7 @@ impl Chrome {
     fn open_worktree(
         &mut self,
         machine: MachineId,
-        source_workspace_id: String,
+        source_workspace_id: WorkspaceId,
         row: PickerRow,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -334,7 +334,7 @@ impl Chrome {
     fn remove_worktree(
         &mut self,
         machine: MachineId,
-        workspace_id: String,
+        workspace_id: WorkspaceId,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -357,14 +357,14 @@ impl Chrome {
     fn send_remove(
         &mut self,
         machine: MachineId,
-        workspace_id: String,
+        workspace_id: WorkspaceId,
         force: bool,
         cx: &mut Context<Self>,
     ) {
         let label = self
             .snapshot_of(&machine, cx)
             .workspace(&workspace_id)
-            .map_or_else(|| workspace_id.clone(), |w| w.info.label.clone());
+            .map_or_else(|| workspace_id.to_string(), |w| w.info.label.clone());
         let task = self
             .state
             .read(cx)
@@ -388,7 +388,7 @@ impl Chrome {
     fn remove_failed(
         &mut self,
         machine: MachineId,
-        workspace_id: String,
+        workspace_id: WorkspaceId,
         label: &str,
         forced: bool,
         error: &herdr::Error,
@@ -533,7 +533,7 @@ mod tests {
 
     #[test]
     fn remove_confirmation_without_the_workspace_asks_generically() {
-        let confirmation = remove_confirmation(&Snapshot::default(), "w9");
+        let confirmation = remove_confirmation(&Snapshot::default(), &"w9".into());
         assert_eq!(confirmation.title, "Remove this worktree?");
     }
 

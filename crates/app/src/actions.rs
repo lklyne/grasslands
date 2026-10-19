@@ -9,6 +9,7 @@ use std::path::PathBuf;
 use gpui_kit::*;
 
 use crate::chrome::MenuTarget;
+use crate::herdr::PaneId;
 
 actions!(
     app,
@@ -51,7 +52,7 @@ pub struct OpenFileAt {
 pub struct FocusPane {
     /// The machine `pane_id` is on (herdr ids are per machine).
     pub machine: crate::state::MachineId,
-    pub pane_id: String,
+    pub pane_id: PaneId,
 }
 
 /// Open the chrome's context menu for a pane, tab or workspace at a window

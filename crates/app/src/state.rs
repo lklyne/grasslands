@@ -23,7 +23,8 @@ use crate::attention::{self, Attention, StatusChange};
 use crate::fs::{Fs, SummaryCache};
 use crate::herdr::{
     self, Agent, Check, Client, ConnectionStatus, Fix, MIN_VERSION, MachineLink, MachineProfile,
-    MachineStatus, PaneId, SessionSync, Snapshot, Update, Version, machines,
+    MachineStatus, PaneId, SessionSync, Snapshot, TabId, TerminalId, Update, Version, WorkspaceId,
+    machines,
 };
 use crate::setup::{FixRun, Setup, Stage};
 use crate::{sounds, worktree};
@@ -32,7 +33,7 @@ use cues::{Cue, PlayOptions};
 mod machine_list;
 mod machine_run;
 
-pub use machine_list::MachineId;
+pub use machine_list::{MachineId, On};
 pub use machine_run::{MachineRun, MachineTask, RunStage};
 
 /// herdr 0.9.5 sends no event when a pane's folder changes, so the focused
@@ -186,7 +187,7 @@ impl Machine {
     /// The shell command that attaches a terminal surface to `terminal_id`
     /// on this machine. `None` until a remote machine's herdr is found.
     /// `takeover` replaces another client attached to it.
-    pub fn attach_command(&self, terminal_id: &str, takeover: bool) -> Option<String> {
+    pub fn attach_command(&self, terminal_id: &TerminalId, takeover: bool) -> Option<String> {
         self.link.as_ref()?.attach_command(terminal_id, takeover)
     }
 }
@@ -589,7 +590,11 @@ impl AppState {
                 "debug builds only change machines listed in GRASSLANDS_DEV_MACHINES"
             )));
         }
-        let mut argv = vec!["machine".to_owned(), command.to_owned(), profile_id.clone()];
+        let mut argv = vec![
+            "machine".to_owned(),
+            command.to_owned(),
+            profile_id.to_string(),
+        ];
         argv.extend(args);
         let run = cx.background_executor().spawn(async move {
             let output = std::process::Command::new(&bin)
@@ -1311,7 +1316,7 @@ impl AppState {
     pub fn focus_pane(
         &mut self,
         machine: &MachineId,
-        pane_id: &str,
+        pane_id: &PaneId,
         cx: &mut Context<Self>,
     ) -> Task<herdr::Result<()>> {
         if self.machine(machine).is_none() {
@@ -1328,12 +1333,12 @@ impl AppState {
     pub fn split_pane(
         &self,
         machine: &MachineId,
-        pane_id: Option<&str>,
+        pane_id: Option<&PaneId>,
         direction: herdr::SplitDirection,
         cx: &App,
     ) -> Task<herdr::Result<herdr::PaneInfo>> {
         sounds::play(Cue::Open, sounds::subtle());
-        let mut split = herdr::PaneSplit::new(pane_id.map(str::to_owned), direction);
+        let mut split = herdr::PaneSplit::new(pane_id.cloned(), direction);
         split.focus = true;
         self.call(machine, cx, move |c| c.pane_split(&split))
     }
@@ -1342,7 +1347,7 @@ impl AppState {
     pub fn close_pane(
         &self,
         machine: &MachineId,
-        pane_id: &str,
+        pane_id: &PaneId,
         cx: &App,
     ) -> Task<herdr::Result<()>> {
         sounds::play(Cue::Close, sounds::subtle());
@@ -1354,8 +1359,8 @@ impl AppState {
     pub fn swap_panes(
         &self,
         machine: &MachineId,
-        source: &str,
-        target: &str,
+        source: &PaneId,
+        target: &PaneId,
         cx: &App,
     ) -> Task<herdr::Result<()>> {
         sounds::play(Cue::Tap, sounds::strong());
@@ -1369,7 +1374,7 @@ impl AppState {
     pub fn move_pane(
         &self,
         machine: &MachineId,
-        pane_id: &str,
+        pane_id: &PaneId,
         destination: herdr::PaneMoveDestination,
         cx: &App,
     ) -> Task<herdr::Result<()>> {
@@ -1384,7 +1389,7 @@ impl AppState {
     pub fn set_right_click(
         &self,
         machine: &MachineId,
-        pane_id: &str,
+        pane_id: &PaneId,
         target: herdr::RightClickTarget,
         cx: &App,
     ) -> Task<herdr::Result<()>> {
@@ -1399,7 +1404,7 @@ impl AppState {
     pub fn set_split_ratio(
         &self,
         machine: &MachineId,
-        tab_id: &str,
+        tab_id: &TabId,
         path: Vec<bool>,
         ratio: f32,
         cx: &App,
@@ -1418,7 +1423,7 @@ impl AppState {
     pub fn focus_tab(
         &mut self,
         machine: &MachineId,
-        tab_id: &str,
+        tab_id: &TabId,
         cx: &mut Context<Self>,
     ) -> Task<herdr::Result<()>> {
         let Some(target) = self.machine(machine) else {
@@ -1436,7 +1441,7 @@ impl AppState {
     pub fn new_tab(
         &self,
         machine: &MachineId,
-        workspace_id: Option<&str>,
+        workspace_id: Option<&WorkspaceId>,
         cx: &App,
     ) -> Task<herdr::Result<herdr::TabInfo>> {
         self.new_tab_named(machine, workspace_id, None, cx)
@@ -1447,13 +1452,13 @@ impl AppState {
     pub fn new_tab_named(
         &self,
         machine: &MachineId,
-        workspace_id: Option<&str>,
+        workspace_id: Option<&WorkspaceId>,
         label: Option<String>,
         cx: &App,
     ) -> Task<herdr::Result<herdr::TabInfo>> {
         sounds::play(Cue::Open, sounds::subtle());
         let params = herdr::NewTab {
-            workspace_id: workspace_id.map(str::to_owned),
+            workspace_id: workspace_id.cloned(),
             label,
             focus: true,
             ..Default::default()
@@ -1465,7 +1470,7 @@ impl AppState {
     pub fn rename_tab(
         &self,
         machine: &MachineId,
-        tab_id: &str,
+        tab_id: &TabId,
         label: &str,
         cx: &App,
     ) -> Task<herdr::Result<()>> {
@@ -1478,7 +1483,7 @@ impl AppState {
     pub fn move_tab(
         &self,
         machine: &MachineId,
-        tab_id: &str,
+        tab_id: &TabId,
         index: usize,
         cx: &App,
     ) -> Task<herdr::Result<()>> {
@@ -1491,7 +1496,7 @@ impl AppState {
     pub fn close_tab(
         &self,
         machine: &MachineId,
-        tab_id: &str,
+        tab_id: &TabId,
         cx: &App,
     ) -> Task<herdr::Result<()>> {
         sounds::play(Cue::Close, sounds::subtle());
@@ -1508,7 +1513,7 @@ impl AppState {
     pub fn focus_workspace(
         &mut self,
         machine: &MachineId,
-        workspace_id: &str,
+        workspace_id: &WorkspaceId,
         cx: &mut Context<Self>,
     ) -> Task<herdr::Result<()>> {
         let Some(target) = self.machine(machine) else {
@@ -1551,7 +1556,7 @@ impl AppState {
     pub fn rename_workspace(
         &self,
         machine: &MachineId,
-        workspace_id: &str,
+        workspace_id: &WorkspaceId,
         label: &str,
         cx: &App,
     ) -> Task<herdr::Result<()>> {
@@ -1565,7 +1570,7 @@ impl AppState {
     pub fn reorder_workspaces(
         &self,
         machine: &MachineId,
-        order: Vec<String>,
+        order: Vec<WorkspaceId>,
         cx: &App,
     ) -> Task<herdr::Result<()>> {
         sounds::play(Cue::Tap, sounds::strong());
@@ -1577,7 +1582,7 @@ impl AppState {
     pub fn close_workspace(
         &self,
         machine: &MachineId,
-        workspace_id: &str,
+        workspace_id: &WorkspaceId,
         close_group: bool,
         cx: &App,
     ) -> Task<herdr::Result<()>> {
@@ -1593,7 +1598,7 @@ impl AppState {
     pub fn close_workspaces(
         &self,
         machine: &MachineId,
-        workspace_ids: Vec<String>,
+        workspace_ids: Vec<WorkspaceId>,
         cx: &App,
     ) -> Task<herdr::Result<()>> {
         sounds::play(Cue::Close, sounds::strong());
@@ -1626,7 +1631,7 @@ impl AppState {
     pub fn list_worktrees(
         &self,
         machine: &MachineId,
-        workspace_id: &str,
+        workspace_id: &WorkspaceId,
         cx: &App,
     ) -> Task<herdr::Result<herdr::WorktreeList>> {
         let id = workspace_id.to_owned();
@@ -1657,7 +1662,7 @@ impl AppState {
     pub fn remove_worktree(
         &self,
         machine: &MachineId,
-        workspace_id: &str,
+        workspace_id: &WorkspaceId,
         force: bool,
         cx: &App,
     ) -> Task<herdr::Result<herdr::WorktreeRemoved>> {
@@ -1724,7 +1729,7 @@ fn gone(machine: &MachineId) -> herdr::Error {
 /// Has herdr record `workspace_id`'s linked checkout as its worktree, so
 /// `worktree.remove` accepts it. Does nothing when herdr lists no linked
 /// checkout open in that workspace; the remove then says why.
-fn adopt_worktree(client: &herdr::Client, workspace_id: &str) -> herdr::Result<()> {
+fn adopt_worktree(client: &herdr::Client, workspace_id: &WorkspaceId) -> herdr::Result<()> {
     let list = client.worktree_list(Some(workspace_id), None)?;
     let Some(checkout) = list
         .worktrees
@@ -1770,7 +1775,7 @@ mod tests {
     fn agent(pane: &str) -> herdr::Agent {
         herdr::Agent {
             pane_id: pane.into(),
-            terminal_id: String::new(),
+            terminal_id: "".into(),
             workspace_id: "w1".into(),
             tab_id: "w1:t1".into(),
             focused: false,
@@ -1953,7 +1958,7 @@ mod tests {
     fn refused_endpoint_fails_every_call(cx: &mut TestAppContext) {
         let state = cx.new(|cx| AppState::new(Err(refused()), cx));
         let task = state.update(cx, |state, cx| {
-            state.focus_pane(&MachineId::Local, "w1:p1", cx)
+            state.focus_pane(&MachineId::Local, &"w1:p1".into(), cx)
         });
         let result = cx.foreground_executor().block_test(task);
         assert!(matches!(result, Err(herdr::Error::Refused(_))));
@@ -1967,7 +1972,7 @@ mod tests {
     fn focusing_a_pane_on_a_gone_machine_fails(cx: &mut TestAppContext) {
         let state = with_remote(cx);
         let task = state.update(cx, |state, cx| {
-            state.focus_pane(&gone_machine(), "w1:p1", cx)
+            state.focus_pane(&gone_machine(), &"w1:p1".into(), cx)
         });
         let result = cx.foreground_executor().block_test(task);
         assert!(matches!(result, Err(herdr::Error::Refused(m)) if m.contains("no longer saved")));
@@ -1978,7 +1983,9 @@ mod tests {
         let state = with_remote(cx);
         state.update(cx, |state, cx| {
             state.select_machine(&remote(), cx);
-            state.focus_workspace(&gone_machine(), "w1", cx).detach();
+            state
+                .focus_workspace(&gone_machine(), &"w1".into(), cx)
+                .detach();
         });
         let selected = cx.read(|cx| state.read(cx).selected().clone());
         assert_eq!(selected, remote());
@@ -1987,7 +1994,11 @@ mod tests {
     #[gpui::test]
     fn a_call_on_a_gone_machine_fails_instead_of_using_the_selected_one(cx: &mut TestAppContext) {
         let state = with_remote(cx);
-        let task = cx.update(|cx| state.read(cx).close_pane(&gone_machine(), "w1:p1", cx));
+        let task = cx.update(|cx| {
+            state
+                .read(cx)
+                .close_pane(&gone_machine(), &"w1:p1".into(), cx)
+        });
         let result = cx.foreground_executor().block_test(task);
         assert!(matches!(result, Err(herdr::Error::Refused(m)) if m.contains("no longer saved")));
     }

@@ -7,7 +7,9 @@ use gpui_kit::*;
 
 use super::confirm::{group_members, herdr_closes_exactly};
 use super::worktrees::herdr_placement;
-use crate::herdr::{self, PluginActionInfo, PluginInvocationContext, SplitDirection};
+use crate::herdr::{
+    self, PaneId, PluginActionInfo, PluginInvocationContext, SplitDirection, TabId, WorkspaceId,
+};
 use crate::state::{AppState, MachineId};
 
 #[derive(Debug, Clone)]
@@ -15,66 +17,66 @@ pub enum HerdrCommand {
     /// Selects the machine first when it isn't selected.
     FocusPane {
         machine: MachineId,
-        pane_id: String,
+        pane_id: PaneId,
     },
     SplitPane {
         machine: MachineId,
-        pane_id: String,
+        pane_id: PaneId,
         direction: SplitDirection,
     },
     ZoomPane {
         machine: MachineId,
-        pane_id: String,
+        pane_id: PaneId,
     },
     RenamePane {
         machine: MachineId,
-        pane_id: String,
+        pane_id: PaneId,
         label: String,
     },
     ClosePane {
         machine: MachineId,
-        pane_id: String,
+        pane_id: PaneId,
     },
     NewTab {
         machine: MachineId,
-        workspace_id: String,
+        workspace_id: WorkspaceId,
     },
     /// Selects the machine first when it isn't selected.
     FocusTab {
         machine: MachineId,
-        tab_id: String,
+        tab_id: TabId,
     },
     RenameTab {
         machine: MachineId,
-        tab_id: String,
+        tab_id: TabId,
         label: String,
     },
     CloseTab {
         machine: MachineId,
-        tab_id: String,
+        tab_id: TabId,
     },
     /// Selects the machine first when it isn't selected.
     FocusWorkspace {
         machine: MachineId,
-        workspace_id: String,
+        workspace_id: WorkspaceId,
     },
     RenameWorkspace {
         machine: MachineId,
-        workspace_id: String,
+        workspace_id: WorkspaceId,
         label: String,
     },
     CloseWorkspace {
         machine: MachineId,
-        workspace_id: String,
+        workspace_id: WorkspaceId,
     },
     /// Closes the worktree group `workspace_id` heads: exactly `members`
     /// (the ones the confirmation lists), with herdr's `close_group` when
     /// herdr's own worktree info makes the same group, else one by one.
     CloseGroup {
         machine: MachineId,
-        workspace_id: String,
+        workspace_id: WorkspaceId,
         repo_name: String,
-        members: Vec<String>,
+        members: Vec<WorkspaceId>,
     },
     InvokePluginAction {
         machine: MachineId,

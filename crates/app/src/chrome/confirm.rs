@@ -10,7 +10,7 @@ use gpui_kit::*;
 use super::Callback;
 use super::HerdrCommand as Command;
 use crate::attention::find_agent;
-use crate::herdr::{Snapshot, Workspace, WorkspaceInfo};
+use crate::herdr::{Snapshot, TabId, Workspace, WorkspaceId, WorkspaceInfo};
 use crate::worktree::Placement;
 use crate::{label, status};
 
@@ -57,7 +57,7 @@ pub(super) fn open(
 /// outside a repo) this is empty.
 pub(super) fn group_members<'a>(
     snapshot: &'a Snapshot,
-    workspace_id: &str,
+    workspace_id: &WorkspaceId,
     place: impl Fn(&WorkspaceInfo) -> Option<Placement>,
 ) -> Vec<&'a Workspace> {
     let Some(source) = snapshot
@@ -71,7 +71,7 @@ pub(super) fn group_members<'a>(
         .workspaces
         .iter()
         .filter(|w| {
-            w.info.workspace_id == workspace_id
+            &w.info.workspace_id == workspace_id
                 || place(&w.info).is_some_and(|p| p.linked && p.repo.key == source.repo.key)
         })
         .collect()
@@ -79,14 +79,14 @@ pub(super) fn group_members<'a>(
 
 /// Whether herdr's `close_group` closes exactly `listed`, so herdr can do
 /// the close; otherwise each listed workspace is closed on its own.
-pub(super) fn herdr_closes_exactly(listed: &[String], herdr_members: &[&Workspace]) -> bool {
+pub(super) fn herdr_closes_exactly(listed: &[WorkspaceId], herdr_members: &[&Workspace]) -> bool {
     listed.len() == herdr_members.len()
         && herdr_members
             .iter()
             .all(|w| listed.contains(&w.info.workspace_id))
 }
 
-fn agents_where(snapshot: &Snapshot, keep: impl Fn(&str, &str) -> bool) -> Vec<&str> {
+fn agents_where(snapshot: &Snapshot, keep: impl Fn(&TabId, &WorkspaceId) -> bool) -> Vec<&str> {
     snapshot
         .agents
         .iter()
@@ -96,7 +96,10 @@ fn agents_where(snapshot: &Snapshot, keep: impl Fn(&str, &str) -> bool) -> Vec<&
 }
 
 /// The agents running in any of `workspace_ids`.
-pub(super) fn agents_in<'a>(snapshot: &'a Snapshot, workspace_ids: &[&str]) -> Vec<&'a str> {
+pub(super) fn agents_in<'a>(
+    snapshot: &'a Snapshot,
+    workspace_ids: &[&WorkspaceId],
+) -> Vec<&'a str> {
     agents_where(snapshot, |_, ws| workspace_ids.contains(&ws))
 }
 
@@ -111,7 +114,11 @@ pub(super) fn agent_summary(names: &[&str]) -> String {
     }
 }
 
-fn group_confirmation(snapshot: &Snapshot, repo_name: &str, members: &[String]) -> Confirmation {
+fn group_confirmation(
+    snapshot: &Snapshot,
+    repo_name: &str,
+    members: &[WorkspaceId],
+) -> Confirmation {
     let labels: Vec<&str> = members
         .iter()
         .map(|id| {
@@ -120,7 +127,7 @@ fn group_confirmation(snapshot: &Snapshot, repo_name: &str, members: &[String]) 
                 .map_or(id.as_str(), |w| w.info.label.as_str())
         })
         .collect();
-    let ids: Vec<&str> = members.iter().map(String::as_str).collect();
+    let ids: Vec<&WorkspaceId> = members.iter().collect();
     let names = agents_in(snapshot, &ids);
     let mut message = format!(
         "This closes {} workspaces of {repo_name}: {}.",
@@ -198,6 +205,7 @@ pub(super) fn needed_for(
 mod tests {
     use super::{Command, group_members, herdr_closes_exactly, needed_for};
     use crate::chrome::worktrees::herdr_placement;
+    use crate::herdr::WorkspaceId;
     use crate::herdr::{
         Agent, AgentStatus, Snapshot, Workspace, WorkspaceInfo, WorkspaceWorktreeInfo,
     };
@@ -212,7 +220,7 @@ mod tests {
                 focused: false,
                 pane_count: 1,
                 tab_count: 1,
-                active_tab_id: format!("{id}:t1"),
+                active_tab_id: format!("{id}:t1").into(),
                 agent_status: AgentStatus::Idle,
                 worktree: repo.map(|repo| WorkspaceWorktreeInfo {
                     repo_key: repo.into(),
@@ -230,7 +238,7 @@ mod tests {
     fn agent(pane: &str, tab: &str, ws: &str) -> Agent {
         Agent {
             pane_id: pane.into(),
-            terminal_id: String::new(),
+            terminal_id: "".into(),
             workspace_id: ws.into(),
             tab_id: tab.into(),
             focused: false,
@@ -267,7 +275,7 @@ mod tests {
             machine: crate::state::MachineId::Local,
             workspace_id: "w1".into(),
             repo_name: "repo".into(),
-            members: members.iter().map(|m| (*m).to_owned()).collect(),
+            members: members.iter().map(|m| (*m).into()).collect(),
         }
     }
 
@@ -286,7 +294,7 @@ mod tests {
         })
     }
 
-    fn ids(members: &[&Workspace]) -> Vec<String> {
+    fn ids(members: &[&Workspace]) -> Vec<WorkspaceId> {
         members
             .iter()
             .map(|w| w.info.workspace_id.clone())
@@ -336,7 +344,7 @@ mod tests {
     #[test]
     fn inferred_linked_worktrees_join_the_group() {
         assert_eq!(
-            ids(&group_members(&snapshot(), "w1", with_inferred)),
+            ids(&group_members(&snapshot(), &"w1".into(), with_inferred)),
             ["w1", "w2", "w3"]
         );
     }
@@ -356,15 +364,15 @@ mod tests {
     #[test]
     fn herdr_closes_the_group_when_it_sees_the_same_members() {
         let snapshot = snapshot();
-        let herdr = group_members(&snapshot, "w1", herdr_placement);
+        let herdr = group_members(&snapshot, &"w1".into(), herdr_placement);
         assert!(herdr_closes_exactly(&["w1".into(), "w2".into()], &herdr));
     }
 
     #[test]
     fn an_inferred_member_closes_each_workspace_on_its_own() {
         let snapshot = snapshot();
-        let herdr = group_members(&snapshot, "w1", herdr_placement);
-        let listed = ids(&group_members(&snapshot, "w1", with_inferred));
+        let herdr = group_members(&snapshot, &"w1".into(), herdr_placement);
+        let listed = ids(&group_members(&snapshot, &"w1".into(), with_inferred));
         assert!(!herdr_closes_exactly(&listed, &herdr));
     }
 
@@ -373,12 +381,12 @@ mod tests {
         let mut snapshot = snapshot();
         snapshot.workspaces[0].info.worktree = None;
         snapshot.workspaces[1].info.worktree = None;
-        assert!(group_members(&snapshot, "w1", herdr_placement).is_empty());
+        assert!(group_members(&snapshot, &"w1".into(), herdr_placement).is_empty());
     }
 
     #[test]
     fn linked_worktree_has_no_group() {
-        assert!(group_members(&snapshot(), "w2", herdr_placement).is_empty());
+        assert!(group_members(&snapshot(), &"w2".into(), herdr_placement).is_empty());
     }
 
     #[test]
@@ -424,6 +432,6 @@ mod tests {
 
     #[test]
     fn group_members_is_empty_outside_a_repo() {
-        assert!(group_members(&snapshot(), "w3", herdr_placement).is_empty());
+        assert!(group_members(&snapshot(), &"w3".into(), herdr_placement).is_empty());
     }
 }

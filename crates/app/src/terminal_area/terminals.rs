@@ -17,8 +17,8 @@ use gpui_kit::component::ActiveTheme as _;
 use gpui_kit::*;
 use gpui_libghostty::{TerminalConfiguration, TerminalOptions};
 
-use crate::herdr::{self, PaneInfo, Snapshot};
-use crate::state::MachineId;
+use crate::herdr::{self, PaneId, PaneInfo, Snapshot, TerminalId};
+use crate::state::{MachineId, On};
 
 gpui_libghostty::bind_gpui!(gpui_kit);
 
@@ -35,7 +35,7 @@ pub struct SetupTerminal {
 
 pub struct TerminalView {
     pub terminal: Entity<Terminal>,
-    pub pane_id: String,
+    pub pane_id: PaneId,
     config_path: PathBuf,
     /// What this view was last told about its visibility.
     shown: bool,
@@ -65,7 +65,7 @@ impl Launch {
 
     /// Without `takeover`, herdr refuses a terminal another client has
     /// attached; with it, that client is detached instead.
-    pub fn attach_command(&self, terminal_id: &str, takeover: bool) -> String {
+    pub fn attach_command(&self, terminal_id: &TerminalId, takeover: bool) -> String {
         let bin = shell_quote(&self.bin.to_string_lossy());
         let session = self
             .session
@@ -92,25 +92,16 @@ fn shell_quote(value: &str) -> String {
 }
 
 /// A terminal on one machine: herdr terminal ids are only unique per server.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-struct TerminalKey {
-    machine: MachineId,
-    terminal_id: String,
-}
+type TerminalKey = On<TerminalId>;
 
-impl TerminalKey {
-    fn new(machine: &MachineId, terminal_id: &str) -> Self {
-        Self {
-            machine: machine.clone(),
-            terminal_id: terminal_id.to_owned(),
-        }
-    }
+fn terminal_key(machine: &MachineId, terminal_id: &TerminalId) -> TerminalKey {
+    On::new(machine.clone(), terminal_id.clone())
 }
 
 /// How to attach each new terminal in a reconcile, by terminal id: the
 /// command, or why it can't attach. A terminal missing from it waits (a
 /// remote machine whose herdr isn't found yet).
-pub type AttachCommands = HashMap<String, Result<String, String>>;
+pub type AttachCommands = HashMap<TerminalId, Result<String, String>>;
 
 pub struct Terminals {
     /// The machine whose terminals `get`, `iter` and `show_only` see.
@@ -128,8 +119,8 @@ pub struct Terminals {
 /// What changed in one reconcile.
 #[derive(Debug, Default)]
 pub struct Reconciled {
-    pub spawned: Vec<String>,
-    pub dropped: Vec<String>,
+    pub spawned: Vec<TerminalId>,
+    pub dropped: Vec<TerminalId>,
 }
 
 impl Terminals {
@@ -169,7 +160,7 @@ impl Terminals {
             } else if self.detached.insert(key.clone()) {
                 tracing::warn!(
                     "terminal {} on {} (pane {}): attach process exited",
-                    key.terminal_id,
+                    key.id,
                     key.machine,
                     view.pane_id
                 );
@@ -179,21 +170,19 @@ impl Terminals {
     }
 
     /// The selected machine's view of `terminal_id`.
-    pub fn get(&self, terminal_id: &str) -> Option<&TerminalView> {
-        self.views
-            .get(&TerminalKey::new(&self.selected, terminal_id))
+    pub fn get(&self, terminal_id: &TerminalId) -> Option<&TerminalView> {
+        self.views.get(&terminal_key(&self.selected, terminal_id))
     }
 
     /// Whether `machine` has a view (or a failure) for `terminal_id`.
-    pub fn has(&self, machine: &MachineId, terminal_id: &str) -> bool {
-        let key = TerminalKey::new(machine, terminal_id);
+    pub fn has(&self, machine: &MachineId, terminal_id: &TerminalId) -> bool {
+        let key = terminal_key(machine, terminal_id);
         self.views.contains_key(&key) || self.failed.contains_key(&key)
     }
 
     /// Why the selected machine's `terminal_id` failed to spawn.
-    pub fn failure(&self, terminal_id: &str) -> Option<&String> {
-        self.failed
-            .get(&TerminalKey::new(&self.selected, terminal_id))
+    pub fn failure(&self, terminal_id: &TerminalId) -> Option<&String> {
+        self.failed.get(&terminal_key(&self.selected, terminal_id))
     }
 
     /// Views on every machine.
@@ -202,11 +191,11 @@ impl Terminals {
     }
 
     /// The selected machine's views, by terminal id.
-    pub fn iter(&self) -> impl Iterator<Item = (&String, &TerminalView)> {
+    pub fn iter(&self) -> impl Iterator<Item = (&TerminalId, &TerminalView)> {
         self.views
             .iter()
             .filter(|(key, _)| key.machine == self.selected)
-            .map(|(key, view)| (&key.terminal_id, view))
+            .map(|(key, view)| (&key.id, view))
     }
 
     /// The machines that have views, other than the selected one.
@@ -221,10 +210,10 @@ impl Terminals {
     }
 
     /// The selected machine's terminal holding GPUI keyboard focus, if any.
-    pub fn focused(&self, window: &Window, cx: &App) -> Option<&str> {
+    pub fn focused(&self, window: &Window, cx: &App) -> Option<&TerminalId> {
         self.iter()
             .find(|(_, view)| view.terminal.focus_handle(cx).is_focused(window))
-            .map(|(id, _)| id.as_str())
+            .map(|(id, _)| id)
     }
 
     /// Drops `machine`'s views whose terminal is gone from `snapshot`, then
@@ -242,14 +231,12 @@ impl Terminals {
         cx: &mut Context<T>,
     ) -> Reconciled {
         let mut result = Reconciled::default();
-        let live: HashMap<&str, &PaneInfo> = snapshot
+        let live: HashMap<&TerminalId, &PaneInfo> = snapshot
             .panes
             .values()
-            .map(|pane| (pane.terminal_id.as_str(), pane))
+            .map(|pane| (&pane.terminal_id, pane))
             .collect();
-        let is_live = |key: &TerminalKey| {
-            &key.machine != machine || live.contains_key(key.terminal_id.as_str())
-        };
+        let is_live = |key: &TerminalKey| &key.machine != machine || live.contains_key(&key.id);
 
         let gone: Vec<TerminalKey> = self
             .views
@@ -261,13 +248,13 @@ impl Terminals {
             if let Some(view) = self.views.remove(&key) {
                 Self::discard(view, cx);
             }
-            result.dropped.push(key.terminal_id);
+            result.dropped.push(key.id);
         }
         self.failed.retain(|key, _| is_live(key));
         self.overrides.retain(|key, _| is_live(key));
 
         for (terminal_id, pane) in live {
-            let key = TerminalKey::new(machine, terminal_id);
+            let key = terminal_key(machine, terminal_id);
             if let Some(view) = self.views.get_mut(&key) {
                 view.pane_id.clone_from(&pane.pane_id);
                 continue;
@@ -281,7 +268,7 @@ impl Terminals {
             match self.spawn(&key, pane, command.clone(), window, cx) {
                 Ok(view) => {
                     self.views.insert(key, view);
-                    result.spawned.push(terminal_id.to_owned());
+                    result.spawned.push(terminal_id.clone());
                 }
                 Err(error) => {
                     tracing::error!(
@@ -321,17 +308,17 @@ impl Terminals {
     }
 
     /// Whether the selected machine's terminal's attach process is running.
-    pub fn is_attached(&self, terminal_id: &str, cx: &App) -> bool {
+    pub fn is_attached(&self, terminal_id: &TerminalId, cx: &App) -> bool {
         self.get(terminal_id)
             .is_some_and(|view| view.terminal.read(cx).is_alive())
     }
 
     /// `machine`'s terminals whose attach process has ended.
-    pub fn detached_on(&self, machine: &MachineId, cx: &App) -> Vec<String> {
+    pub fn detached_on(&self, machine: &MachineId, cx: &App) -> Vec<TerminalId> {
         self.views
             .iter()
             .filter(|(key, view)| &key.machine == machine && !view.terminal.read(cx).is_alive())
-            .map(|(key, _)| key.terminal_id.clone())
+            .map(|(key, _)| key.id.clone())
             .collect()
     }
 
@@ -344,7 +331,7 @@ impl Terminals {
         window: &mut Window,
         cx: &mut Context<T>,
     ) {
-        let key = TerminalKey::new(machine, &pane.terminal_id);
+        let key = terminal_key(machine, &pane.terminal_id);
         if let Some(view) = self.views.remove(&key) {
             view.terminal
                 .update(cx, |terminal, _| terminal.set_visible(false));
@@ -416,9 +403,9 @@ impl Terminals {
     /// view that drops out of the layout keeps its last frame, so it has to be
     /// hidden explicitly; a shown one appears at its next prepaint.
     /// `visible` names the selected machine's terminals.
-    pub fn show_only(&mut self, visible: &HashSet<&str>, cx: &mut App) {
+    pub fn show_only(&mut self, visible: &HashSet<&TerminalId>, cx: &mut App) {
         for (key, view) in &mut self.views {
-            let show = key.machine == self.selected && visible.contains(key.terminal_id.as_str());
+            let show = key.machine == self.selected && visible.contains(&key.id);
             if view.shown != show {
                 view.shown = show;
                 view.terminal
@@ -434,8 +421,8 @@ impl Terminals {
 
     /// Replaces one terminal's extra config lines and reloads it in place.
     /// For one of the selected machine's terminals.
-    pub fn set_overrides(&mut self, terminal_id: &str, lines: String, cx: &mut App) {
-        let key = TerminalKey::new(&self.selected, terminal_id);
+    pub fn set_overrides(&mut self, terminal_id: &TerminalId, lines: String, cx: &mut App) {
+        let key = terminal_key(&self.selected, terminal_id);
         self.overrides.insert(key.clone(), lines);
         self.reload(Some(&key), cx);
     }
@@ -454,7 +441,7 @@ impl Terminals {
             .cloned()
             .collect();
         for key in keys {
-            let id = &key.terminal_id;
+            let id = &key.id;
             let path = match self.write_config(&key, cx) {
                 Ok(path) => path,
                 Err(error) => {
@@ -480,7 +467,7 @@ impl Terminals {
         let path = self.config_dir.join(format!(
             "{}-{}.ghostty",
             sanitize(&key.machine.to_string()),
-            sanitize(&key.terminal_id)
+            sanitize(&key.id)
         ));
         std::fs::write(&path, contents)?;
         Ok(path)
@@ -566,7 +553,7 @@ mod tests {
             session: Some("dev-x".to_owned()),
         };
         assert_eq!(
-            launch.attach_command("term_1", false),
+            launch.attach_command(&"term_1".into(), false),
             "/opt/herdr/herdr --session dev-x terminal attach term_1"
         );
     }
@@ -578,7 +565,7 @@ mod tests {
             session: None,
         };
         assert_eq!(
-            launch.attach_command("term_1", true),
+            launch.attach_command(&"term_1".into(), true),
             "/opt/herdr/herdr terminal attach term_1 --takeover"
         );
     }
@@ -590,7 +577,7 @@ mod tests {
             session: None,
         };
         assert_eq!(
-            launch.attach_command("term_1", false),
+            launch.attach_command(&"term_1".into(), false),
             "'/Applications/My Tools/herdr' terminal attach term_1"
         );
     }

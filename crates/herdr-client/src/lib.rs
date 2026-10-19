@@ -15,6 +15,7 @@ pub mod config;
 mod endpoint;
 mod error;
 pub mod events;
+mod ids;
 mod machines;
 mod remote_fs;
 mod setup;
@@ -25,6 +26,7 @@ pub mod types;
 pub use client::*;
 pub use endpoint::{ALLOW_LIVE_ENV, DEV_ROOT, Endpoint, check_dev_socket};
 pub use error::{EVENTS_LOST, Error, Result};
+pub use ids::{PaneId, ProfileId, TabId, TerminalId, WorkspaceId};
 pub use machines::{
     DEV_MACHINES_ENV, FORWARD_AGENT_ENV, MachineLink, MachineProfile, MachineStatus, dev_allowed,
     list_machines, socket_dir,

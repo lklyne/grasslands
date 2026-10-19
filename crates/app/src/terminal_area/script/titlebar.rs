@@ -17,7 +17,7 @@ use gpui_kit::*;
 use super::{Cx, Run};
 use crate::actions::{OpenFile, ToggleTheme};
 use crate::editor::Answer;
-use crate::herdr::{SplitDirection, SplitTree};
+use crate::herdr::{PaneId, SplitDirection, SplitTree};
 use crate::overlay;
 use crate::terminal_area::TerminalArea;
 use crate::workspace::{self, MainTab, Workspace};
@@ -176,7 +176,7 @@ impl Run {
         };
         let pane = match &tree {
             SplitTree::Pane(pane) => pane.clone(),
-            SplitTree::Split { .. } => tree.pane_ids()[0].to_owned(),
+            SplitTree::Split { .. } => PaneId::from(tree.pane_ids()[0]),
         };
         self.report_agent(cx, &pane, "working").await?;
         Self::sleep(cx, 500).await;

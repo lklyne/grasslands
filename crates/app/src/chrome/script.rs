@@ -166,15 +166,15 @@ fn run_step(
             let target = match first {
                 "pane" => MenuTarget::Pane {
                     machine: MachineId::Local,
-                    pane_id: id,
+                    pane_id: id.as_str().into(),
                 },
                 "tab" => MenuTarget::Tab {
                     machine: MachineId::Local,
-                    tab_id: id,
+                    tab_id: id.as_str().into(),
                 },
                 "workspace" => MenuTarget::Workspace {
                     machine: MachineId::Local,
-                    workspace_id: id,
+                    workspace_id: id.as_str().into(),
                 },
                 other => return Err(format!("unknown menu target {other:?}")),
             };
@@ -185,25 +185,25 @@ fn run_step(
             let command = match first {
                 "close-pane" => HerdrCommand::ClosePane {
                     machine: MachineId::Local,
-                    pane_id: id,
+                    pane_id: id.as_str().into(),
                 },
                 "close-tab" => HerdrCommand::CloseTab {
                     machine: MachineId::Local,
-                    tab_id: id,
+                    tab_id: id.as_str().into(),
                 },
                 "close-workspace" => HerdrCommand::CloseWorkspace {
                     machine: MachineId::Local,
-                    workspace_id: id,
+                    workspace_id: id.as_str().into(),
                 },
                 "close-group" => chrome
-                    .group_close(&MachineId::Local, &id, cx)
+                    .group_close(&MachineId::Local, &id.as_str().into(), cx)
                     .ok_or_else(|| format!("{id} heads no worktree group"))?,
                 other => return Err(format!("unknown command {other:?}")),
             };
             chrome.run(command, window, cx);
         }
         "open-worktree" | "remove-worktree" => {
-            let (machine, workspace_id) = (MachineId::Local, first.to_owned());
+            let (machine, workspace_id) = (MachineId::Local, first.into());
             let command = if verb == "open-worktree" {
                 WorktreeCommand::Open {
                     machine,
@@ -255,7 +255,7 @@ fn log(chrome: &Chrome, label: &str, window: &mut Window, cx: &mut Context<Chrom
     };
     let capturing = overlay::get(window, cx).is_some_and(|o| o.read(cx).is_capturing());
     let snapshot = chrome.state.read(cx).snapshot();
-    let panes: Vec<&str> = snapshot.panes.keys().map(String::as_str).collect();
+    let panes: Vec<&str> = snapshot.panes.keys().map(|id| id.as_str()).collect();
     let agents: Vec<String> = snapshot
         .agents
         .iter()

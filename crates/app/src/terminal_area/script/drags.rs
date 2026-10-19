@@ -16,6 +16,7 @@ use std::time::Duration;
 use gpui_kit::*;
 
 use super::{Cx, Run, center};
+use crate::herdr::{TabId, WorkspaceId};
 use crate::overlay;
 use crate::terminal_area::TerminalArea;
 
@@ -121,7 +122,7 @@ impl Run {
     async fn drag_tab(
         &mut self,
         cx: &mut Cx,
-        tab_id: &str,
+        tab_id: &TabId,
         target: Target<'_>,
     ) -> anyhow::Result<()> {
         let (from, to) = self.drawn(cx, |d| {
@@ -182,7 +183,7 @@ impl Run {
         );
     }
 
-    fn tab_order(&self, cx: &mut Cx, workspace_id: &str) -> anyhow::Result<Vec<String>> {
+    fn tab_order(&self, cx: &mut Cx, workspace_id: &WorkspaceId) -> anyhow::Result<Vec<TabId>> {
         self.read(cx, |area, cx| {
             area.snapshot(cx)
                 .workspace(workspace_id)
@@ -191,7 +192,13 @@ impl Run {
         })
     }
 
-    async fn check_order(&mut self, cx: &mut Cx, workspace_id: &str, want: &[String], what: &str) {
+    async fn check_order(
+        &mut self,
+        cx: &mut Cx,
+        workspace_id: &WorkspaceId,
+        want: &[TabId],
+        what: &str,
+    ) {
         let workspace_id = workspace_id.to_owned();
         let matched = self
             .until(cx, Duration::from_secs(5), |area, _, cx| {

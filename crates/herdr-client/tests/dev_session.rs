@@ -11,9 +11,9 @@ fn tree(state: &State, tab_id: &str) -> Option<SplitTree> {
     state.tab(tab_id).and_then(|t| t.root.clone())
 }
 
-fn panes_of(state: &State, tab_id: &str) -> Vec<String> {
+fn panes_of(state: &State, tab_id: &str) -> Vec<PaneId> {
     tree(state, tab_id)
-        .map(|t| t.pane_ids().into_iter().map(str::to_owned).collect())
+        .map(|t| t.pane_ids().into_iter().map(PaneId::from).collect())
         .unwrap_or_default()
 }
 
@@ -166,6 +166,8 @@ fn unknown_pane_should_return_server_error() {
     let Some(endpoint) = dev_endpoint() else {
         return;
     };
-    let err = Client::new(endpoint).pane_get("w999:p999").unwrap_err();
+    let err = Client::new(endpoint)
+        .pane_get(&"w999:p999".into())
+        .unwrap_err();
     assert!(err.code().is_some(), "{err}");
 }

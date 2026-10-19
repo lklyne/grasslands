@@ -27,7 +27,7 @@ use crate::endpoint::{self, Endpoint};
 use crate::error::{Error, Result};
 use crate::events;
 use crate::state::State;
-use crate::types::{LayoutDescription, TabId};
+use crate::types::{LayoutDescription, PaneId, TabId};
 
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
 /// Bursts of events (a split emits several) are folded into one re-read.
@@ -135,7 +135,7 @@ enum Msg {
 struct Subscription {
     generation: u64,
     request_id: String,
-    panes: BTreeSet<String>,
+    panes: BTreeSet<PaneId>,
     stream: UnixStream,
 }
 
@@ -259,13 +259,12 @@ impl Engine {
 
     /// Opens a subscription for `panes`, waits for `subscription_started`, then
     /// replaces the old one.
-    fn subscribe(&mut self, panes: BTreeSet<String>) -> Result<()> {
+    fn subscribe(&mut self, panes: BTreeSet<PaneId>) -> Result<()> {
         let stream = self.endpoint.connect()?;
         stream.set_read_timeout(Some(HANDSHAKE_TIMEOUT))?;
         stream.set_write_timeout(Some(HANDSHAKE_TIMEOUT))?;
         let request_id = endpoint::next_id();
-        let params =
-            json!({ "subscriptions": events::subscriptions(panes.iter().map(String::as_str)) });
+        let params = json!({ "subscriptions": events::subscriptions(&panes) });
         endpoint::write_request(&stream, &request_id, "events.subscribe", &params)?;
 
         let mut reader = BufReader::new(stream.try_clone()?);
@@ -297,7 +296,7 @@ impl Engine {
     fn reread(&mut self) -> Result<()> {
         let mut state = self.read_state()?;
         for attempt in 1..READ_ATTEMPTS {
-            let panes: BTreeSet<String> = state.panes.keys().cloned().collect();
+            let panes: BTreeSet<PaneId> = state.panes.keys().cloned().collect();
             let subscribed = self.sub.as_ref().map(|s| &s.panes);
             if subscribed != Some(&panes) {
                 match self.subscribe(panes) {
@@ -344,7 +343,7 @@ impl Engine {
             .try_send(Update::State(Arc::clone(&self.state)));
     }
 
-    fn known_panes(&self) -> BTreeSet<String> {
+    fn known_panes(&self) -> BTreeSet<PaneId> {
         self.state.panes.keys().cloned().collect()
     }
 

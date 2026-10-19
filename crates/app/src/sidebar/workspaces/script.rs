@@ -112,7 +112,7 @@ pub(super) fn start(
                         }
                         Some(("agent", pane)) => {
                             let _ = agents
-                                .update(cx, |this, cx| this.activate(pane.trim(), window, cx));
+                                .update(cx, |this, cx| this.activate(&pane.trim().into(), window, cx));
                         }
                         _ if step == "sort" => {
                             let _ = agents.update(cx, |this, cx| this.toggle_sort(cx));
@@ -142,7 +142,7 @@ fn run_step(
     let (verb, arg) = step.split_once(' ').unwrap_or((step, ""));
     let arg = arg.trim();
     match verb {
-        "focus" => this.activate_workspace(arg, cx),
+        "focus" => this.activate_workspace(&arg.into(), cx),
         "fold" => match repo_named(this, arg, cx) {
             Some(repo) => this.toggle_group(&repo.key, cx),
             None => eprintln!("[sidebar-script] no repo {arg}"),
@@ -163,8 +163,8 @@ fn run_step(
                 None => eprintln!("[sidebar-script] no repo {name}"),
             }
         }
-        "rename" => rename_workspace(&selected(this, cx), arg, window, cx),
-        "close" => close_workspace(&selected(this, cx), arg, window, cx),
+        "rename" => rename_workspace(&selected(this, cx), &arg.into(), window, cx),
+        "close" => close_workspace(&selected(this, cx), &arg.into(), window, cx),
         "move" => {
             let (dragged, target) = arg.split_once(' ').unwrap_or((arg, ""));
             match (slot(this, dragged, cx), slot(this, target.trim(), cx)) {
@@ -274,7 +274,13 @@ async fn drag(
     let (dragged, target) = arg.split_once(' ').unwrap_or((arg, ""));
     let (dragged, target) = (dragged.trim().to_owned(), target.trim().to_owned());
     let rows = spaces.read_with(cx, |this, _| this.drawn_rows.borrow().clone())?;
-    let Some(from) = rows.get(&dragged).map(|b| b.center()) else {
+    // Rows by their text key: the bare id on Local, `<machine>/<id>` elsewhere.
+    let row = |key: &str| {
+        rows.iter()
+            .find(|(on, _)| on.to_string() == key)
+            .map(|(_, b)| *b)
+    };
+    let Some(from) = row(&dragged).map(|b| b.center()) else {
         eprintln!("[sidebar-script] drag: no row for {dragged}");
         return Ok(());
     };
@@ -283,7 +289,7 @@ async fn drag(
         "off" => point(from.x, lowest + px(60.)),
         "outside" => point(px(-200.), px(-200.)),
         "cancel" => point(from.x, lowest + px(30.)),
-        id => match rows.get(id) {
+        id => match row(id) {
             Some(bounds) => bounds.center(),
             None => {
                 eprintln!("[sidebar-script] drag: no row for {id}");
