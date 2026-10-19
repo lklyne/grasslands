@@ -49,8 +49,42 @@ pub fn init(cx: &mut App) {
 /// A file on one machine's disk.
 type FileKey = (MachineId, PathBuf);
 
+/// Each open buffer of a file, by its editor state, with its generation.
+type Generations = Vec<(EntityId, u64)>;
+
+/// One remote file to poll: the stamp last seen, and the buffers it was
+/// taken from as they were then.
+struct PollJob {
+    key: FileKey,
+    seen: Option<Stamp>,
+    buffers: Generations,
+    fs: Fs,
+}
+
 /// One remote file's poll result: the check, and the contents if it read them.
-type Polled = (FileKey, Check, Option<Result<String, io::ErrorKind>>);
+struct Polled {
+    key: FileKey,
+    buffers: Generations,
+    check: Check,
+    text: Option<Result<String, io::ErrorKind>>,
+}
+
+/// Stats each job's file, and reads it if its stamp moved. Blocking.
+fn run_poll(jobs: Vec<PollJob>) -> Vec<Polled> {
+    jobs.into_iter()
+        .map(|job| {
+            let check = poll::check(job.seen, &stamp(&job.fs, &job.key.1));
+            let text = matches!(check, Check::Read(_))
+                .then(|| job.fs.read_to_string(&job.key.1).map_err(|error| error.kind()));
+            Polled {
+                key: job.key,
+                buffers: job.buffers,
+                check,
+                text,
+            }
+        })
+        .collect()
+}
 
 fn stamp(fs: &Fs, path: &Path) -> io::Result<Stamp> {
     fs.metadata(path).map(|meta| (meta.modified, meta.len))
@@ -519,38 +553,13 @@ impl Editor {
         if self.polling {
             return;
         }
-        let mut jobs: Vec<(FileKey, Option<Stamp>, Fs)> = Vec::new();
-        for buffer in self.groups.values().flat_map(|group| &group.buffers) {
-            let machine = &buffer.machine;
-            if machine.is_local()
-                || !poll::wanted(window_active, self.online(machine, cx), buffer.is_saving())
-                || jobs
-                    .iter()
-                    .any(|((m, p), ..)| m == machine && p == &buffer.path)
-            {
-                continue;
-            }
-            if let Some(fs) = self.fs(machine, cx) {
-                jobs.push(((machine.clone(), buffer.path.clone()), buffer.stamp, fs));
-            }
-        }
+        let jobs = self.poll_jobs(window_active, cx);
         if jobs.is_empty() {
             return;
         }
         self.polling = true;
         cx.spawn_in(window, async move |this, cx| {
-            let found = cx
-                .background_spawn(async move {
-                    jobs.into_iter()
-                        .map(|(key, seen, fs)| {
-                            let check = poll::check(seen, &stamp(&fs, &key.1));
-                            let text = matches!(check, Check::Read(_))
-                                .then(|| fs.read_to_string(&key.1).map_err(|error| error.kind()));
-                            (key, check, text)
-                        })
-                        .collect::<Vec<Polled>>()
-                })
-                .await;
+            let found = cx.background_spawn(async move { run_poll(jobs) }).await;
             let _ = this.update_in(cx, |this, window, cx| {
                 this.polling = false;
                 this.apply_poll(found, window, cx);
@@ -559,12 +568,50 @@ impl Editor {
         .detach();
     }
 
-    fn apply_poll(&mut self, found: Vec<Polled>, window: &mut Window, cx: &mut Context<Self>) {
-        for ((machine, path), check, text) in found {
-            for buffer in self
-                .buffers_mut()
-                .filter(|buffer| buffer.is(&machine, &path) && !buffer.is_saving())
+    /// The open remote files due a check, one job per file.
+    fn poll_jobs(&self, window_active: bool, cx: &App) -> Vec<PollJob> {
+        let mut jobs: Vec<PollJob> = Vec::new();
+        for buffer in self.groups.values().flat_map(|group| &group.buffers) {
+            let machine = &buffer.machine;
+            if machine.is_local()
+                || !poll::wanted(window_active, self.online(machine, cx), buffer.is_saving())
             {
+                continue;
+            }
+            let generation = (buffer.state.entity_id(), buffer.generation());
+            if let Some(job) = jobs
+                .iter_mut()
+                .find(|job| buffer.is(&job.key.0, &job.key.1))
+            {
+                job.buffers.push(generation);
+            } else if let Some(fs) = self.fs(machine, cx) {
+                jobs.push(PollJob {
+                    key: (machine.clone(), buffer.path.clone()),
+                    seen: buffer.stamp,
+                    buffers: vec![generation],
+                    fs,
+                });
+            }
+        }
+        jobs
+    }
+
+    /// Applies poll results to buffers that haven't changed since the poll
+    /// read their files: a save, reload or answer meanwhile makes the result
+    /// stale, and it is dropped (the next poll reads afresh).
+    fn apply_poll(&mut self, found: Vec<Polled>, window: &mut Window, cx: &mut Context<Self>) {
+        for Polled {
+            key: (machine, path),
+            buffers,
+            check,
+            text,
+        } in found
+        {
+            for buffer in self.buffers_mut().filter(|buffer| {
+                buffer.is(&machine, &path)
+                    && !buffer.is_saving()
+                    && buffers.contains(&(buffer.state.entity_id(), buffer.generation()))
+            }) {
                 let disk = match (&check, &text) {
                     (Check::Deleted, _) => Err(io::ErrorKind::NotFound.into()),
                     (Check::Read(stamp), Some(text)) => {

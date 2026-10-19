@@ -54,6 +54,10 @@ pub struct Buffer {
     /// The modification time and size last seen on a remote machine, for
     /// polling.
     pub stamp: Option<Stamp>,
+    /// Bumped whenever what the buffer knows of its disk copy changes (a
+    /// save starting or finishing, a reload, a deletion), so a poll that
+    /// read the disk before then can tell its result is stale.
+    generation: u64,
     _changes: Subscription,
 }
 
@@ -83,6 +87,7 @@ impl Buffer {
             saving: None,
             prompt: None,
             stamp,
+            generation: 0,
             _changes: changes,
         }
     }
@@ -106,6 +111,10 @@ impl Buffer {
         self.dirty = self.saved.as_deref() != Some(self.state.read(cx).value().as_ref());
     }
 
+    pub fn generation(&self) -> u64 {
+        self.generation
+    }
+
     pub fn is_saving(&self) -> bool {
         self.saving.is_some()
     }
@@ -118,6 +127,7 @@ impl Buffer {
         }
         let text = self.state.read(cx).value().to_string();
         self.saving = Some(text.clone());
+        self.generation += 1;
         Some(text)
     }
 
@@ -125,6 +135,7 @@ impl Buffer {
     /// text becomes the saved text; edits made meanwhile stay dirty.
     pub fn finish_save(&mut self, written: std::io::Result<Option<Stamp>>, cx: &App) {
         let text = self.saving.take();
+        self.generation += 1;
         let (Ok(stamp), Some(text)) = (written, text) else {
             return;
         };
@@ -187,6 +198,7 @@ impl Buffer {
     }
 
     pub fn mark_deleted(&mut self) {
+        self.generation += 1;
         self.saved = None;
         self.dirty = true;
     }
@@ -202,11 +214,13 @@ impl Buffer {
         self.saved = Some(text);
         self.dirty = false;
         self.prompt = None;
+        self.generation += 1;
     }
 
     /// Keep the unsaved edits over `theirs`: the buffer stays dirty and the
     /// next save overwrites the file.
     pub fn keep_mine(&mut self, theirs: String) {
+        self.generation += 1;
         self.saved = Some(theirs);
         self.dirty = true;
         self.prompt = None;
