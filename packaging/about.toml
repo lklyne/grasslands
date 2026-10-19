@@ -19,6 +19,10 @@ accepted = [
 # Skip this workspace's own unpublished crates.
 private = { ignore = true }
 
+# Only what ships in the binary: dev-dependencies (test-only crates such as
+# jsonschema for the herdr schema conformance tests) aren't distributed.
+ignore-dev-dependencies = true
+
 # Its Cargo.toml has only license-file; the file is MIT.
 [tree-sitter-graphql.clarify]
 license = "MIT"
