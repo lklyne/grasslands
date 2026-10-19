@@ -31,7 +31,7 @@ use gpui_kit::*;
 use self::buffer::{Buffer, DiskChange, Prompt};
 use self::poll::{Check, Stamp};
 use self::watcher::FileWatcher;
-use crate::fs::Fs;
+use crate::fs::{Caps, Fs};
 use crate::state::{AppEvent, AppState, MachineId};
 
 actions!(editor, [Save, CloseTab]);
@@ -355,7 +355,8 @@ impl Editor {
             format!("Cannot open {}: {error}", this.describe(machine, path, cx))
         };
         // Watch events report canonical paths (/private/tmp, not /tmp).
-        let path = if machine.is_local() {
+        let caps = Caps::of(machine);
+        let path = if caps.watch {
             match path.canonicalize() {
                 Ok(path) => path,
                 Err(error) => {
@@ -382,7 +383,8 @@ impl Editor {
             return;
         };
         let key = (machine.clone(), path);
-        if machine.is_local() {
+        // No stamp: a watched file needn't be polled.
+        if caps.cheap && caps.watch {
             match fs.read_to_string(&key.1) {
                 Ok(text) => {
                     let group = self.visible.clone();
@@ -440,7 +442,7 @@ impl Editor {
             }
         });
         let buffer = Buffer::new((machine, path), file, state, changes, window, cx);
-        if buffer.machine.is_local()
+        if buffer.caps().watch
             && let Some(watcher) = &mut self.watcher
         {
             watcher.add(&buffer.path);
@@ -542,7 +544,7 @@ impl Editor {
         let mut jobs: Vec<PollJob> = Vec::new();
         for buffer in self.groups.values().flat_map(|group| &group.buffers) {
             let machine = &buffer.machine;
-            if machine.is_local() {
+            if buffer.caps().watch {
                 continue;
             }
             let fs = self.state.read(cx).fs_for(machine);
@@ -621,7 +623,7 @@ impl Editor {
             } else {
                 to.join(rest)
             };
-            if machine.is_local()
+            if buffer.caps().watch
                 && let Some(watcher) = watcher
             {
                 watcher.remove(&buffer.path);
@@ -648,7 +650,7 @@ impl Editor {
                     buffer.mark_deleted();
                     return true;
                 }
-                if machine.is_local()
+                if buffer.caps().watch
                     && let Some(watcher) = watcher
                 {
                     watcher.remove(&buffer.path);
@@ -811,7 +813,7 @@ impl Editor {
     }
 
     fn unwatch(&mut self, buffer: &Buffer) {
-        if buffer.machine.is_local()
+        if buffer.caps().watch
             && let Some(watcher) = &mut self.watcher
         {
             watcher.remove(&buffer.path);

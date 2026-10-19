@@ -13,10 +13,7 @@ use herdr_client::{ExecOutput, RemoteEntry, RemoteFs};
 
 use super::SearchResults;
 use super::search::Collector;
-use super::{Entry, sort_entries};
-
-/// Runs `argv` in `cwd` on the machine.
-pub(super) type Run<'a> = dyn Fn(&[&str], Option<&Path>) -> io::Result<ExecOutput> + 'a;
+use super::{Entry, Run, sort_entries};
 
 /// Long enough for a search of a big repo over a slow link.
 const TIMEOUT: Duration = Duration::from_secs(30);
@@ -262,19 +259,7 @@ fn parse_grep(output: &[u8]) -> Vec<FileLines> {
 
 /// Runs commands on this Mac, as a machine would.
 #[cfg(test)]
-pub(super) fn local_run(argv: &[&str], cwd: Option<&Path>) -> io::Result<ExecOutput> {
-    let mut command = std::process::Command::new(argv[0]);
-    command.args(&argv[1..]);
-    if let Some(cwd) = cwd {
-        command.current_dir(cwd);
-    }
-    let out = command.output()?;
-    Ok(ExecOutput {
-        status: out.status,
-        stdout: out.stdout,
-        stderr: out.stderr,
-    })
-}
+pub(super) use super::local::run as local_run;
 
 /// Runs commands on the test machine over plain ssh, the way `RemoteFs`
 /// does over its master: `GRASSLANDS_SSH_TEST_TARGET=ssh://user@host:port`.
@@ -336,7 +321,7 @@ mod tests {
         let a = temp_dir("batch-a");
         let b = temp_dir("batch-b");
         for (dir, ignore) in [(&a, "*.log\n"), (&b, "*.tmp\n")] {
-            git2::Repository::init(dir).unwrap();
+            crate::fs::test_repo::TestRepo::init(dir, "main");
             std::fs::write(dir.join(".gitignore"), ignore).unwrap();
             std::fs::write(dir.join("x.log"), "").unwrap();
             std::fs::write(dir.join("x.tmp"), "").unwrap();
@@ -382,7 +367,7 @@ mod tests {
     #[test]
     fn filter_listing_should_match_local_listing() {
         let dir = temp_dir("list");
-        git2::Repository::init(&dir).unwrap();
+        crate::fs::test_repo::TestRepo::init(&dir, "main");
         std::fs::write(dir.join(".gitignore"), "target/\n*.log\n").unwrap();
         std::fs::create_dir_all(dir.join("target")).unwrap();
         std::fs::create_dir_all(dir.join("src")).unwrap();
@@ -397,7 +382,7 @@ mod tests {
     fn filter_listing_should_keep_everything_outside_git() {
         let dir = temp_dir("plain");
         // temp dirs can sit inside a repo on some machines; only assert when not.
-        if git2::Repository::discover(&dir).is_ok() {
+        if crate::fs::test_repo::in_git(&dir) {
             return;
         }
         std::fs::write(dir.join("x.log"), "").unwrap();
@@ -428,7 +413,7 @@ mod tests {
     fn search_repo(name: &str) -> PathBuf {
         let dir = temp_dir(&format!("search-{name}"));
         std::fs::create_dir_all(dir.join("src")).unwrap();
-        git2::Repository::init(&dir).unwrap();
+        crate::fs::test_repo::TestRepo::init(&dir, "main");
         std::fs::write(dir.join(".gitignore"), "target\n").unwrap();
         std::fs::create_dir_all(dir.join("target")).unwrap();
         std::fs::write(dir.join("target/needle.txt"), "needle").unwrap();
@@ -484,7 +469,7 @@ mod tests {
     #[test]
     fn search_should_cap_lines_per_file_outside_a_repo() {
         let dir = temp_dir("search-plain");
-        if git2::Repository::discover(&dir).is_ok() {
+        if crate::fs::test_repo::in_git(&dir) {
             return;
         }
         let text: String = (0..30).map(|i| format!("needle {i}\n")).collect();

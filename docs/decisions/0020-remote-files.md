@@ -10,9 +10,16 @@ and Changes tab as a local one, reading and writing that machine's disk.
   blocking calls like the rest of the crate.
 - **One API in the app.** `crate::fs::Fs` is `Local` or `Remote`. The tree,
   search, editor, Changes and worktree tracking take an `Fs` for the
-  active workspace's machine instead of calling `std::fs`, `ignore` or
-  `git2` directly. Local behaviour is unchanged: the Local arm is today's
-  code moved behind the API.
+  active workspace's machine instead of calling `std::fs` or `ignore`
+  directly. Local behaviour is unchanged: the Local arm is today's code
+  moved behind the API.
+- **Views ask about abilities, not machines.** `Fs::caps()` (or
+  `Caps::of(machine)` while it's offline) says whether changes are
+  watched (else poll, and don't canonicalize paths), whether removing goes
+  to a Trash (else ask first), whether file ids survive a rename, and
+  whether a call is cheap enough for the UI thread (`follow_dir` resolves a
+  Local root inline, a remote one on the executor). Checks about identity
+  stay: Local's setup, Finder, the terminal attach command, herdr's config.
 - **Roots.** The active worktree is a machine plus a path. A remote
   workspace's root is its focused pane's cwd on that machine, found the way
   Local's is.
@@ -20,8 +27,8 @@ and Changes tab as a local one, reading and writing that machine's disk.
   machine's git (`git check-ignore --stdin`) inside a repo.
 - **Search and Changes** run the machine's own tools: `git grep`/`git
   ls-files` in a repo, `grep -rIn`/`find` outside one, with the same caps as
-  local search; `git` porcelain and `git diff` parsed into the Changes
-  summary and patch. Same results shape as Local.
+  local search. Changes, branch and ahead/behind come from the same git
+  scripts on every machine, Local included (0015).
 - **Watching.** There is no remote file watcher. While a remote workspace is
   shown and the window is active, expanded folders, open files and the
   Changes summary are re-read on a short poll (a few seconds), and at once
