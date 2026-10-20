@@ -1,7 +1,8 @@
 //! The window's root view: the titlebar tab strip over the dock, which holds
 //! the main area in its center and the sidebar panels in its left dock. The
 //! main area shows the terminal area (the herdr tab), the editor (a file
-//! tab) or the worktree's diff (the Changes tab, after the files). Also routes cross-module actions to
+//! tab), the worktree's diff (the Changes tab, after the files) or a machine
+//! run (the Setup tab, last, while one is open). Also routes cross-module actions to
 //! the view that owns them (actions bubble up the focus path to here, not
 //! sideways).
 
@@ -27,7 +28,7 @@ use crate::chrome::Chrome;
 use crate::editor::{Editor, EditorEvent};
 use crate::overlay;
 use crate::sidebar::SidebarPanels;
-use crate::state::AppState;
+use crate::state::{AppEvent, AppState};
 use crate::terminal_area::TerminalArea;
 use crate::window_registry;
 
@@ -48,12 +49,14 @@ pub fn init(cx: &mut App) {
 }
 
 /// What the main area shows: the herdr terminal area, the editor's
-/// selected file, or the Changes tab.
+/// selected file, the Changes tab, or the Setup tab (a machine's sign-in,
+/// setup or add, drawn by the terminal area).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MainTab {
     Herdr,
     Files,
     Changes,
+    Setup,
 }
 
 /// Set when the active drag can leave the terminals on screen: its drop
@@ -91,6 +94,8 @@ pub struct Workspace {
     terminal_area: Entity<TerminalArea>,
     chrome: Entity<Chrome>,
     selected: MainTab,
+    /// The machine run the Setup tab was last opened for.
+    run_id: Option<u64>,
     /// Where the titlebar tabs were drawn last frame (script hooks).
     drawn_tabs: Rc<RefCell<DrawnTabs>>,
     focus: FocusHandle,
@@ -113,6 +118,20 @@ impl Workspace {
                     this.select(MainTab::Herdr, window, cx);
                 }
                 cx.notify();
+            }),
+            // A machine run opens the Setup tab; its end closes it.
+            cx.subscribe_in(&state, window, |this, state, event, window, cx| {
+                if let AppEvent::MachineRunChanged = event {
+                    let run_id = state.read(cx).machine_run().map(|run| run.id);
+                    let started = run_id.is_some() && run_id != this.run_id;
+                    this.run_id = run_id;
+                    if started {
+                        this.select(MainTab::Setup, window, cx);
+                    } else if run_id.is_none() && this.selected == MainTab::Setup {
+                        this.select(MainTab::Herdr, window, cx);
+                    }
+                    cx.notify();
+                }
             }),
         ];
         let this = cx.entity().downgrade();
@@ -138,6 +157,7 @@ impl Workspace {
             chrome: cx.new(|cx| Chrome::new(state.clone(), window, cx)),
             state,
             selected: MainTab::Herdr,
+            run_id: None,
             drawn_tabs: Rc::default(),
             focus,
             _subscriptions: subscriptions,
@@ -167,18 +187,20 @@ impl Workspace {
         let tab = match tab {
             MainTab::Files if self.editor.read(cx).active_index().is_none() => MainTab::Herdr,
             MainTab::Changes if self.changes.is_none() => MainTab::Herdr,
+            MainTab::Setup if self.state.read(cx).machine_run().is_none() => MainTab::Herdr,
             tab => tab,
         };
         let changed = self.selected != tab;
         self.selected = tab;
-        let herdr = tab == MainTab::Herdr;
+        let shown = matches!(tab, MainTab::Herdr | MainTab::Setup);
         self.terminal_area.update(cx, |area, cx| {
-            area.set_visible(herdr && !self.dragging, window, cx)
+            area.set_show_run(tab == MainTab::Setup, window, cx);
+            area.set_visible(shown && !self.dragging, window, cx);
         });
         self.main_panel.update(cx, |_, cx| cx.notify());
         if changed {
             match tab {
-                MainTab::Herdr => {}
+                MainTab::Herdr | MainTab::Setup => {}
                 MainTab::Files => self
                     .editor
                     .update(cx, |editor, cx| editor.focus_active(window, cx)),
@@ -199,9 +221,22 @@ impl Workspace {
             .map(|_| self.editor.read(cx).tabs(cx).len() + 1)
     }
 
+    /// The Setup tab's titlebar index, last, while a machine run is open.
+    fn setup_index(&self, cx: &App) -> Option<usize> {
+        self.state.read(cx).machine_run()?;
+        Some(
+            self.changes_index(cx)
+                .unwrap_or(self.editor.read(cx).tabs(cx).len())
+                + 1,
+        )
+    }
+
     /// Selects titlebar tab `index`: 0 is herdr, then the file tabs, then
-    /// Changes.
+    /// Changes, then Setup.
     pub fn select_index(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
+        if Some(index) == self.setup_index(cx) {
+            return self.select(MainTab::Setup, window, cx);
+        }
         if Some(index) == self.changes_index(cx) {
             return self.select(MainTab::Changes, window, cx);
         }
@@ -220,13 +255,15 @@ impl Workspace {
         match (self.selected, self.editor.read(cx).active_index()) {
             (MainTab::Files, Some(index)) => index + 1,
             (MainTab::Changes, _) => self.changes_index(cx).unwrap_or(0),
+            (MainTab::Setup, _) => self.setup_index(cx).unwrap_or(0),
             _ => 0,
         }
     }
 
     fn cycle(&mut self, step: isize, window: &mut Window, cx: &mut Context<Self>) {
         let count = self
-            .changes_index(cx)
+            .setup_index(cx)
+            .or_else(|| self.changes_index(cx))
             .unwrap_or(self.editor.read(cx).tabs(cx).len()) as isize
             + 1;
         let index = (self.selected_index(cx) as isize + step).rem_euclid(count) as usize;
@@ -336,7 +373,7 @@ impl Render for Workspace {
         let dragging = active && !keep;
         if dragging != self.dragging {
             self.dragging = dragging;
-            let visible = self.selected == MainTab::Herdr && !dragging;
+            let visible = matches!(self.selected, MainTab::Herdr | MainTab::Setup) && !dragging;
             let area = self.terminal_area.clone();
             window.defer(cx, move |window, cx| {
                 area.update(cx, |area, cx| area.set_visible(visible, window, cx));

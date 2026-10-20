@@ -1,6 +1,6 @@
 //! The main area: one tab strip (herdr's tabs for the focused space, then
-//! the open files, then Changes, then +) over the terminals, the editor or
-//! the diff.
+//! the open files, then Changes, then Setup, then +) over the terminals, the
+//! editor, the diff or a machine run.
 
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::{ActiveTheme as _, Icon, IconName, Sizable as _, h_flex, v_flex};
@@ -49,6 +49,7 @@ impl Workspace {
         let herdr = self.selected == MainTab::Herdr;
         let mut files = self.render_file_tabs(cx);
         files.extend(self.render_changes_tab(cx));
+        files.extend(self.render_setup_tab(cx));
         let drawn = self.drawn_tabs.clone();
         let strip = self
             .terminal_area
@@ -117,6 +118,24 @@ impl Workspace {
             .child("Changes");
         Some(self.render_tab(index, label, cx, |this, window, cx| {
             this.close_changes(window, cx)
+        }))
+    }
+
+    /// The Setup tab, while a machine run is open; closing it ends the run.
+    fn render_setup_tab(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let index = self.setup_index(cx)?;
+        let muted = cx.theme().muted_foreground;
+        let label = h_flex()
+            .gap_1()
+            .child(
+                Icon::new(assets::IconName::Server)
+                    .xsmall()
+                    .text_color(muted),
+            )
+            .child("Setup");
+        Some(self.render_tab(index, label, cx, |this, _, cx| {
+            this.state
+                .update(cx, |state, cx| state.finish_machine_run(cx));
         }))
     }
 

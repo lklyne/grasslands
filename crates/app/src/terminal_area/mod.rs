@@ -152,6 +152,9 @@ pub struct TerminalArea {
     /// False while the window shows something else in its place (a file
     /// tab); every native view is hidden then.
     visible: bool,
+    /// The Setup tab is selected: the machine run shows in place of herdr's
+    /// tab.
+    show_run: bool,
     /// The tab on screen at the last sync, to notice tab switches.
     shown_tab: Option<TabId>,
     /// A tab the user picked from the tab bar: its pane takes keyboard focus
@@ -224,6 +227,7 @@ impl TerminalArea {
             attached: HashSet::new(),
             right_clicks: RightClicks::default(),
             visible: true,
+            show_run: false,
             shown_tab: None,
             focus_on_show: None,
             tab_drag_tick: TabDragTick::default(),
@@ -237,17 +241,36 @@ impl TerminalArea {
         this
     }
 
-    /// Shows the command terminals that belong on screen: the setup fix's
-    /// on Local while no machine run covers it, a machine run's whenever
-    /// the area shows.
+    /// Shows the command terminals that belong on screen: a machine run's
+    /// while its Setup tab is selected, else the setup fix's on Local.
     fn sync_command_terminals(&mut self, cx: &mut Context<Self>) {
-        let run = self.state.read(cx).machine_run().is_some();
+        let run = self.run_shown(cx);
         let setup = self.visible && self.terminals.selected().is_local() && !run;
-        let visible = self.visible;
         self.setup_terminal
             .update(cx, |terminal, cx| terminal.set_visible(setup, cx));
         self.machine_terminal
-            .update(cx, |terminal, cx| terminal.set_visible(visible, cx));
+            .update(cx, |terminal, cx| terminal.set_visible(run, cx));
+    }
+
+    /// Whether the machine run is on screen in place of herdr's tab.
+    fn run_shown(&self, cx: &App) -> bool {
+        self.visible && self.show_run && self.state.read(cx).machine_run().is_some()
+    }
+
+    /// Shows the machine run (the Setup tab) or herdr's tab in the area.
+    pub fn set_show_run(&mut self, show: bool, window: &mut Window, cx: &mut Context<Self>) {
+        if self.show_run == show {
+            return;
+        }
+        self.show_run = show;
+        if !show
+            && self.visible
+            && let Some(pane_id) = self.target_pane(cx)
+        {
+            self.focus_terminal(&pane_id, window, cx);
+        }
+        self.sync_command_terminals(cx);
+        cx.notify();
     }
 
     fn start_pane_drag(
@@ -731,8 +754,9 @@ impl TerminalArea {
         Some(crate::setup::screen("machine-run", card, terminal, cx))
     }
 
-    /// Whatever covers the split tree: a machine run, Local's herdr setup,
-    /// or a remote machine's offline screen.
+    /// Whatever covers the split tree: the machine run while its Setup tab
+    /// is selected, Local's herdr setup, or a remote machine's offline
+    /// screen.
     fn render_cover(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         // The setup screen and its terminal are about Local's herdr.
         let local = self.state.read(cx).selected().is_local();
@@ -742,7 +766,9 @@ impl TerminalArea {
             .terminal()
             .filter(|_| self.visible && local)
             .map(|terminal| terminal.clone().into_any_element());
-        self.render_machine_run(cx)
+        self.show_run
+            .then(|| self.render_machine_run(cx))
+            .flatten()
             .or_else(|| {
                 if local {
                     let state = self.state.read(cx);
