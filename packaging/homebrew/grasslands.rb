@@ -4,8 +4,8 @@
 # version and sha256 track the latest release; the tap holds the live copy
 # (see README.md next to this file).
 cask "grasslands" do
-  version "0.1.3"
-  sha256 "b3afd45f2e9539db7a46d76d16446b90d0a6f385fb7b7a83f915a3bdd5ccb9b8"
+  version "0.1.4"
+  sha256 "2f947e1e24a4ce092c0171c69f761db9b5bad25c3cd6a984355fed6f05a7e73b"
 
   url "https://github.com/lklyne/grasslands/releases/download/v#{version}/grasslands-#{version}-arm64.zip"
   name "grasslands"
