@@ -351,6 +351,25 @@ fn typing_a_query_should_show_name_and_content_matches(cx: &mut TestAppContext) 
     );
 }
 
+/// More matches than fit keep their row height and scroll, rather than
+/// squeezing into the panel.
+#[gpui::test]
+fn many_results_should_keep_their_row_height(cx: &mut TestAppContext) {
+    let f = fixture(cx, "search-many");
+    for ix in 0..60 {
+        std::fs::write(f.dir.join(format!("needle{ix}.txt")), "needle\n").unwrap();
+    }
+    f.with_window(cx, |files, window, cx| {
+        files.query.update(cx, |query, cx| query.focus(window, cx))
+    });
+    cx.simulate_input(f.window, "needle");
+    cx.executor().advance_clock(super::SEARCH_DEBOUNCE);
+    cx.run_until_parked();
+    let mut cx = gpui_kit::VisualTestContext::from_window(f.window, cx);
+    let row = cx.debug_bounds("files-name-hit-0").expect("a name hit row");
+    assert_eq!(row.size.height, super::ROW_HEIGHT);
+}
+
 // A tree action acts on the machine and root it was chosen on, never on
 // whatever the tree shows when it runs.
 

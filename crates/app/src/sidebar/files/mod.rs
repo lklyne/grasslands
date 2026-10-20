@@ -1261,6 +1261,7 @@ fn render_results(results: &search::Results, machine: &MachineId, cx: &App) -> A
     };
     let label = |text: &str| {
         div()
+            .flex_shrink_0()
             .px_2()
             .pt_2()
             .pb_0p5()
@@ -1271,6 +1272,7 @@ fn render_results(results: &search::Results, machine: &MachineId, cx: &App) -> A
     let row = |id: ElementId, depth: f32| {
         h_flex()
             .id(id)
+            .flex_shrink_0()
             .h(ROW_HEIGHT)
             .pl(px(6.) + INDENT * depth)
             .pr_2()
@@ -1297,11 +1299,13 @@ fn render_results(results: &search::Results, machine: &MachineId, cx: &App) -> A
     for (ix, hit) in results.names.iter().enumerate() {
         let path = hit.path.clone();
         let machine = machine.clone();
+        let selector = format!("files-name-hit-{ix}");
         list = list.child(
             row(
                 ElementId::NamedInteger("files-name-hit".into(), ix as u64),
                 0.,
             )
+            .debug_selector(move || selector)
             .child(Icon::new(IconName::File).small().text_color(muted))
             .child(div().overflow_hidden().text_ellipsis().child(
                 StyledText::new(hit.relative.clone()).with_highlights([(hit.range.clone(), mark)]),
