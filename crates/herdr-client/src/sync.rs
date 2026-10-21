@@ -10,6 +10,10 @@
 //! names every known pane and is reopened whenever the pane set changes. The new
 //! subscription is acknowledged before the old one closes and before the next
 //! read, so no change can fall between them.
+//!
+//! Some changes come with no event at all (in 0.9.5, `pane.rename` and a pane's
+//! cwd), so while idle the thread also checks `session.snapshot` every
+//! [`RESYNC_INTERVAL`] and re-reads when it moved.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::{BufRead, BufReader};
@@ -27,7 +31,7 @@ use crate::events;
 use crate::protocol::method::EventsSubscribe;
 use crate::protocol::{Method as _, Subscribe};
 use crate::state::State;
-use crate::types::{LayoutDescription, PaneId, TabId};
+use crate::types::{LayoutDescription, PaneId, SessionSnapshot, TabId};
 
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
 /// Bursts of events (a split emits several) are folded into one re-read.
@@ -37,6 +41,8 @@ const READ_ATTEMPTS: usize = 4;
 const LAYOUT_WORKERS: usize = 8;
 const BACKOFF_MIN: Duration = Duration::from_millis(100);
 const BACKOFF_MAX: Duration = Duration::from_secs(5);
+/// How long the thread waits for an event before checking the snapshot itself.
+const RESYNC_INTERVAL: Duration = Duration::from_secs(2);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ConnectionStatus {
@@ -85,6 +91,7 @@ impl SessionSync {
             endpoint,
             client: client.clone(),
             state: Arc::new(State::default()),
+            seen: None,
             status: ConnectionStatus::Connecting,
             inbox: inbox.clone(),
             inbox_rx,
@@ -163,6 +170,8 @@ struct Engine {
     client: Client,
     /// The last published cache.
     state: Arc<State>,
+    /// The last snapshot read, without scroll (see [`unscrolled`]).
+    seen: Option<SessionSnapshot>,
     status: ConnectionStatus,
     inbox: mpsc::Sender<Msg>,
     inbox_rx: mpsc::Receiver<Msg>,
@@ -203,12 +212,16 @@ impl Engine {
         }
         self.set_status(ConnectionStatus::Connected);
         loop {
-            let Ok(msg) = self.inbox_rx.recv() else {
-                return Stop::Shutdown;
-            };
-            let mut dirty = match self.handle(msg) {
-                Ok(dirty) => dirty,
-                Err(stop) => return stop,
+            let mut dirty = match self.inbox_rx.recv_timeout(RESYNC_INTERVAL) {
+                Ok(msg) => match self.handle(msg) {
+                    Ok(dirty) => dirty,
+                    Err(stop) => return stop,
+                },
+                Err(RecvTimeoutError::Timeout) => match self.snapshot_moved() {
+                    Ok(moved) => moved,
+                    Err(err) => return Stop::Lost(err),
+                },
+                Err(RecvTimeoutError::Disconnected) => return Stop::Shutdown,
             };
             loop {
                 match self.inbox_rx.recv_timeout(COALESCE_WINDOW) {
@@ -326,11 +339,19 @@ impl Engine {
         Ok(())
     }
 
-    fn read_state(&self) -> Result<State> {
+    fn read_state(&mut self) -> Result<State> {
         let snapshot = self.client.session_snapshot()?;
         let tab_ids: Vec<&TabId> = snapshot.tabs.iter().map(|tab| &tab.tab_id).collect();
         let layouts = export_layouts(&self.client, &tab_ids)?;
+        self.seen = Some(unscrolled(snapshot.clone()));
         Ok(State::build(0, snapshot, &layouts))
+    }
+
+    /// Whether `session.snapshot` differs from the last read, for changes
+    /// herdr sends no event for.
+    fn snapshot_moved(&self) -> Result<bool> {
+        let snapshot = unscrolled(self.client.session_snapshot()?);
+        Ok(self.seen.as_ref() != Some(&snapshot))
     }
 
     fn publish(&mut self, mut state: State) {
@@ -371,6 +392,15 @@ impl Engine {
             }
         }
     }
+}
+
+/// `snapshot` without pane scroll positions, which move with every line of
+/// output and come with no event; nothing in the app reads them.
+fn unscrolled(mut snapshot: SessionSnapshot) -> SessionSnapshot {
+    for pane in &mut snapshot.panes {
+        pane.scroll = None;
+    }
+    snapshot
 }
 
 /// Exports every tab's layout, up to [`LAYOUT_WORKERS`] at a time. Tabs that
