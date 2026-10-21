@@ -293,6 +293,8 @@ mod platform {
             y: f64,
             modifiers: c_int,
         );
+        fn gpui_ghostty_surface_mouse_captured(surface: *mut RawSurface) -> bool;
+        fn gpui_ghostty_surface_toggle_mouse_reporting(surface: *mut RawSurface);
     }
 
     pub struct NativeSurface {
@@ -520,6 +522,18 @@ mod platform {
             // SAFETY: Values cross the adapter ABI by value.
             unsafe { gpui_ghostty_surface_mouse_scroll(self.raw.as_ptr(), x, y, scroll_flags) }
         }
+
+        /// Whether the program has asked for mouse reports.
+        pub fn mouse_captured(&mut self) -> bool {
+            // SAFETY: The surface is live for the duration of the call.
+            unsafe { gpui_ghostty_surface_mouse_captured(self.raw.as_ptr()) }
+        }
+
+        /// Flips Ghostty's `mouse-reporting` setting for this surface.
+        pub fn toggle_mouse_reporting(&mut self) {
+            // SAFETY: The surface is live for the duration of the call.
+            unsafe { gpui_ghostty_surface_toggle_mouse_reporting(self.raw.as_ptr()) }
+        }
     }
 
     impl Drop for NativeSurface {
@@ -649,6 +663,10 @@ impl NativeSurface {
     ) {
     }
     pub fn mouse_scroll(&mut self, _x: f64, _y: f64, _precision: bool) {}
+    pub fn mouse_captured(&mut self) -> bool {
+        false
+    }
+    pub fn toggle_mouse_reporting(&mut self) {}
     pub(crate) fn take_clipboard_read(&mut self) -> Option<ClipboardRead> {
         None
     }

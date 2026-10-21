@@ -102,6 +102,8 @@ unsafe extern "C" {
         y: f64,
         modifiers: c_int,
     );
+    fn gpui_ghostty_surface_linux_mouse_captured(surface: *mut RawSurface) -> bool;
+    fn gpui_ghostty_surface_linux_toggle_mouse_reporting(surface: *mut RawSurface);
 }
 
 pub struct NativeSurface {
@@ -327,6 +329,14 @@ impl NativeSurface {
         unsafe {
             gpui_ghostty_surface_linux_mouse_scroll(self.raw.as_ptr(), x, y, i32::from(precision))
         }
+    }
+
+    pub fn mouse_captured(&mut self) -> bool {
+        unsafe { gpui_ghostty_surface_linux_mouse_captured(self.raw.as_ptr()) }
+    }
+
+    pub fn toggle_mouse_reporting(&mut self) {
+        unsafe { gpui_ghostty_surface_linux_toggle_mouse_reporting(self.raw.as_ptr()) }
     }
 
     pub(crate) fn take_clipboard_read(&mut self) -> Option<ClipboardRead> {

@@ -25,6 +25,12 @@ Vendored from crates.io and applied through `[patch.crates-io]`. See
 - `send_key` drops control-character text (GPUI sends "\n" for enter), as
   Ghostty's macOS app does. Otherwise shift was marked consumed and
   shift-enter reached the program as a plain enter.
+- Left-drag policy for programs that have the mouse (herdr's attach always
+  does): a plain drag or double-click turns Ghostty's `mouse-reporting` off
+  for the gesture and selects; a plain click and an option-drag (option
+  stripped) go to the program; shift and cmd keep Ghostty's handling. The
+  shims add `mouse_captured` and `toggle_mouse_reporting` (a binding action).
+  See `docs/decisions/0010-single-window-terminals.md`.
 
 `vendor/ghostty` is untouched, so the cached native Ghostty build is shared
 with the unpatched crate.

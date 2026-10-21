@@ -505,6 +505,17 @@ void gpui_ghostty_surface_mouse_button(
     }
 }
 
+bool gpui_ghostty_surface_mouse_captured(gpui_ghostty_surface *state) {
+    return state != NULL && state->surface != NULL && ghostty_surface_mouse_captured(state->surface);
+}
+
+void gpui_ghostty_surface_toggle_mouse_reporting(gpui_ghostty_surface *state) {
+    static const char action[] = "toggle_mouse_reporting";
+    if (state != NULL && state->surface != NULL) {
+        ghostty_surface_binding_action(state->surface, action, sizeof(action) - 1);
+    }
+}
+
 void gpui_ghostty_surface_mouse_scroll(
     gpui_ghostty_surface *state,
     double x,

@@ -30,8 +30,27 @@ macro_rules! bind_gpui {
                 tick_task: Option<Task<()>>,
                 visible: bool,
                 window_focused: bool,
+                left_drag: LeftDrag,
                 _subscriptions: Vec<Subscription>,
             }
+
+            /// A left-button gesture over a program that has the mouse (herdr's
+            /// attach always does). Plain drags and double-clicks select text in
+            /// Ghostty, plain clicks and option-drags go to the program, and
+            /// shift-drags and cmd-clicks keep Ghostty's own handling.
+            #[derive(Clone, Copy)]
+            enum LeftDrag {
+                Idle,
+                /// Pressed but not yet moved: a click or the start of a drag.
+                Pending(gpui::Point<Pixels>),
+                /// Selecting in Ghostty, with mouse reporting switched off.
+                Selecting,
+                /// An option-drag reported to the program without the option.
+                PassThrough,
+            }
+
+            /// How far a press moves before it counts as a drag.
+            const DRAG_THRESHOLD: f32 = 3.0;
 
             impl Terminal {
                 /// Spawns the configured command and attaches its native surface to `window`.
@@ -75,6 +94,7 @@ macro_rules! bind_gpui {
                             tick_task: None,
                             visible: true,
                             window_focused: false,
+                            left_drag: LeftDrag::Idle,
                             _subscriptions: subscriptions,
                         };
                         terminal.sync_focus(window);
@@ -262,6 +282,9 @@ macro_rules! bind_gpui {
                 ) {
                     self.focus.focus(window, cx);
                     self.sync_focus(window);
+                    if event.button == gpui::MouseButton::Left && self.left_down(event) {
+                        return;
+                    }
                     self.mouse_position(event.position, event.modifiers);
                     self.surface.mouse_button(
                         MouseState::Press,
@@ -270,7 +293,100 @@ macro_rules! bind_gpui {
                     );
                 }
 
+                /// Starts a left gesture under the drag policy; false leaves the
+                /// press to Ghostty as is.
+                fn left_down(&mut self, event: &MouseDownEvent) -> bool {
+                    self.end_left_drag();
+                    let m = event.modifiers;
+                    if m.shift || m.control || m.platform || !self.surface.mouse_captured() {
+                        return false;
+                    }
+                    let plain = gpui::Modifiers::default();
+                    if m.alt {
+                        self.left_drag = LeftDrag::PassThrough;
+                        self.mouse_position(event.position, plain);
+                        self.press(MouseState::Press);
+                    } else if event.click_count >= 2 {
+                        // The first click went to the program, which reset Ghostty's
+                        // click count, so a double-click replays one to select a word.
+                        self.start_selecting(event.position);
+                        if event.click_count == 2 {
+                            self.press(MouseState::Release);
+                            self.press(MouseState::Press);
+                        }
+                    } else {
+                        self.left_drag = LeftDrag::Pending(event.position);
+                        self.mouse_position(event.position, plain);
+                    }
+                    true
+                }
+
+                fn start_selecting(&mut self, position: gpui::Point<Pixels>) {
+                    self.surface.toggle_mouse_reporting();
+                    self.left_drag = LeftDrag::Selecting;
+                    self.mouse_position(position, gpui::Modifiers::default());
+                    self.press(MouseState::Press);
+                }
+
+                /// Releases a selection or option-drag the up event didn't reach,
+                /// turning mouse reporting back on.
+                fn end_left_drag(&mut self) {
+                    match std::mem::replace(&mut self.left_drag, LeftDrag::Idle) {
+                        LeftDrag::Selecting => {
+                            self.press(MouseState::Release);
+                            self.surface.toggle_mouse_reporting();
+                        }
+                        LeftDrag::PassThrough => self.press(MouseState::Release),
+                        LeftDrag::Idle | LeftDrag::Pending(_) => {}
+                    }
+                }
+
+                fn press(&mut self, state: MouseState) {
+                    self.surface.mouse_button(state, MouseButton::Left, Modifiers::empty());
+                }
+
+                fn mouse_move(&mut self, event: &MouseMoveEvent) {
+                    let held = event.pressed_button == Some(gpui::MouseButton::Left);
+                    match self.left_drag {
+                        LeftDrag::Pending(origin) if held => {
+                            let moved = (event.position - origin).magnitude();
+                            if moved >= f64::from(DRAG_THRESHOLD) {
+                                self.start_selecting(origin);
+                            }
+                        }
+                        LeftDrag::Pending(_) => self.left_drag = LeftDrag::Idle,
+                        LeftDrag::Selecting | LeftDrag::PassThrough if !held => {
+                            self.end_left_drag()
+                        }
+                        LeftDrag::Selecting | LeftDrag::PassThrough => {
+                            self.mouse_position(event.position, gpui::Modifiers::default());
+                            return;
+                        }
+                        LeftDrag::Idle => {}
+                    }
+                    self.mouse_position(event.position, event.modifiers);
+                }
+
                 fn mouse_up(&mut self, event: &MouseUpEvent) {
+                    if event.button == gpui::MouseButton::Left {
+                        match self.left_drag {
+                            LeftDrag::Idle => {}
+                            LeftDrag::Pending(_) => {
+                                // A click: the program gets it, and Ghostty clears any
+                                // selection as it reports it.
+                                self.left_drag = LeftDrag::Idle;
+                                self.mouse_position(event.position, gpui::Modifiers::default());
+                                self.press(MouseState::Press);
+                                self.press(MouseState::Release);
+                                return;
+                            }
+                            LeftDrag::Selecting | LeftDrag::PassThrough => {
+                                self.mouse_position(event.position, gpui::Modifiers::default());
+                                self.end_left_drag();
+                                return;
+                            }
+                        }
+                    }
                     self.mouse_position(event.position, event.modifiers);
                     self.surface.mouse_button(
                         MouseState::Release,
@@ -331,8 +447,15 @@ macro_rules! bind_gpui {
                         .on_key_down(cx.listener(|terminal, event, _, _| terminal.key_down(event)))
                         .on_key_up(cx.listener(|terminal, event, _, _| terminal.key_up(event)))
                         .on_mouse_move(cx.listener(|terminal, event: &MouseMoveEvent, _, _| {
-                            terminal.mouse_position(event.position, event.modifiers);
-                        }));
+                            terminal.mouse_move(event);
+                        }))
+                        .on_mouse_up_out(
+                            gpui::MouseButton::Left,
+                            cx.listener(|terminal, event: &MouseUpEvent, _, _| {
+                                terminal.mouse_position(event.position, gpui::Modifiers::default());
+                                terminal.end_left_drag();
+                            }),
+                        );
                     for button in [
                         gpui::MouseButton::Left,
                         gpui::MouseButton::Middle,
