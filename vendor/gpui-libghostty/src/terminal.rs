@@ -284,7 +284,12 @@ impl NativeSurface {
             }
             return;
         };
-        let text = text.and_then(|text| CString::new(text).ok());
+        // GPUI gives enter, tab and the like control-character text ("\n").
+        // Like Ghostty's macOS app, leave those to Ghostty's encoder so their
+        // modifiers aren't marked consumed: shift-enter must stay shift-enter.
+        let text = text
+            .filter(|text| !text.chars().all(char::is_control))
+            .and_then(|text| CString::new(text).ok());
         let (active_modifiers, consumed_modifiers) =
             key_modifiers(modifiers, key.implied_shift, text.is_some());
         let _ = self.key(

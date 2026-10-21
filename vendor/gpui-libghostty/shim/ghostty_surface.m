@@ -108,6 +108,21 @@ static void runtime_wakeup(void *userdata) {
     state->wakeup(state->wakeup_userdata);
 }
 
+// A clicked link (cmd-click, or an OSC 8 hyperlink): open it in its default
+// app. Text without a scheme is a file path, as Ghostty's macOS app treats it.
+static bool open_url(ghostty_action_open_url_s open) {
+    if (open.url == NULL || open.len == 0) return false;
+    NSString *text = [[NSString alloc] initWithBytes:open.url
+                                              length:open.len
+                                            encoding:NSUTF8StringEncoding];
+    if (text == nil) return false;
+    NSURL *url = [NSURL URLWithString:text];
+    if (url == nil || url.scheme == nil) {
+        url = [NSURL fileURLWithPath:[text stringByExpandingTildeInPath]];
+    }
+    return [[NSWorkspace sharedWorkspace] openURL:url];
+}
+
 static bool runtime_action(ghostty_app_t app, ghostty_target_s target, ghostty_action_s action) {
     (void)app;
     if (action.tag == GHOSTTY_ACTION_RENDER &&
@@ -115,6 +130,9 @@ static bool runtime_action(ghostty_app_t app, ghostty_target_s target, ghostty_a
         target.target.surface != NULL) {
         ghostty_surface_draw(target.target.surface);
         return true;
+    }
+    if (action.tag == GHOSTTY_ACTION_OPEN_URL) {
+        return open_url(action.action.open_url);
     }
     return false;
 }

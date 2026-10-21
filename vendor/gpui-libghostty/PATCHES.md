@@ -19,5 +19,12 @@ Vendored from crates.io and applied through `[patch.crates-io]`. See
   `contentsScale`, so a terminal moved to a display with a different scale
   isn't composited at the old scale (tiny or oversized text).
 
+- The macOS shim handles `GHOSTTY_ACTION_OPEN_URL`, opening clicked links
+  (cmd-click, OSC 8) with `NSWorkspace`. Upstream drops every action but
+  render, so links did nothing.
+- `send_key` drops control-character text (GPUI sends "\n" for enter), as
+  Ghostty's macOS app does. Otherwise shift was marked consumed and
+  shift-enter reached the program as a plain enter.
+
 `vendor/ghostty` is untouched, so the cached native Ghostty build is shared
 with the unpatched crate.
