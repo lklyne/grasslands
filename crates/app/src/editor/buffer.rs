@@ -46,7 +46,7 @@ pub struct Page {
     /// The tab shows the page, not the source.
     pub shown: bool,
     /// What a local page may read: its worktree, or only its own file.
-    access: PathBuf,
+    pub access: PathBuf,
 }
 
 impl Page {
@@ -182,7 +182,6 @@ impl Buffer {
             view.load_html(text);
         }
     }
-
 
     pub fn new_state(path: &Path, window: &mut Window, cx: &mut App) -> Entity<EditorState> {
         let language = language::for_path(path);

@@ -12,8 +12,8 @@ use objc2::{MainThreadMarker, MainThreadOnly, define_class, msg_send};
 use objc2_app_kit::{NSView, NSWorkspace};
 use objc2_foundation::{NSPoint, NSRect, NSSize, NSString, NSURL};
 use objc2_web_kit::{
-    WKNavigationAction, WKNavigationActionPolicy, WKNavigationDelegate, WKWebView,
-    WKWebViewConfiguration,
+    WKNavigationAction, WKNavigationActionPolicy, WKNavigationDelegate, WKNavigationType,
+    WKWebView, WKWebViewConfiguration,
 };
 
 /// URL schemes a page may navigate to in place: its own file, and what
@@ -35,11 +35,11 @@ define_class!(
         #[unsafe(method(webView:decidePolicyForNavigationAction:decisionHandler:))]
         fn decide_policy(
             &self,
-            _web_view: &WKWebView,
+            web_view: &WKWebView,
             action: &WKNavigationAction,
             decision: &DynBlock<dyn Fn(WKNavigationActionPolicy)>,
         ) {
-            decision.call((policy_for(action),));
+            decision.call((policy_for(web_view, action),));
         }
     }
 );
@@ -52,25 +52,43 @@ impl Navigation {
     }
 }
 
-/// Allows navigation inside frames and to in-place schemes; opens anything
-/// else that would replace the page, or open a new window, in the default
-/// browser instead.
-fn policy_for(action: &WKNavigationAction) -> WKNavigationActionPolicy {
+/// Allows navigation inside frames and to in-place schemes. A clicked link
+/// elsewhere opens in the default browser; any other navigation away (a
+/// redirect, a script) is dropped, so a page can't launch apps on its own.
+/// An in-place link that asks for a new window loads in the page instead,
+/// as there is no second window to put it in.
+fn policy_for(web_view: &WKWebView, action: &WKNavigationAction) -> WKNavigationActionPolicy {
     // SAFETY: main thread, inside WebKit's delegate callback.
-    let (url, frame) = unsafe { (action.request().URL(), action.targetFrame()) };
-    // SAFETY: as above.
-    let subframe = frame.is_some_and(|frame| unsafe { !frame.isMainFrame() });
-    let Some(url) = url else {
+    let (request, frame, kind) = unsafe {
+        (
+            action.request(),
+            action.targetFrame(),
+            action.navigationType(),
+        )
+    };
+    let Some(url) = request.URL() else {
         return WKNavigationActionPolicy::Allow;
     };
     let in_place = url
         .scheme()
         .is_some_and(|scheme| IN_PLACE.contains(&scheme.to_string().to_lowercase().as_str()));
-    if subframe || in_place {
-        return WKNavigationActionPolicy::Allow;
+    match frame {
+        // SAFETY: as above.
+        Some(frame) if in_place || unsafe { !frame.isMainFrame() } => {
+            return WKNavigationActionPolicy::Allow;
+        }
+        None if in_place => {
+            // SAFETY: as above; `request` is WebKit's own.
+            unsafe { web_view.loadRequest(&request) };
+            return WKNavigationActionPolicy::Cancel;
+        }
+        _ => {}
     }
-    if !NSWorkspace::sharedWorkspace().openURL(&url) {
-        tracing::warn!("web: no app opened {}", url.absoluteString().unwrap_or_default());
+    if kind == WKNavigationType::LinkActivated && !NSWorkspace::sharedWorkspace().openURL(&url) {
+        tracing::warn!(
+            "web: no app opened {}",
+            url.absoluteString().unwrap_or_default()
+        );
     }
     WKNavigationActionPolicy::Cancel
 }
@@ -90,8 +108,6 @@ impl WebView {
     pub fn new(window: &Window) -> Option<Self> {
         let parent = crate::overlay::gpui_view(window)?;
         let mtm = MainThreadMarker::new()?;
-        // SAFETY: main thread; a fresh configuration and a zero frame are
-        // valid arguments.
         let navigation = Navigation::new(mtm);
         // SAFETY: main thread; a fresh configuration and a zero frame are
         // valid arguments, and `navigation` outlives the view (both are ours).
@@ -128,7 +144,10 @@ impl WebView {
     /// on another machine.
     pub fn load_html(&self, html: &str) {
         // SAFETY: main thread.
-        unsafe { self.view.loadHTMLString_baseURL(&NSString::from_str(html), None) };
+        unsafe {
+            self.view
+                .loadHTMLString_baseURL(&NSString::from_str(html), None)
+        };
     }
 
     /// Places the view at `bounds`, in GPUI's window coordinates.
@@ -136,10 +155,7 @@ impl WebView {
         // AppKit's y axis points up, from the bottom of the parent.
         let parent_height = self.parent.bounds().size.height;
         let (x, y) = (f64::from(bounds.origin.x), f64::from(bounds.origin.y));
-        let (width, height) = (
-            f64::from(bounds.size.width),
-            f64::from(bounds.size.height),
-        );
+        let (width, height) = (f64::from(bounds.size.width), f64::from(bounds.size.height));
         let frame = NSRect::new(
             NSPoint::new(x, parent_height - y - height),
             NSSize::new(width, height),

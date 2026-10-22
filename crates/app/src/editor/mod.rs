@@ -319,10 +319,8 @@ impl Editor {
         for (key, group) in &mut self.groups {
             let active = group.active;
             for (index, buffer) in group.buffers.iter_mut().enumerate() {
-                let show = shown
-                    && key == visible
-                    && index == active
-                    && buffer.shown_page().is_some();
+                let show =
+                    shown && key == visible && index == active && buffer.shown_page().is_some();
                 if show {
                     buffer.make_page_view(window);
                 }
@@ -830,10 +828,13 @@ impl Editor {
             }
             buffer.path = new;
             buffer.refresh_file_id();
-            // A rename can make the file HTML or stop it being HTML.
+            // A rename can make the file HTML or stop it being HTML, and a
+            // move changes what the page may read.
             let html = buffer.is_file() && language::for_path(&buffer.path) == "html";
-            if html != buffer.page.is_some() {
-                buffer.page = html.then(|| Page::new(Self::page_access(key, &buffer.path)));
+            let access = Self::page_access(key, &buffer.path);
+            match &mut buffer.page {
+                Some(page) if html => page.access = access,
+                _ => buffer.page = html.then(|| Page::new(access)),
             }
             buffer.load_page();
         }
