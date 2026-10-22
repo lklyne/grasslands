@@ -46,6 +46,16 @@ pub struct OpenFileAt {
     pub machine: crate::state::MachineId,
 }
 
+/// Open a pane's scrollback as a read-only editor tab. Sent by the pane
+/// menu and the palette.
+#[derive(Clone, Debug, PartialEq, Action)]
+#[action(namespace = app, no_json)]
+pub struct OpenScrollback {
+    /// The machine `pane_id` is on (herdr ids are per machine).
+    pub machine: crate::state::MachineId,
+    pub pane_id: PaneId,
+}
+
 /// Focus a herdr pane: the app sends `pane.focus` and herdr's `pane.focused`
 /// event moves the focus ring. Sent by the agent list and the palette;
 /// selects `machine` first.

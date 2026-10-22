@@ -352,6 +352,47 @@ impl Client {
         self.send::<method::PaneGet>(&pane_target(pane_id))
     }
 
+    /// All of a pane's text, oldest scrollback line first. `pane.read` stops
+    /// at 1000 lines, so this reads the whole range through
+    /// `pane.selection.read`, falling back to `pane.read` when herdr can't.
+    pub fn pane_scrollback(&self, pane_id: &PaneId) -> Result<String> {
+        let rows = self
+            .pane_get(pane_id)?
+            .scroll
+            .map(|s| s.max_offset_from_bottom + s.viewport_rows)
+            .unwrap_or_default();
+        let width = self
+            .send::<method::PaneLayoutGet>(&pane_target(pane_id))?
+            .panes
+            .into_iter()
+            .find(|p| &p.pane_id == pane_id)
+            .map(|p| p.rect.width)
+            .unwrap_or_default();
+        if let (Ok(last_row), Some(last_col)) = (u32::try_from(rows), width.checked_sub(1))
+            && let Some(last_row) = last_row.checked_sub(1)
+        {
+            let selection = self.send::<method::PaneSelectionRead>(&PaneSelectionReadParams {
+                pane_id: pane_id.clone(),
+                anchor: PaneTextPoint { row: 0, col: 0 },
+                cursor: PaneTextPoint {
+                    row: last_row,
+                    col: last_col,
+                },
+            });
+            match selection {
+                Ok(text) => return Ok(text.text),
+                Err(err) if err.code() == Some("selection_unavailable") => {}
+                Err(err) => return Err(err),
+            }
+        }
+        self.send::<method::PaneRead>(&PaneReadParams {
+            pane_id: pane_id.clone(),
+            source: ReadSource::RecentUnwrapped,
+            lines: Some(1000),
+        })
+        .map(|read| read.text)
+    }
+
     pub fn pane_list(&self, workspace_id: Option<&WorkspaceId>) -> Result<Vec<PaneInfo>> {
         self.send::<method::PaneList>(&InWorkspace {
             workspace_id: workspace_id.cloned(),

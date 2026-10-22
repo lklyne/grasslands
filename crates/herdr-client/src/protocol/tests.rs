@@ -278,6 +278,12 @@ fn params_should_match_the_schema() {
         source: ReadSource::Recent,
         lines: Some(40),
     });
+    check_params::<method::PaneSelectionRead>(PaneSelectionReadParams {
+        pane_id: pane(),
+        anchor: PaneTextPoint { row: 0, col: 0 },
+        cursor: PaneTextPoint { row: 9, col: 79 },
+    });
+    check_params::<method::PaneLayoutGet>(PaneTarget { pane_id: pane() });
 
     check_params::<method::TabCreate>(NewTab {
         workspace_id: Some(workspace()),
@@ -407,6 +413,8 @@ fn outputs_should_decode_from_schema_shaped_answers() {
     check_output::<method::PaneSendInput>();
     check_output::<method::PaneReportAgent>();
     check_output::<method::PaneRead>();
+    check_output::<method::PaneSelectionRead>();
+    check_output::<method::PaneLayoutGet>();
     check_output::<method::TabCreate>();
     check_output::<method::TabList>();
     check_output::<method::TabGet>();

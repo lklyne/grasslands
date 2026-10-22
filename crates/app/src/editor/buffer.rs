@@ -10,6 +10,7 @@ use gpui_kit::*;
 use super::language;
 use super::poll::Stamp;
 use crate::fs::Caps;
+use crate::herdr::PaneId;
 use crate::state::MachineId;
 
 /// A question shown above the editor until the user answers it.
@@ -59,6 +60,9 @@ pub struct Buffer {
     /// save starting or finishing, a reload, a deletion), so a poll that
     /// read the disk before then can tell its result is stale.
     generation: u64,
+    /// Set for a herdr pane's scrollback (`scrollback.rs`): read-only, not a
+    /// file, so it's never saved, watched or polled. `path` only names it.
+    pub scrollback: Option<PaneId>,
     _changes: Subscription,
 }
 
@@ -92,6 +96,7 @@ impl Buffer {
             prompt: None,
             stamp,
             generation: 0,
+            scrollback: None,
             _changes: changes,
         }
     }
@@ -99,6 +104,11 @@ impl Buffer {
     /// What the file's machine can do.
     pub fn caps(&self) -> Caps {
         Caps::of(&self.machine)
+    }
+
+    /// Whether the buffer is a file on disk the watcher follows.
+    pub fn is_watched(&self) -> bool {
+        self.scrollback.is_none() && self.caps().watch
     }
 
     pub fn is(&self, machine: &MachineId, path: &Path) -> bool {

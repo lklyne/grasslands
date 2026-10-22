@@ -149,6 +149,7 @@ fn context_menu_opens_with_pane_actions(cx: &mut TestAppContext) {
             "Split Down",
             "Toggle Zoom",
             "Rename Pane…",
+            "Open Scrollback",
             "Close Pane"
         ]
     );

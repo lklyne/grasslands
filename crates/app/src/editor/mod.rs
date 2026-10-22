@@ -11,6 +11,7 @@
 mod buffer;
 mod language;
 mod poll;
+mod scrollback;
 mod titles;
 mod watcher;
 
@@ -32,6 +33,7 @@ use self::buffer::{Buffer, DiskChange, Prompt};
 use self::poll::{Check, Stamp};
 use self::watcher::FileWatcher;
 use crate::fs::{Caps, Fs};
+use crate::herdr::PaneId;
 use crate::state::{AppEvent, AppState, MachineId};
 
 actions!(editor, [Save, CloseTab]);
@@ -425,6 +427,85 @@ impl Editor {
         .detach();
     }
 
+    /// Opens `pane_id`'s scrollback (on `machine`) as a read-only tab with
+    /// the cursor at the end, or re-reads and shows the one already open.
+    pub fn open_scrollback(
+        &mut self,
+        machine: &MachineId,
+        pane_id: &PaneId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let state = self.state.read(cx);
+        let name = state
+            .machine(machine, cx)
+            .and_then(|session| {
+                let snapshot = session.snapshot();
+                let pane = snapshot.pane(pane_id)?;
+                Some(crate::label::pane(snapshot, pane).into_owned())
+            })
+            .unwrap_or_else(|| pane_id.to_string());
+        // The pane id keeps two panes with one name apart; titles show it
+        // only then.
+        let path = PathBuf::from(pane_id.as_str()).join(format!("{name} scrollback"));
+        let pane = pane_id.clone();
+        let read = state.call(machine, cx, move |client| client.pane_scrollback(&pane));
+        let (machine, pane_id, group) = (machine.clone(), pane_id.clone(), self.visible.clone());
+        cx.spawn_in(window, async move |this, cx| {
+            let read = read.await;
+            let _ = this.update_in(cx, |this, window, cx| match read {
+                Ok(text) => {
+                    this.show_scrollback(group, (machine, path), pane_id, text, window, cx)
+                }
+                Err(error) => {
+                    notify_error(format!("Cannot read {name}'s scrollback: {error}"), window, cx)
+                }
+            });
+        })
+        .detach();
+    }
+
+    fn show_scrollback(
+        &mut self,
+        group: GroupKey,
+        (machine, path): FileKey,
+        pane_id: PaneId,
+        text: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let end = u32::try_from(text.lines().count().saturating_sub(1)).unwrap_or(u32::MAX);
+        let open = self.groups.get_mut(&group).and_then(|group| {
+            group
+                .buffers
+                .iter_mut()
+                .enumerate()
+                .find(|(_, b)| b.machine == machine && b.scrollback.as_ref() == Some(&pane_id))
+        });
+        if let Some((index, buffer)) = open {
+            buffer.path = path;
+            buffer.take(text, window, cx);
+            if group == self.visible {
+                self.activate(index, window, cx);
+                self.go_to_line(Some(end), window, cx);
+            }
+            return;
+        }
+        let state = Buffer::new_state(&path, window, cx);
+        state.update(cx, |state, cx| {
+            state.set_readonly(true, cx);
+            state.lsp_mut().definition_provider = Some(std::rc::Rc::new(scrollback::UrlLinks));
+        });
+        let changes = cx.subscribe(&state, |this, state, event: &InputEvent, cx| {
+            if matches!(event, InputEvent::Change) {
+                this.on_buffer_edited(&state, cx);
+            }
+        });
+        let mut buffer = Buffer::new((machine, path), (text, None), state, changes, window, cx);
+        buffer.scrollback = Some(pane_id);
+        self.push_buffer(group, buffer, Some(end), window, cx);
+    }
+
     /// Adds a tab to `group`, and selects it if that group is still shown.
     fn add_buffer(
         &mut self,
@@ -442,7 +523,18 @@ impl Editor {
             }
         });
         let buffer = Buffer::new((machine, path), file, state, changes, window, cx);
-        if buffer.caps().watch
+        self.push_buffer(group, buffer, line, window, cx);
+    }
+
+    fn push_buffer(
+        &mut self,
+        group: GroupKey,
+        buffer: Buffer,
+        line: Option<u32>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if buffer.is_watched()
             && let Some(watcher) = &mut self.watcher
         {
             watcher.add(&buffer.path);
@@ -544,7 +636,7 @@ impl Editor {
         let mut jobs: Vec<PollJob> = Vec::new();
         for buffer in self.groups.values().flat_map(|group| &group.buffers) {
             let machine = &buffer.machine;
-            if buffer.caps().watch {
+            if buffer.caps().watch || buffer.scrollback.is_some() {
                 continue;
             }
             let fs = self.state.read(cx).fs_for(machine, cx);
@@ -623,7 +715,7 @@ impl Editor {
             } else {
                 to.join(rest)
             };
-            if buffer.caps().watch
+            if buffer.is_watched()
                 && let Some(watcher) = watcher
             {
                 watcher.remove(&buffer.path);
@@ -650,7 +742,7 @@ impl Editor {
                     buffer.mark_deleted();
                     return true;
                 }
-                if buffer.caps().watch
+                if buffer.is_watched()
                     && let Some(watcher) = watcher
                 {
                     watcher.remove(&buffer.path);
@@ -666,7 +758,9 @@ impl Editor {
     }
 
     fn save(&mut self, _: &Save, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(buffer) = self.group().and_then(Group::active) {
+        if let Some(buffer) = self.group().and_then(Group::active)
+            && buffer.scrollback.is_none()
+        {
             let state = buffer.state.clone();
             self.start_save(state, false, window, cx);
         }
@@ -813,7 +907,7 @@ impl Editor {
     }
 
     fn unwatch(&mut self, buffer: &Buffer) {
-        if buffer.caps().watch
+        if buffer.is_watched()
             && let Some(watcher) = &mut self.watcher
         {
             watcher.remove(&buffer.path);

@@ -27,6 +27,7 @@ use gpui_kit::component::notification::Notification;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
+use crate::actions::OpenScrollback;
 use crate::attention::{StatusChange, find_agent};
 use crate::herdr::{
     AgentStatus, PaneId, PluginActionContext, PluginActionInfo, PluginInvocationContext, Snapshot,
@@ -609,6 +610,13 @@ impl Chrome {
                         },
                     ),
                     MenuEntry::item("Rename Pane…", MenuCommand::Rename(target.clone())),
+                    MenuEntry::item(
+                        "Open Scrollback",
+                        MenuCommand::Action(Rc::new(OpenScrollback {
+                            machine: on(),
+                            pane_id: id(),
+                        })),
+                    ),
                     MenuEntry::Separator,
                     MenuEntry::herdr(
                         "Close Pane",

@@ -22,6 +22,7 @@ use self::titlebar::DrawnTabs;
 pub use self::titlebar::window_options;
 use crate::actions::{
     CommandPalette, FocusPane, OpenChanges, OpenContextMenu, OpenFile, OpenFileAt,
+    OpenScrollback,
 };
 use crate::changes::Changes;
 use crate::chrome::Chrome;
@@ -283,6 +284,18 @@ impl Workspace {
         });
     }
 
+    fn open_scrollback(
+        &mut self,
+        action: &OpenScrollback,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        crate::sounds::play(cues::Cue::Open, crate::sounds::subtle());
+        self.editor.update(cx, |editor, cx| {
+            editor.open_scrollback(&action.machine, &action.pane_id, window, cx)
+        });
+    }
+
     /// Opens the Changes tab, or re-reads it if open, and shows it.
     fn open_changes(&mut self, _: &OpenChanges, window: &mut Window, cx: &mut Context<Self>) {
         crate::sounds::play(cues::Cue::Open, crate::sounds::subtle());
@@ -386,6 +399,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::open_file))
             .on_action(cx.listener(Self::open_file_at))
             .on_action(cx.listener(Self::open_changes))
+            .on_action(cx.listener(Self::open_scrollback))
             .on_action(cx.listener(Self::focus_pane))
             .on_action(cx.listener(Self::command_palette))
             .on_action(cx.listener(Self::open_context_menu))
