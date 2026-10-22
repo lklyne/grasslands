@@ -104,6 +104,8 @@ unsafe extern "C" {
     );
     fn gpui_ghostty_surface_linux_mouse_captured(surface: *mut RawSurface) -> bool;
     fn gpui_ghostty_surface_linux_toggle_mouse_reporting(surface: *mut RawSurface);
+    fn gpui_ghostty_surface_linux_selection_text(surface: *mut RawSurface) -> *mut c_char;
+    fn gpui_ghostty_surface_linux_free_string(value: *mut c_char);
 }
 
 pub struct NativeSurface {
@@ -337,6 +339,18 @@ impl NativeSurface {
 
     pub fn toggle_mouse_reporting(&mut self) {
         unsafe { gpui_ghostty_surface_linux_toggle_mouse_reporting(self.raw.as_ptr()) }
+    }
+
+    pub fn selection_text(&mut self) -> Option<String> {
+        unsafe {
+            let raw = gpui_ghostty_surface_linux_selection_text(self.raw.as_ptr());
+            if raw.is_null() {
+                return None;
+            }
+            let text = std::ffi::CStr::from_ptr(raw).to_string_lossy().into_owned();
+            gpui_ghostty_surface_linux_free_string(raw);
+            Some(text)
+        }
     }
 
     pub(crate) fn take_clipboard_read(&mut self) -> Option<ClipboardRead> {

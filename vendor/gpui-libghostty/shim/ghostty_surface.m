@@ -509,6 +509,23 @@ bool gpui_ghostty_surface_mouse_captured(gpui_ghostty_surface *state) {
     return state != NULL && state->surface != NULL && ghostty_surface_mouse_captured(state->surface);
 }
 
+char *gpui_ghostty_surface_selection_text(gpui_ghostty_surface *state) {
+    if (state == NULL || state->surface == NULL) return NULL;
+    ghostty_text_s text = {0};
+    if (!ghostty_surface_read_selection(state->surface, &text)) return NULL;
+    char *copy = malloc(text.text_len + 1);
+    if (copy != NULL) {
+        memcpy(copy, text.text, text.text_len);
+        copy[text.text_len] = '\0';
+    }
+    ghostty_surface_free_text(state->surface, &text);
+    return copy;
+}
+
+void gpui_ghostty_surface_free_string(char *value) {
+    free(value);
+}
+
 void gpui_ghostty_surface_toggle_mouse_reporting(gpui_ghostty_surface *state) {
     static const char action[] = "toggle_mouse_reporting";
     if (state != NULL && state->surface != NULL) {

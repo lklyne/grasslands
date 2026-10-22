@@ -29,7 +29,8 @@ Vendored from crates.io and applied through `[patch.crates-io]`. See
   does): a plain drag or double-click turns Ghostty's `mouse-reporting` off
   for the gesture and selects; a plain click and an option-drag (option
   stripped) go to the program; shift and cmd keep Ghostty's handling. The
-  shims add `mouse_captured` and `toggle_mouse_reporting` (a binding action).
+  shims add `mouse_captured`, `toggle_mouse_reporting` (a binding action)
+  and `selection_text` (for the live `selection` scenario).
   See `docs/decisions/0010-single-window-terminals.md`.
 
 `vendor/ghostty` is untouched, so the cached native Ghostty build is shared

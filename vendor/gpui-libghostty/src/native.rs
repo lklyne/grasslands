@@ -295,6 +295,8 @@ mod platform {
         );
         fn gpui_ghostty_surface_mouse_captured(surface: *mut RawSurface) -> bool;
         fn gpui_ghostty_surface_toggle_mouse_reporting(surface: *mut RawSurface);
+        fn gpui_ghostty_surface_selection_text(surface: *mut RawSurface) -> *mut c_char;
+        fn gpui_ghostty_surface_free_string(value: *mut c_char);
     }
 
     pub struct NativeSurface {
@@ -534,6 +536,21 @@ mod platform {
             // SAFETY: The surface is live for the duration of the call.
             unsafe { gpui_ghostty_surface_toggle_mouse_reporting(self.raw.as_ptr()) }
         }
+
+        /// The selected text, if there is a selection.
+        pub fn selection_text(&mut self) -> Option<String> {
+            // SAFETY: The shim returns a NUL-terminated copy it allocated, or
+            // null; the copy is freed through the shim once read.
+            unsafe {
+                let raw = gpui_ghostty_surface_selection_text(self.raw.as_ptr());
+                if raw.is_null() {
+                    return None;
+                }
+                let text = CStr::from_ptr(raw).to_string_lossy().into_owned();
+                gpui_ghostty_surface_free_string(raw);
+                Some(text)
+            }
+        }
     }
 
     impl Drop for NativeSurface {
@@ -667,6 +684,9 @@ impl NativeSurface {
         false
     }
     pub fn toggle_mouse_reporting(&mut self) {}
+    pub fn selection_text(&mut self) -> Option<String> {
+        None
+    }
     pub(crate) fn take_clipboard_read(&mut self) -> Option<ClipboardRead> {
         None
     }

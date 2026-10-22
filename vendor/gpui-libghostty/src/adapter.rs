@@ -134,6 +134,11 @@ macro_rules! bind_gpui {
                     self.surface.set_hidden_rendering(rendered);
                 }
 
+                /// The text selected in Ghostty, if any.
+                pub fn selection_text(&mut self) -> Option<String> {
+                    self.surface.selection_text()
+                }
+
                 /// Inserts `text` the way a paste does, so programs with bracketed
                 /// paste on see it as one paste rather than typed keys.
                 pub fn paste_text(&mut self, text: &str) {

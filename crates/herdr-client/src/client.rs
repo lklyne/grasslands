@@ -361,29 +361,21 @@ impl Client {
             .scroll
             .map(|s| s.max_offset_from_bottom + s.viewport_rows)
             .unwrap_or_default();
-        let width = self
-            .send::<method::PaneLayoutGet>(&pane_target(pane_id))?
-            .panes
-            .into_iter()
-            .find(|p| &p.pane_id == pane_id)
-            .map(|p| p.rect.width)
-            .unwrap_or_default();
-        if let (Ok(last_row), Some(last_col)) = (u32::try_from(rows), width.checked_sub(1))
-            && let Some(last_row) = last_row.checked_sub(1)
+        if let Some(last_row) = u32::try_from(rows).ok().and_then(|r| r.checked_sub(1))
+            && let Some(last_col) = self.pane_last_col(pane_id)?
         {
-            let selection = self.send::<method::PaneSelectionRead>(&PaneSelectionReadParams {
-                pane_id: pane_id.clone(),
-                anchor: PaneTextPoint { row: 0, col: 0 },
-                cursor: PaneTextPoint {
+            let selection = self.pane_selection(
+                pane_id,
+                PaneTextPoint { row: 0, col: 0 },
+                PaneTextPoint {
                     row: last_row,
                     col: last_col,
                 },
-            });
-            match selection {
-                Ok(text) => return Ok(text.text),
-                Err(err) if err.code() == Some("selection_unavailable") => {}
-                Err(err) => return Err(err),
+            )?;
+            if let Some(text) = selection {
+                return Ok(text);
             }
+            log::warn!("pane {pane_id}: no selection over {rows} rows; reading the last 1000 lines");
         }
         self.send::<method::PaneRead>(&PaneReadParams {
             pane_id: pane_id.clone(),
@@ -391,6 +383,63 @@ impl Client {
             lines: Some(1000),
         })
         .map(|read| read.text)
+    }
+
+    /// The pane's last column. `pane.layout` gives herdr's own layout, which
+    /// an attach client can have resized the terminal away from, so when its
+    /// width doesn't fit, this finds the widest column a one-row selection
+    /// accepts.
+    fn pane_last_col(&self, pane_id: &PaneId) -> Result<Option<u16>> {
+        let width = self
+            .send::<method::PaneLayoutGet>(&pane_target(pane_id))?
+            .panes
+            .into_iter()
+            .find(|p| &p.pane_id == pane_id)
+            .map_or(u16::MAX, |p| p.rect.width);
+        let fits = |col: u16| -> Result<bool> {
+            let start = PaneTextPoint { row: 0, col: 0 };
+            let end = PaneTextPoint { row: 0, col };
+            Ok(self.pane_selection(pane_id, start, end)?.is_some())
+        };
+        let Some(guess) = width.checked_sub(1) else {
+            return Ok(None);
+        };
+        if fits(guess)? {
+            return Ok(Some(guess));
+        }
+        if !fits(0)? {
+            return Ok(None);
+        }
+        // Column 0 fits and `guess` doesn't: the last fitting one is between.
+        let (mut fit, mut over) = (0, guess);
+        while over - fit > 1 {
+            let mid = fit + (over - fit) / 2;
+            if fits(mid)? {
+                fit = mid;
+            } else {
+                over = mid;
+            }
+        }
+        Ok(Some(fit))
+    }
+
+    /// The text between two cells; `None` when herdr has no selection there
+    /// (`selection_unavailable`: a cell outside the pane).
+    fn pane_selection(
+        &self,
+        pane_id: &PaneId,
+        anchor: PaneTextPoint,
+        cursor: PaneTextPoint,
+    ) -> Result<Option<String>> {
+        match self.send::<method::PaneSelectionRead>(&PaneSelectionReadParams {
+            pane_id: pane_id.clone(),
+            anchor,
+            cursor,
+        }) {
+            Ok(text) => Ok(Some(text.text)),
+            Err(err) if err.code() == Some("selection_unavailable") => Ok(None),
+            Err(err) => Err(err),
+        }
     }
 
     pub fn pane_list(&self, workspace_id: Option<&WorkspaceId>) -> Result<Vec<PaneInfo>> {
