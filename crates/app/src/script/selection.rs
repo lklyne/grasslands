@@ -1,7 +1,8 @@
 //! `RT_SCRIPT=selection`: selecting text in a herdr pane, whose attach has
 //! the mouse. A plain drag selects in Ghostty, a click clears it, a
-//! double-click selects a word, and Open Scrollback shows the pane's whole
-//! scrollback, past `pane.read`'s 1000 lines.
+//! double-click selects a word, Open Scrollback shows the pane's whole
+//! scrollback, past `pane.read`'s 1000 lines, and cmd-click opens links
+//! (with `GPUI_GHOSTTY_OPEN_URL_LOG` set, which records them instead).
 //!
 //! ```sh
 //! RT_SCRIPT=selection scripts/dev-run cargo run -p app
@@ -21,6 +22,8 @@ use crate::herdr::SplitTree;
 use crate::terminal_area::hooks::Hooks;
 
 const LAST_LINE: &str = "https://example.com/selection";
+const OSC8_URL: &str = "https://example.com/osc8";
+const PLAIN_URL: &str = "https://example.com/plain";
 
 impl Run {
     pub(super) async fn selection(&mut self, cx: &mut Cx) -> anyhow::Result<()> {
@@ -200,7 +203,8 @@ impl Run {
             &format!("opening it again reuses the tab ({tabs})"),
         );
 
-        // Clean up: the tab, then the script's workspace.
+        // Close the tab, which shows the terminals again, then links last:
+        // that check clears the pane.
         self.workspace(cx, |ws, window, cx| {
             ws.editor().update(cx, |editor, cx| {
                 if let Some(index) = editor.active_index() {
@@ -208,6 +212,13 @@ impl Run {
                 }
             })
         })?;
+        Self::settle(cx).await;
+        let columns = cx
+            .update(|_, cx| terminal.update(cx, |terminal, _| terminal.columns()))
+            .unwrap_or(0);
+        self.links(cx, &pane, columns, slot).await;
+
+        // Clean up: the script's workspace.
         let task = self.read(cx, |area, cx| {
             area.state()
                 .read(cx)
@@ -218,5 +229,94 @@ impl Run {
         let closed = task.await;
         self.check(closed.is_ok(), "closed the script workspace");
         Ok(())
+    }
+}
+
+impl Run {
+    /// Cmd-click on a labeled (OSC 8) link and on a bare URL. Needs
+    /// `GPUI_GHOSTTY_OPEN_URL_LOG`, where the shim records links instead of
+    /// opening them.
+    async fn links(
+        &mut self,
+        cx: &mut Cx,
+        pane: &crate::herdr::PaneId,
+        columns: u16,
+        slot: Bounds<Pixels>,
+    ) {
+        let Some(log) = std::env::var_os("GPUI_GHOSTTY_OPEN_URL_LOG").map(PathBuf::from) else {
+            eprintln!("skip links: GPUI_GHOSTTY_OPEN_URL_LOG isn't set");
+            return;
+        };
+        std::fs::remove_file(&log).ok();
+        // The scrollback tab has the keyboard; give it back to the pane.
+        cx.update(|window, cx| {
+            self.area.update(cx, |area, cx| {
+                let machine = area.hooks().machine(cx);
+                area.focus_pane(&machine, pane, window, cx);
+            });
+        })
+        .ok();
+        Self::settle(cx).await;
+        self.type_text(
+            cx,
+            &format!(
+                "clear; printf '\\e]8;;{OSC8_URL}\\e\\\\LABELED\\e]8;;\\e\\\\ {PLAIN_URL}\\n'\n"
+            ),
+        );
+        let mut printed = false;
+        for _ in 0..40 {
+            Self::sleep(cx, 150).await;
+            if self.read_pane_text(cx, pane).await.contains("LABELED") {
+                printed = true;
+                break;
+            }
+        }
+        self.check(printed, "the pane printed the links");
+        Self::sleep(cx, 1000).await;
+        let cell = slot.size.width / f32::from(columns.max(1));
+        // Row 0 after `clear`; the view pads 4px across and 2px down.
+        let at_col = |col: f32| slot.origin + point(px(4.) + cell * (col + 0.5), px(10.));
+        for (col, url) in [(3., OSC8_URL), (14., PLAIN_URL)] {
+            let at = at_col(col);
+            let cmd = Modifiers {
+                platform: true,
+                ..Modifiers::default()
+            };
+            self.mouse(
+                cx,
+                PlatformInput::MouseMove(MouseMoveEvent {
+                    position: at,
+                    pressed_button: None,
+                    modifiers: cmd,
+                }),
+            );
+            Self::settle(cx).await;
+            self.mouse(
+                cx,
+                PlatformInput::MouseDown(MouseDownEvent {
+                    button: MouseButton::Left,
+                    position: at,
+                    modifiers: cmd,
+                    click_count: 1,
+                    first_mouse: false,
+                }),
+            );
+            Self::settle(cx).await;
+            self.mouse(
+                cx,
+                PlatformInput::MouseUp(MouseUpEvent {
+                    button: MouseButton::Left,
+                    position: at,
+                    modifiers: cmd,
+                    click_count: 1,
+                }),
+            );
+            Self::sleep(cx, 300).await;
+            let opened = std::fs::read_to_string(&log).unwrap_or_default();
+            self.check(
+                opened.lines().any(|line| line == url),
+                &format!("cmd-click opens {url} (opened: {opened:?})"),
+            );
+        }
     }
 }

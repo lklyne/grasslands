@@ -112,6 +112,16 @@ static void runtime_wakeup(void *userdata) {
 // app. Text without a scheme is a file path, as Ghostty's macOS app treats it.
 static bool open_url(ghostty_action_open_url_s open) {
     if (open.url == NULL || open.len == 0) return false;
+    // Tests set GPUI_GHOSTTY_OPEN_URL_LOG to record links instead of opening them.
+    const char *log_path = getenv("GPUI_GHOSTTY_OPEN_URL_LOG");
+    if (log_path != NULL) {
+        FILE *log = fopen(log_path, "a");
+        if (log == NULL) return false;
+        fwrite(open.url, 1, open.len, log);
+        fputc('\n', log);
+        fclose(log);
+        return true;
+    }
     NSString *text = [[NSString alloc] initWithBytes:open.url
                                               length:open.len
                                             encoding:NSUTF8StringEncoding];

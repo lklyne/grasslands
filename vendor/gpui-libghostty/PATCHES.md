@@ -35,6 +35,8 @@ Vendored from crates.io and applied through `[patch.crates-io]`. See
 - Cmd adds shift to pointer events while the program has the mouse: Ghostty
   only looks for links under the pointer then with shift held, so cmd-hover
   and cmd-click on links (OSC 8 included) did nothing in herdr panes.
+- The macOS shim's `open_url` writes the link to `$GPUI_GHOSTTY_OPEN_URL_LOG`
+  instead of opening it when that's set, for the live `selection` scenario.
 - `Terminal::columns()`: the grid width, so the app can read a pane's whole
   scrollback from herdr at the width its attach set.
   See `docs/decisions/0010-single-window-terminals.md`.
