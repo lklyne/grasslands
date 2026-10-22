@@ -306,10 +306,9 @@ macro_rules! bind_gpui {
                     if m.shift || m.control || m.platform || !self.surface.mouse_captured() {
                         return false;
                     }
-                    let plain = gpui::Modifiers::default();
                     if m.alt {
                         self.left_drag = LeftDrag::PassThrough;
-                        self.mouse_position(event.position, plain);
+                        self.move_plain(event.position);
                         self.press(MouseState::Press);
                     } else if event.click_count >= 2 {
                         // The first click went to the program, which reset Ghostty's
@@ -321,7 +320,7 @@ macro_rules! bind_gpui {
                         }
                     } else {
                         self.left_drag = LeftDrag::Pending(event.position);
-                        self.mouse_position(event.position, plain);
+                        self.move_plain(event.position);
                     }
                     true
                 }
@@ -329,8 +328,21 @@ macro_rules! bind_gpui {
                 fn start_selecting(&mut self, position: gpui::Point<Pixels>) {
                     self.surface.toggle_mouse_reporting();
                     self.left_drag = LeftDrag::Selecting;
-                    self.mouse_position(position, gpui::Modifiers::default());
+                    self.move_plain(position);
                     self.press(MouseState::Press);
+                }
+
+                /// Moves the pointer with no modifiers, as gestures under the drag
+                /// policy report it.
+                fn move_plain(&mut self, position: gpui::Point<Pixels>) {
+                    self.mouse_position(position, gpui::Modifiers::default());
+                }
+
+                /// Ends a selection or option-drag with the button released at
+                /// `position`.
+                fn finish_left_drag(&mut self, position: gpui::Point<Pixels>) {
+                    self.move_plain(position);
+                    self.end_left_drag();
                 }
 
                 /// Releases a selection or option-drag the up event didn't reach,
@@ -364,7 +376,7 @@ macro_rules! bind_gpui {
                             self.end_left_drag()
                         }
                         LeftDrag::Selecting | LeftDrag::PassThrough => {
-                            self.mouse_position(event.position, gpui::Modifiers::default());
+                            self.move_plain(event.position);
                             return;
                         }
                         LeftDrag::Idle => {}
@@ -380,14 +392,13 @@ macro_rules! bind_gpui {
                                 // A click: the program gets it, and Ghostty clears any
                                 // selection as it reports it.
                                 self.left_drag = LeftDrag::Idle;
-                                self.mouse_position(event.position, gpui::Modifiers::default());
+                                self.move_plain(event.position);
                                 self.press(MouseState::Press);
                                 self.press(MouseState::Release);
                                 return;
                             }
                             LeftDrag::Selecting | LeftDrag::PassThrough => {
-                                self.mouse_position(event.position, gpui::Modifiers::default());
-                                self.end_left_drag();
+                                self.finish_left_drag(event.position);
                                 return;
                             }
                         }
@@ -457,8 +468,7 @@ macro_rules! bind_gpui {
                         .on_mouse_up_out(
                             gpui::MouseButton::Left,
                             cx.listener(|terminal, event: &MouseUpEvent, _, _| {
-                                terminal.mouse_position(event.position, gpui::Modifiers::default());
-                                terminal.end_left_drag();
+                                terminal.finish_left_drag(event.position)
                             }),
                         );
                     for button in [

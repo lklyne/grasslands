@@ -106,9 +106,14 @@ impl Buffer {
         Caps::of(&self.machine)
     }
 
+    /// Whether the buffer is a file, not a pane's scrollback.
+    pub fn is_file(&self) -> bool {
+        self.scrollback.is_none()
+    }
+
     /// Whether the buffer is a file on disk the watcher follows.
     pub fn is_watched(&self) -> bool {
-        self.scrollback.is_none() && self.caps().watch
+        self.is_file() && self.caps().watch
     }
 
     pub fn is(&self, machine: &MachineId, path: &Path) -> bool {

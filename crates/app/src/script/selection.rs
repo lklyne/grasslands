@@ -84,7 +84,9 @@ impl Run {
             }
         }
         self.check(printed, "the pane printed 1500 rows");
-        Self::sleep(cx, 300).await;
+        // herdr's text is ahead of the app's frames; a drag while they're
+        // still arriving can land on a redraw.
+        Self::sleep(cx, 1000).await;
 
         let terminal = self
             .read(cx, |area, cx| {

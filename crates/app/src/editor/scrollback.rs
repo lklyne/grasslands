@@ -28,7 +28,7 @@ fn link_at(text: &Rope, offset: usize) -> Option<lsp_types::LocationLink> {
     let row = text.offset_to_point(offset).row;
     let start = text.line_start_offset(row);
     let line = text.slice_line(row).to_string();
-    let range = url_at(&line, offset.checked_sub(start)?)?;
+    let range = url_at(&line, offset - start)?;
     let target_uri = lsp_types::Uri::from_str(&line[range.clone()]).ok()?;
     Some(lsp_types::LocationLink {
         origin_selection_range: Some(lsp_types::Range::new(
@@ -59,14 +59,15 @@ fn url_len(url: &str) -> usize {
         .find(|c: char| c.is_whitespace() || matches!(c, '<' | '>' | '"' | '\'' | '`'))
         .unwrap_or(url.len());
     while let Some(last) = url[..end].chars().next_back() {
-        let unopened = match last {
-            ')' => url[..end].matches('(').count() < url[..end].matches(')').count(),
-            ']' => url[..end].matches('[').count() < url[..end].matches(']').count(),
-            '}' => url[..end].matches('{').count() < url[..end].matches('}').count(),
-            '.' | ',' | ';' | ':' | '!' | '?' => true,
-            _ => false,
+        let open = match last {
+            ')' => '(',
+            ']' => '[',
+            '}' => '{',
+            '.' | ',' | ';' | ':' | '!' | '?' => last,
+            _ => break,
         };
-        if !unopened {
+        let url = &url[..end];
+        if open != last && url.matches(open).count() >= url.matches(last).count() {
             break;
         }
         end -= last.len_utf8();

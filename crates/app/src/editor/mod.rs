@@ -390,7 +390,7 @@ impl Editor {
             match fs.read_to_string(&key.1) {
                 Ok(text) => {
                     let group = self.visible.clone();
-                    self.add_buffer(group, key, (text, None), line, window, cx);
+                    self.add_buffer(group, key, (text, None), line, None, window, cx);
                 }
                 Err(error) => {
                     let message = cannot_open(self, &error, cx);
@@ -415,7 +415,7 @@ impl Editor {
             let _ = this.update_in(cx, |this, window, cx| {
                 this.opening.remove(&key);
                 match read {
-                    Ok(file) => this.add_buffer(group, key, file, line, window, cx),
+                    Ok(file) => this.add_buffer(group, key, file, line, None, window, cx),
                     Err(error) => {
                         let message =
                             format!("Cannot open {}: {error}", this.describe(&key.0, &key.1, cx));
@@ -448,8 +448,10 @@ impl Editor {
         // The pane id keeps two panes with one name apart; titles show it
         // only then.
         let path = PathBuf::from(pane_id.as_str()).join(format!("{name} scrollback"));
-        let pane = pane_id.clone();
-        let read = state.call(machine, cx, move |client| client.pane_scrollback(&pane));
+        let read = {
+            let pane_id = pane_id.clone();
+            state.call(machine, cx, move |client| client.pane_scrollback(&pane_id))
+        };
         let (machine, pane_id, group) = (machine.clone(), pane_id.clone(), self.visible.clone());
         cx.spawn_in(window, async move |this, cx| {
             let read = read.await;
@@ -485,65 +487,61 @@ impl Editor {
         if let Some((index, buffer)) = open {
             buffer.path = path;
             buffer.take(text, window, cx);
-            if group == self.visible {
-                self.activate(index, window, cx);
-                self.go_to_line(Some(end), window, cx);
-            }
+            self.reveal(group, index, Some(end), window, cx);
             return;
         }
-        let state = Buffer::new_state(&path, window, cx);
-        state.update(cx, |state, cx| {
-            state.set_readonly(true, cx);
-            state.lsp_mut().definition_provider = Some(std::rc::Rc::new(scrollback::UrlLinks));
-        });
-        let changes = cx.subscribe(&state, |this, state, event: &InputEvent, cx| {
-            if matches!(event, InputEvent::Change) {
-                this.on_buffer_edited(&state, cx);
-            }
-        });
-        let mut buffer = Buffer::new((machine, path), (text, None), state, changes, window, cx);
-        buffer.scrollback = Some(pane_id);
-        self.push_buffer(group, buffer, Some(end), window, cx);
+        let file = (text, None);
+        self.add_buffer(group, (machine, path), file, Some(end), Some(pane_id), window, cx);
     }
 
     /// Adds a tab to `group`, and selects it if that group is still shown.
+    /// With `scrollback` it's that pane's read-only scrollback, not a file.
+    #[expect(clippy::too_many_arguments, reason = "GPUI's window and cx come last")]
     fn add_buffer(
         &mut self,
         group: GroupKey,
         (machine, path): FileKey,
         file: (String, Option<Stamp>),
         line: Option<u32>,
+        scrollback: Option<PaneId>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         let state = Buffer::new_state(&path, window, cx);
+        if scrollback.is_some() {
+            state.update(cx, |state, cx| {
+                state.set_readonly(true, cx);
+                state.lsp_mut().definition_provider = Some(std::rc::Rc::new(scrollback::UrlLinks));
+            });
+        }
         let changes = cx.subscribe(&state, |this, state, event: &InputEvent, cx| {
             if matches!(event, InputEvent::Change) {
                 this.on_buffer_edited(&state, cx);
             }
         });
-        let buffer = Buffer::new((machine, path), file, state, changes, window, cx);
-        self.push_buffer(group, buffer, line, window, cx);
-    }
-
-    fn push_buffer(
-        &mut self,
-        group: GroupKey,
-        buffer: Buffer,
-        line: Option<u32>,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
+        let mut buffer = Buffer::new((machine, path), file, state, changes, window, cx);
+        buffer.scrollback = scrollback;
         if buffer.is_watched()
             && let Some(watcher) = &mut self.watcher
         {
             watcher.add(&buffer.path);
         }
-        let visible = group == self.visible;
-        let buffers = &mut self.groups.entry(group).or_default().buffers;
+        let buffers = &mut self.groups.entry(group.clone()).or_default().buffers;
         buffers.push(buffer);
         let index = buffers.len() - 1;
-        if visible {
+        self.reveal(group, index, line, window, cx);
+    }
+
+    /// Selects tab `index` of `group` at `line` if that group is shown.
+    fn reveal(
+        &mut self,
+        group: GroupKey,
+        index: usize,
+        line: Option<u32>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if group == self.visible {
             self.activate(index, window, cx);
             self.go_to_line(line, window, cx);
         } else {
@@ -636,7 +634,7 @@ impl Editor {
         let mut jobs: Vec<PollJob> = Vec::new();
         for buffer in self.groups.values().flat_map(|group| &group.buffers) {
             let machine = &buffer.machine;
-            if buffer.caps().watch || buffer.scrollback.is_some() {
+            if buffer.caps().watch || !buffer.is_file() {
                 continue;
             }
             let fs = self.state.read(cx).fs_for(machine, cx);
@@ -759,7 +757,7 @@ impl Editor {
 
     fn save(&mut self, _: &Save, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(buffer) = self.group().and_then(Group::active)
-            && buffer.scrollback.is_none()
+            && buffer.is_file()
         {
             let state = buffer.state.clone();
             self.start_save(state, false, window, cx);

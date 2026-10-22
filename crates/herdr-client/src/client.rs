@@ -361,18 +361,25 @@ impl Client {
             .scroll
             .map(|s| s.max_offset_from_bottom + s.viewport_rows)
             .unwrap_or_default();
+        let width = self
+            .send::<method::PaneLayoutGet>(&pane_target(pane_id))?
+            .panes
+            .into_iter()
+            .find(|p| &p.pane_id == pane_id)
+            .map(|p| p.rect.width);
         if let Some(last_row) = u32::try_from(rows).ok().and_then(|r| r.checked_sub(1))
-            && let Some(last_col) = self.pane_last_col(pane_id)?
+            && let Some(guess) = width.and_then(|w| w.checked_sub(1))
         {
-            let selection = self.pane_selection(
-                pane_id,
-                PaneTextPoint { row: 0, col: 0 },
-                PaneTextPoint {
-                    row: last_row,
-                    col: last_col,
-                },
-            )?;
-            if let Some(text) = selection {
+            let read = |col| {
+                let end = PaneTextPoint { row: last_row, col };
+                self.pane_selection(pane_id, PaneTextPoint { row: 0, col: 0 }, end)
+            };
+            if let Some(text) = read(guess)? {
+                return Ok(text);
+            }
+            if let Some(col) = self.pane_last_col(pane_id, guess)?
+                && let Some(text) = read(col)?
+            {
                 return Ok(text);
             }
             log::warn!("pane {pane_id}: no selection over {rows} rows; reading the last 1000 lines");
@@ -385,42 +392,25 @@ impl Client {
         .map(|read| read.text)
     }
 
-    /// The pane's last column. `pane.layout` gives herdr's own layout, which
-    /// an attach client can have resized the terminal away from, so when its
-    /// width doesn't fit, this finds the widest column a one-row selection
-    /// accepts.
-    fn pane_last_col(&self, pane_id: &PaneId) -> Result<Option<u16>> {
-        let width = self
-            .send::<method::PaneLayoutGet>(&pane_target(pane_id))?
-            .panes
-            .into_iter()
-            .find(|p| &p.pane_id == pane_id)
-            .map_or(u16::MAX, |p| p.rect.width);
-        let fits = |col: u16| -> Result<bool> {
-            let start = PaneTextPoint { row: 0, col: 0 };
+    /// The pane's last column, below `over`. `pane.layout` gives herdr's own
+    /// layout, which an attach client can have resized the terminal away
+    /// from, so this finds the widest column a one-row selection accepts.
+    fn pane_last_col(&self, pane_id: &PaneId, mut over: u16) -> Result<Option<u16>> {
+        let fits = |col| {
             let end = PaneTextPoint { row: 0, col };
-            Ok(self.pane_selection(pane_id, start, end)?.is_some())
+            Ok::<_, Error>(self.pane_selection(pane_id, PaneTextPoint { row: 0, col: 0 }, end)?.is_some())
         };
-        let Some(guess) = width.checked_sub(1) else {
-            return Ok(None);
-        };
-        if fits(guess)? {
-            return Ok(Some(guess));
-        }
-        if !fits(0)? {
-            return Ok(None);
-        }
-        // Column 0 fits and `guess` doesn't: the last fitting one is between.
-        let (mut fit, mut over) = (0, guess);
-        while over - fit > 1 {
-            let mid = fit + (over - fit) / 2;
+        let (mut low, mut fit) = (0, None);
+        while low < over {
+            let mid = low + (over - low) / 2;
             if fits(mid)? {
-                fit = mid;
+                fit = Some(mid);
+                low = mid + 1;
             } else {
                 over = mid;
             }
         }
-        Ok(Some(fit))
+        Ok(fit)
     }
 
     /// The text between two cells; `None` when herdr has no selection there
