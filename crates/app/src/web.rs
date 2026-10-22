@@ -4,18 +4,84 @@
 
 use std::path::Path;
 
+use block2::DynBlock;
 use gpui_kit::{Bounds, Pixels, Window};
-use objc2::MainThreadMarker;
 use objc2::rc::Retained;
-use objc2_app_kit::NSView;
+use objc2::runtime::{NSObject, NSObjectProtocol, ProtocolObject};
+use objc2::{MainThreadMarker, MainThreadOnly, define_class, msg_send};
+use objc2_app_kit::{NSView, NSWorkspace};
 use objc2_foundation::{NSPoint, NSRect, NSSize, NSString, NSURL};
-use objc2_web_kit::{WKWebView, WKWebViewConfiguration};
+use objc2_web_kit::{
+    WKNavigationAction, WKNavigationActionPolicy, WKNavigationDelegate, WKWebView,
+    WKWebViewConfiguration,
+};
+
+/// URL schemes a page may navigate to in place: its own file, and what
+/// WebKit uses for loaded strings and generated content. Any other link
+/// opens in the default browser.
+const IN_PLACE: [&str; 4] = ["file", "about", "data", "blob"];
+
+define_class!(
+    /// The pages' navigation delegate: keeps a page on its file, and sends
+    /// links to the web out to the default browser.
+    #[unsafe(super(NSObject))]
+    #[thread_kind = MainThreadOnly]
+    #[name = "GrasslandsPageNavigation"]
+    struct Navigation;
+
+    unsafe impl NSObjectProtocol for Navigation {}
+
+    unsafe impl WKNavigationDelegate for Navigation {
+        #[unsafe(method(webView:decidePolicyForNavigationAction:decisionHandler:))]
+        fn decide_policy(
+            &self,
+            _web_view: &WKWebView,
+            action: &WKNavigationAction,
+            decision: &DynBlock<dyn Fn(WKNavigationActionPolicy)>,
+        ) {
+            decision.call((policy_for(action),));
+        }
+    }
+);
+
+impl Navigation {
+    fn new(mtm: MainThreadMarker) -> Retained<Self> {
+        let this = Self::alloc(mtm).set_ivars(());
+        // SAFETY: `NSObject`'s `init` on a freshly allocated instance.
+        unsafe { msg_send![super(this), init] }
+    }
+}
+
+/// Allows navigation inside frames and to in-place schemes; opens anything
+/// else that would replace the page, or open a new window, in the default
+/// browser instead.
+fn policy_for(action: &WKNavigationAction) -> WKNavigationActionPolicy {
+    // SAFETY: main thread, inside WebKit's delegate callback.
+    let (url, frame) = unsafe { (action.request().URL(), action.targetFrame()) };
+    // SAFETY: as above.
+    let subframe = frame.is_some_and(|frame| unsafe { !frame.isMainFrame() });
+    let Some(url) = url else {
+        return WKNavigationActionPolicy::Allow;
+    };
+    let in_place = url
+        .scheme()
+        .is_some_and(|scheme| IN_PLACE.contains(&scheme.to_string().to_lowercase().as_str()));
+    if subframe || in_place {
+        return WKNavigationActionPolicy::Allow;
+    }
+    if !NSWorkspace::sharedWorkspace().openURL(&url) {
+        tracing::warn!("web: no app opened {}", url.absoluteString().unwrap_or_default());
+    }
+    WKNavigationActionPolicy::Cancel
+}
 
 /// One web view, hidden until shown. Dropping it removes it from the window.
 pub struct WebView {
     view: Retained<WKWebView>,
     /// GPUI's view, which the web view is a subview of.
     parent: Retained<NSView>,
+    /// The web view only holds its delegate weakly.
+    _navigation: Retained<Navigation>,
 }
 
 impl WebView {
@@ -26,25 +92,34 @@ impl WebView {
         let mtm = MainThreadMarker::new()?;
         // SAFETY: main thread; a fresh configuration and a zero frame are
         // valid arguments.
+        let navigation = Navigation::new(mtm);
+        // SAFETY: main thread; a fresh configuration and a zero frame are
+        // valid arguments, and `navigation` outlives the view (both are ours).
         let view = unsafe {
             let config = WKWebViewConfiguration::new(mtm);
             let view = WKWebView::initWithFrame_configuration(mtm.alloc(), NSRect::ZERO, &config);
             // Right-click → Inspect Element, for debugging pages.
             view.setInspectable(cfg!(debug_assertions));
+            view.setNavigationDelegate(Some(ProtocolObject::from_ref(&*navigation)));
             view
         };
         view.setHidden(true);
         parent.addSubview(&view);
-        Some(Self { view, parent })
+        Some(Self {
+            view,
+            parent,
+            _navigation: navigation,
+        })
     }
 
-    /// Shows the file at `path`, letting it read the files beside it (its
-    /// stylesheets, scripts and images).
-    pub fn load_file(&self, path: &Path) {
-        let dir = path.parent().unwrap_or(path);
+    /// Shows the file at `path`, letting it read files under `access` (its
+    /// stylesheets, scripts and images): a folder, or `path` itself.
+    pub fn load_file(&self, path: &Path, access: &Path) {
         let url = NSURL::fileURLWithPath(&NSString::from_str(&path.to_string_lossy()));
-        let access =
-            NSURL::fileURLWithPath_isDirectory(&NSString::from_str(&dir.to_string_lossy()), true);
+        let access = NSURL::fileURLWithPath_isDirectory(
+            &NSString::from_str(&access.to_string_lossy()),
+            access != path,
+        );
         // SAFETY: both are file URLs; main thread.
         unsafe { self.view.loadFileURL_allowingReadAccessToURL(&url, &access) };
     }
@@ -75,12 +150,10 @@ impl WebView {
     }
 
     pub fn set_visible(&self, visible: bool) {
-        if self.view.isHidden() == visible {
-            if !visible {
-                self.release_keyboard();
-            }
-            self.view.setHidden(!visible);
+        if !visible {
+            self.release_keyboard();
         }
+        self.view.setHidden(!visible);
     }
 
     /// Hands the keyboard back to GPUI's view if the page has it. A page

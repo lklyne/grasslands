@@ -261,15 +261,7 @@ impl Chrome {
     /// overlay can open. Deferred, so it never runs inside an update of
     /// either window.
     pub fn floating(&self, cx: &mut App, f: impl FnOnce(&mut Window, &mut App) + 'static) {
-        let main = self.main_window;
-        cx.defer(move |cx| match overlay_for(main, cx) {
-            Some(overlay) => {
-                overlay.update(cx, |overlay, cx| overlay.update_window(cx, f));
-            }
-            None => {
-                cx.update_window(main, |_, window, cx| f(window, cx)).ok();
-            }
-        });
+        floating_in(self.main_window, cx, f);
     }
 
     /// Whether a context menu is open, and if so whether it is an overlay
@@ -996,6 +988,22 @@ impl Chrome {
             });
         });
     }
+}
+
+/// [`Chrome::floating`] for callers that hold only the main window `main`.
+pub fn floating_in(
+    main: AnyWindowHandle,
+    cx: &mut App,
+    f: impl FnOnce(&mut Window, &mut App) + 'static,
+) {
+    cx.defer(move |cx| match overlay_for(main, cx) {
+        Some(overlay) => {
+            overlay.update(cx, |overlay, cx| overlay.update_window(cx, f));
+        }
+        None => {
+            cx.update_window(main, |_, window, cx| f(window, cx)).ok();
+        }
+    });
 }
 
 /// The overlay of the main window `main`, opening it on first use; `None`

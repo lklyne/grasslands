@@ -34,10 +34,11 @@ raw-window-handle = "0.6.2"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6.5"
-objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSString", "NSGeometry", "NSArray", "NSObjCRuntime", "NSDate", "NSData", "NSURL"] }
-objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "NSApplication", "NSResponder", "NSDockTile", "NSSound", "NSWindow", "NSView", "NSColor", "NSGraphics", "NSEvent", "NSGraphicsContext", "NSImage"] }
+block2 = "0.6.2"
+objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSString", "NSGeometry", "NSArray", "NSObjCRuntime", "NSDate", "NSData", "NSURL", "NSURLRequest"] }
+objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "NSApplication", "NSResponder", "NSDockTile", "NSSound", "NSWindow", "NSView", "NSColor", "NSGraphics", "NSEvent", "NSGraphicsContext", "NSImage", "NSWorkspace"] }
 # The system WebKit, for HTML tabs (decision 0025).
-objc2-web-kit = { version = "0.3.2", default-features = false, features = ["std", "objc2-app-kit", "objc2-core-foundation", "WKWebView", "WKWebViewConfiguration", "WKNavigation"] }
+objc2-web-kit = { version = "0.3.2", default-features = false, features = ["std", "objc2-app-kit", "objc2-core-foundation", "block2", "WKWebView", "WKWebViewConfiguration", "WKNavigation", "WKNavigationAction", "WKNavigationDelegate", "WKFrameInfo"] }
 
 [dev-dependencies]
 serde_json = "1.0.154"

@@ -24,20 +24,34 @@ only pays off if we ship on Windows or Linux.
   window on drop.
 - An HTML file is still an editor `Buffer`, so it keeps the editor's tabs,
   worktree groups, save, close prompts, watching and polling. A `Page`
-  rides along with the buffer and defaults to showing the page.
+  rides along with the buffer and defaults to showing the page. Its web view
+  is made the first time it's shown, since each one is a WebKit process.
 - **Visibility is explicit.** A native view stays on screen when GPUI stops
-  drawing it. The workspace calls `Editor::set_shown` whenever the main area
-  switches, or a panel drag starts or ends. On each render, the editor shows
-  only the selected tab's page, and only while the editor is on screen.
+  drawing it. The workspace's `sync_native_views` calls `Editor::set_shown`
+  whenever the main area switches, or a panel drag starts or ends. The editor
+  re-syncs on every change to what's selected (activate, Preview / Source,
+  worktree switch, rename, removal), not in render, and shows only the
+  selected tab's page while it's on screen.
 - **Keys.** While a page is shown, GPUI focus sits on the editor's own focus
-  handle, so the `Editor` bindings (cmd-w, cmd-s) still apply.
-- **Reloads.** A local file loads with `loadFileURL`, with read access to
-  the file's folder so its relative stylesheets, scripts and images resolve.
-  The page reloads when the buffer takes new disk contents or a save
-  finishes. A remote file loads its text with `loadHTMLString` and no base
-  URL, so relative links don't resolve there.
+  handle, so the `Editor` bindings (cmd-w, cmd-s) still apply. A clicked page
+  becomes AppKit's first responder and passes keys it ignores up to GPUI's
+  view, which handles them a second time. So the page hands first responder
+  back to GPUI's view when it hides, when it's dropped, on any mouse-down
+  GPUI sees, and when the editor loses GPUI focus.
+- **Loading.** A local file loads with `loadFileURL`. Its read access is the
+  worktree it's in, so links between the worktree's files resolve; a file
+  outside the active worktree may read only itself. A remote file loads its
+  text with `loadHTMLString` and no base URL. Disk changes, saves and Reload
+  load the file again rather than reloading the current URL, so a page that
+  followed a link comes back to the file.
+- **Navigation.** A navigation delegate keeps the page on `file:`, `about:`,
+  `data:` and `blob:` URLs and lets frames load freely; any other link, or a
+  new window, opens in the default browser.
 - **Floating UI.** Chrome's menus, palette and dialogs already draw in the
-  overlay window above native views (0008), so they cover pages too.
+  overlay window above native views (0008), and the editor's error
+  notifications go there too (`chrome::floating_in`), so pages can't cover
+  them.
+- Web Inspector is on in debug builds only.
 
 ## Not yet
 
@@ -48,4 +62,6 @@ only pays off if we ship on Windows or Linux.
   Safari's.
 - Remote pages with relative assets. That needs a `WKURLSchemeHandler` that
   serves files through `Fs`.
+- Pages run JavaScript and load web resources unrestricted; only navigation
+  of the page itself is limited.
 - Script hooks and a live scenario for pages.

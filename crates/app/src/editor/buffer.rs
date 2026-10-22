@@ -40,18 +40,21 @@ pub enum DiskChange {
 
 /// An HTML file's rendered page (decision 0025).
 pub struct Page {
-    /// Made the first time the page is shown (`Buffer::page_view`): each
-    /// web view is a WebKit process, so tabs never shown don't get one.
+    /// Made the first time the page is shown (`Buffer::make_page_view`):
+    /// each web view is a WebKit process, so tabs never shown don't get one.
     view: Option<Rc<WebView>>,
     /// The tab shows the page, not the source.
     pub shown: bool,
+    /// What a local page may read: its worktree, or only its own file.
+    access: PathBuf,
 }
 
 impl Page {
-    pub fn new() -> Self {
+    pub fn new(access: PathBuf) -> Self {
         Self {
             view: None,
             shown: true,
+            access,
         }
     }
 
@@ -152,15 +155,14 @@ impl Buffer {
         self.page.as_ref().filter(|page| page.shown)
     }
 
-    /// The shown page's web view, made and loaded on first use; `None` when
-    /// the tab shows its source or the window can't hold web views (tests).
-    pub fn page_view(&mut self, window: &Window) -> Option<Rc<WebView>> {
-        let page = self.page.as_mut().filter(|page| page.shown)?;
-        if page.view.is_none() {
-            page.view = Some(Rc::new(WebView::new(window)?));
-            self.load_page();
-        }
-        self.page.as_ref()?.view.clone()
+    /// Makes the page's web view and loads the file, if it has none yet.
+    /// Does nothing where the window can't hold web views (tests).
+    pub fn make_page_view(&mut self, window: &Window) {
+        let Some(page) = self.page.as_mut().filter(|page| page.view.is_none()) else {
+            return;
+        };
+        page.view = WebView::new(window).map(Rc::new);
+        self.load_page();
     }
 
     /// Points the page at the file: a local file loads from disk, so its
@@ -168,11 +170,14 @@ impl Buffer {
     /// Loads rather than reloads, so a page that followed a link comes back
     /// to the file.
     pub fn load_page(&self) {
-        let Some(view) = self.page.as_ref().and_then(Page::view) else {
+        let Some(page) = &self.page else {
+            return;
+        };
+        let Some(view) = page.view() else {
             return;
         };
         if self.machine.is_local() {
-            view.load_file(&self.path);
+            view.load_file(&self.path, &page.access);
         } else if let Some(text) = &self.saved {
             view.load_html(text);
         }

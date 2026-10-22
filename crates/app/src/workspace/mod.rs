@@ -223,7 +223,7 @@ impl Workspace {
             area.set_visible(shown && !dragging, window, cx);
         });
         self.editor.update(cx, |editor, cx| {
-            editor.set_shown(tab == MainTab::Files && !dragging, cx)
+            editor.set_shown(tab == MainTab::Files && !dragging, window, cx)
         });
     }
 
