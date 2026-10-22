@@ -40,9 +40,24 @@ pub enum DiskChange {
 
 /// An HTML file's rendered page (decision 0025).
 pub struct Page {
-    pub view: Rc<WebView>,
+    /// Made the first time the page is shown (`Buffer::page_view`): each
+    /// web view is a WebKit process, so tabs never shown don't get one.
+    view: Option<Rc<WebView>>,
     /// The tab shows the page, not the source.
     pub shown: bool,
+}
+
+impl Page {
+    pub fn new() -> Self {
+        Self {
+            view: None,
+            shown: true,
+        }
+    }
+
+    pub fn view(&self) -> Option<&Rc<WebView>> {
+        self.view.as_ref()
+    }
 }
 
 pub struct Buffer {
@@ -132,28 +147,39 @@ impl Buffer {
         &self.machine == machine && self.path == path
     }
 
-    /// Whether the tab shows its rendered page rather than the source.
-    pub fn shows_page(&self) -> bool {
-        self.page.as_ref().is_some_and(|page| page.shown)
+    /// The page, while the tab shows it rather than the source.
+    pub fn shown_page(&self) -> Option<&Page> {
+        self.page.as_ref().filter(|page| page.shown)
+    }
+
+    /// The shown page's web view, made and loaded on first use; `None` when
+    /// the tab shows its source or the window can't hold web views (tests).
+    pub fn page_view(&mut self, window: &Window) -> Option<Rc<WebView>> {
+        let page = self.page.as_mut().filter(|page| page.shown)?;
+        if page.view.is_none() {
+            page.view = Some(Rc::new(WebView::new(window)?));
+            self.load_page();
+        }
+        self.page.as_ref()?.view.clone()
     }
 
     /// Points the page at the file: a local file loads from disk, so its
     /// relative links work; a remote one loads from the text last read.
     pub fn load_page(&self) {
-        let Some(page) = &self.page else {
+        let Some(view) = self.page.as_ref().and_then(Page::view) else {
             return;
         };
         if self.machine.is_local() {
-            page.view.load_file(&self.path);
+            view.load_file(&self.path);
         } else if let Some(text) = &self.saved {
-            page.view.load_html(text);
+            view.load_html(text);
         }
     }
 
     /// The file changed on disk (read or written): show the new contents.
     fn refresh_page(&self) {
-        match &self.page {
-            Some(page) if self.machine.is_local() => page.view.reload(),
+        match self.page.as_ref().and_then(Page::view) {
+            Some(view) if self.machine.is_local() => view.reload(),
             Some(_) => self.load_page(),
             None => {}
         }

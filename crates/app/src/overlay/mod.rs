@@ -37,7 +37,7 @@ use gpui_kit::*;
 
 use crate::window_registry;
 
-pub use native::{gpui_view, ns_window};
+pub use native::{gpui_view, make_first_responder, ns_window};
 #[cfg(debug_assertions)]
 pub use native::{app_is_active, subviews as native_subviews};
 

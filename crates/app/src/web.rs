@@ -11,13 +11,6 @@ use objc2_app_kit::NSView;
 use objc2_foundation::{NSPoint, NSRect, NSSize, NSString, NSURL};
 use objc2_web_kit::{WKWebView, WKWebViewConfiguration};
 
-/// Whether the editor previews `path` as a web page.
-pub fn is_html(path: &Path) -> bool {
-    path.extension()
-        .and_then(|ext| ext.to_str())
-        .is_some_and(|ext| ext.eq_ignore_ascii_case("html") || ext.eq_ignore_ascii_case("htm"))
-}
-
 /// One web view, hidden until shown. Dropping it removes it from the window.
 pub struct WebView {
     view: Retained<WKWebView>,
@@ -107,8 +100,8 @@ impl WebView {
             .firstResponder()
             .and_then(|responder| responder.downcast::<NSView>().ok())
             .is_some_and(|view| view.isDescendantOf(&self.view));
-        if holds {
-            window.makeFirstResponder(Some(&self.parent));
+        if holds && !crate::overlay::make_first_responder(&window, &self.parent) {
+            tracing::warn!("web: GPUI's view refused first responder");
         }
     }
 }

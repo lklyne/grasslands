@@ -22,7 +22,6 @@ mod tests;
 use std::collections::{HashMap, HashSet};
 use std::io;
 use std::path::{Path, PathBuf};
-use std::rc::Rc;
 
 use gpui_kit::component::button::{Button, ButtonGroup, ButtonVariants as _};
 use gpui_kit::component::input::{Editor as CodeEditor, EditorState, InputEvent, Position};
@@ -39,7 +38,6 @@ use self::watcher::FileWatcher;
 use crate::fs::{Caps, Fs};
 use crate::herdr::PaneId;
 use crate::state::{AppEvent, AppState, MachineId};
-use crate::web::{self, WebView};
 
 actions!(editor, [Save, CloseTab]);
 
@@ -291,7 +289,7 @@ impl Editor {
     /// Gives keyboard focus to the selected file.
     pub fn focus_active(&self, window: &mut Window, cx: &mut App) {
         match self.group().and_then(Group::active) {
-            Some(buffer) if buffer.shows_page() => window.focus(&self.focus, cx),
+            Some(buffer) if buffer.shown_page().is_some() => window.focus(&self.focus, cx),
             Some(buffer) => buffer.state.update(cx, |state, cx| state.focus(window, cx)),
             None => {}
         }
@@ -311,9 +309,11 @@ impl Editor {
     fn sync_pages(&self) {
         for (key, group) in &self.groups {
             for (index, buffer) in group.buffers.iter().enumerate() {
-                if let Some(page) = &buffer.page {
+                if let Some(page) = &buffer.page
+                    && let Some(view) = page.view()
+                {
                     let selected = self.shown && *key == self.visible && index == group.active;
-                    page.view.set_visible(selected && page.shown);
+                    view.set_visible(selected && page.shown);
                 }
             }
         }
@@ -325,8 +325,8 @@ impl Editor {
         self.groups
             .values()
             .flat_map(|group| &group.buffers)
-            .filter_map(|buffer| buffer.page.as_ref())
-            .for_each(|page| page.view.release_keyboard());
+            .filter_map(|buffer| buffer.page.as_ref()?.view())
+            .for_each(|view| view.release_keyboard());
     }
 
     /// Switches the selected HTML tab between its page and its source.
@@ -588,16 +588,10 @@ impl Editor {
                 this.on_buffer_edited(&state, cx);
             }
         });
-        let html = scrollback.is_none() && web::is_html(&path);
+        let html = scrollback.is_none() && language::for_path(&path) == "html";
         let mut buffer = Buffer::new((machine, path), file, state, changes, window, cx);
         buffer.scrollback = scrollback;
-        if html {
-            buffer.page = WebView::new(window).map(|view| Page {
-                view: Rc::new(view),
-                shown: true,
-            });
-            buffer.load_page();
-        }
+        buffer.page = html.then(Page::new);
         if buffer.is_watched()
             && let Some(watcher) = &mut self.watcher
         {
@@ -1021,6 +1015,7 @@ impl Editor {
     /// Above an HTML tab: Preview / Source, and the page's actions.
     fn render_page_bar(&self, buffer: &Buffer, page: &Page, cx: &mut Context<Self>) -> AnyElement {
         let path = buffer.path.clone();
+        let view = page.view().cloned();
         h_flex()
             .flex_shrink_0()
             .px_2()
@@ -1040,8 +1035,7 @@ impl Editor {
                     })),
             )
             .child(div().flex_1())
-            .when(page.shown, |this| {
-                let view = page.view.clone();
+            .when_some(view.filter(|_| page.shown), |this, view| {
                 this.child(
                     Button::new("reload-page")
                         .ghost()
@@ -1141,7 +1135,7 @@ fn notify_error(message: String, window: &mut Window, cx: &mut App) {
 }
 
 impl Render for Editor {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let root = v_flex()
             .id("editor")
             .key_context(CONTEXT)
@@ -1149,21 +1143,20 @@ impl Render for Editor {
             .on_action(cx.listener(Self::close_active))
             .size_full()
             .overflow_hidden();
+        let view = self
+            .active_buffer_mut()
+            .and_then(|buffer| buffer.page_view(window));
         // No empty state: with no files the workspace shows herdr instead.
         let Some(buffer) = self.group().and_then(Group::active) else {
             return root;
         };
-        let body = match buffer.page.as_ref().filter(|page| page.shown) {
-            Some(page) => {
-                let view = page.view.clone();
-                div()
-                    .size_full()
-                    .child(
-                        canvas(move |bounds, _, _| view.set_frame(bounds), |_, _, _, _| {})
-                            .size_full(),
-                    )
-                    .into_any_element()
-            }
+        let body = match buffer.shown_page() {
+            Some(_) => div()
+                .size_full()
+                .children(view.map(|view| {
+                    canvas(move |bounds, _, _| view.set_frame(bounds), |_, _, _, _| {}).size_full()
+                }))
+                .into_any_element(),
             None => CodeEditor::new(&buffer.state)
                 .bordered(false)
                 .h(relative(1.))
