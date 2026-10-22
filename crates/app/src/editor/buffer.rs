@@ -165,6 +165,8 @@ impl Buffer {
 
     /// Points the page at the file: a local file loads from disk, so its
     /// relative links work; a remote one loads from the text last read.
+    /// Loads rather than reloads, so a page that followed a link comes back
+    /// to the file.
     pub fn load_page(&self) {
         let Some(view) = self.page.as_ref().and_then(Page::view) else {
             return;
@@ -176,14 +178,6 @@ impl Buffer {
         }
     }
 
-    /// The file changed on disk (read or written): show the new contents.
-    fn refresh_page(&self) {
-        match self.page.as_ref().and_then(Page::view) {
-            Some(view) if self.machine.is_local() => view.reload(),
-            Some(_) => self.load_page(),
-            None => {}
-        }
-    }
 
     pub fn new_state(path: &Path, window: &mut Window, cx: &mut App) -> Entity<EditorState> {
         let language = language::for_path(path);
@@ -232,7 +226,7 @@ impl Buffer {
         self.stamp = stamp;
         self.saved = Some(text);
         self.refresh_dirty(cx);
-        self.refresh_page();
+        self.load_page();
         if matches!(self.prompt, Some(Prompt::Conflict { .. })) {
             self.prompt = None;
         }
@@ -305,7 +299,7 @@ impl Buffer {
         self.dirty = false;
         self.prompt = None;
         self.generation += 1;
-        self.refresh_page();
+        self.load_page();
     }
 
     /// Keep the unsaved edits over `theirs`: the buffer stays dirty and the

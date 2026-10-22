@@ -30,7 +30,7 @@ impl WebView {
             let config = WKWebViewConfiguration::new(mtm);
             let view = WKWebView::initWithFrame_configuration(mtm.alloc(), NSRect::ZERO, &config);
             // Right-click → Inspect Element, for debugging pages.
-            view.setInspectable(true);
+            view.setInspectable(cfg!(debug_assertions));
             view
         };
         view.setHidden(true);
@@ -54,11 +54,6 @@ impl WebView {
     pub fn load_html(&self, html: &str) {
         // SAFETY: main thread.
         unsafe { self.view.loadHTMLString_baseURL(&NSString::from_str(html), None) };
-    }
-
-    pub fn reload(&self) {
-        // SAFETY: main thread.
-        unsafe { self.view.reload() };
     }
 
     /// Places the view at `bounds`, in GPUI's window coordinates.

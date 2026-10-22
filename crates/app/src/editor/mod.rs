@@ -792,6 +792,11 @@ impl Editor {
             }
             buffer.path = new;
             buffer.refresh_file_id();
+            // A rename can make the file HTML or stop it being HTML.
+            let html = buffer.is_file() && language::for_path(&buffer.path) == "html";
+            if html != buffer.page.is_some() {
+                buffer.page = html.then(Page::new);
+            }
             buffer.load_page();
         }
         cx.notify();
@@ -1015,7 +1020,6 @@ impl Editor {
     /// Above an HTML tab: Preview / Source, and the page's actions.
     fn render_page_bar(&self, buffer: &Buffer, page: &Page, cx: &mut Context<Self>) -> AnyElement {
         let path = buffer.path.clone();
-        let view = page.view().cloned();
         h_flex()
             .flex_shrink_0()
             .px_2()
@@ -1035,16 +1039,18 @@ impl Editor {
                     })),
             )
             .child(div().flex_1())
-            .when_some(view.filter(|_| page.shown), |this, view| {
+            .when(page.view().is_some() && page.shown, |this| {
                 this.child(
                     Button::new("reload-page")
                         .ghost()
                         .xsmall()
                         .label("Reload")
-                        .on_click(move |_, _, _| {
+                        .on_click(cx.listener(|this, _, _, _| {
                             crate::sounds::play(cues::Cue::Tap, crate::sounds::subtle());
-                            view.reload();
-                        }),
+                            if let Some(buffer) = this.group().and_then(Group::active) {
+                                buffer.load_page();
+                            }
+                        })),
                 )
             })
             .when(buffer.machine.is_local(), |this| {
