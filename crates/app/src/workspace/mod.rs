@@ -198,6 +198,9 @@ impl Workspace {
             area.set_show_run(tab == MainTab::Setup, window, cx);
             area.set_visible(shown && !self.dragging, window, cx);
         });
+        let editor_shown = tab == MainTab::Files && !self.dragging;
+        self.editor
+            .update(cx, |editor, cx| editor.set_shown(editor_shown, cx));
         self.main_panel.update(cx, |_, cx| cx.notify());
         if changed {
             match tab {
@@ -390,9 +393,11 @@ impl Render for Workspace {
         if dragging != self.dragging {
             self.dragging = dragging;
             let visible = matches!(self.selected, MainTab::Herdr | MainTab::Setup) && !dragging;
-            let area = self.terminal_area.clone();
+            let editor_shown = self.selected == MainTab::Files && !dragging;
+            let (area, editor) = (self.terminal_area.clone(), self.editor.clone());
             window.defer(cx, move |window, cx| {
                 area.update(cx, |area, cx| area.set_visible(visible, window, cx));
+                editor.update(cx, |editor, cx| editor.set_shown(editor_shown, cx));
             });
         }
         v_flex()

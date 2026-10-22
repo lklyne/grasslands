@@ -3,6 +3,7 @@
 
 use std::os::unix::fs::MetadataExt as _;
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 
 use gpui_kit::component::input::EditorState;
 use gpui_kit::*;
@@ -12,6 +13,7 @@ use super::poll::Stamp;
 use crate::fs::Caps;
 use crate::herdr::PaneId;
 use crate::state::MachineId;
+use crate::web::WebView;
 
 /// A question shown above the editor until the user answers it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -34,6 +36,13 @@ pub enum DiskChange {
     Conflict(String),
     /// The file is gone from disk.
     Deleted,
+}
+
+/// An HTML file's rendered page (decision 0025).
+pub struct Page {
+    pub view: Rc<WebView>,
+    /// The tab shows the page, not the source.
+    pub shown: bool,
 }
 
 pub struct Buffer {
@@ -63,6 +72,8 @@ pub struct Buffer {
     /// Set for a herdr pane's scrollback (`scrollback.rs`): read-only, not a
     /// file, so it's never saved, watched or polled. `path` only names it.
     pub scrollback: Option<PaneId>,
+    /// Set for an HTML file, when the window can show web views.
+    pub page: Option<Page>,
     _changes: Subscription,
 }
 
@@ -97,6 +108,7 @@ impl Buffer {
             stamp,
             generation: 0,
             scrollback: None,
+            page: None,
             _changes: changes,
         }
     }
@@ -118,6 +130,33 @@ impl Buffer {
 
     pub fn is(&self, machine: &MachineId, path: &Path) -> bool {
         &self.machine == machine && self.path == path
+    }
+
+    /// Whether the tab shows its rendered page rather than the source.
+    pub fn shows_page(&self) -> bool {
+        self.page.as_ref().is_some_and(|page| page.shown)
+    }
+
+    /// Points the page at the file: a local file loads from disk, so its
+    /// relative links work; a remote one loads from the text last read.
+    pub fn load_page(&self) {
+        let Some(page) = &self.page else {
+            return;
+        };
+        if self.machine.is_local() {
+            page.view.load_file(&self.path);
+        } else if let Some(text) = &self.saved {
+            page.view.load_html(text);
+        }
+    }
+
+    /// The file changed on disk (read or written): show the new contents.
+    fn refresh_page(&self) {
+        match &self.page {
+            Some(page) if self.machine.is_local() => page.view.reload(),
+            Some(_) => self.load_page(),
+            None => {}
+        }
     }
 
     pub fn new_state(path: &Path, window: &mut Window, cx: &mut App) -> Entity<EditorState> {
@@ -167,6 +206,7 @@ impl Buffer {
         self.stamp = stamp;
         self.saved = Some(text);
         self.refresh_dirty(cx);
+        self.refresh_page();
         if matches!(self.prompt, Some(Prompt::Conflict { .. })) {
             self.prompt = None;
         }
@@ -239,6 +279,7 @@ impl Buffer {
         self.dirty = false;
         self.prompt = None;
         self.generation += 1;
+        self.refresh_page();
     }
 
     /// Keep the unsaved edits over `theirs`: the buffer stays dirty and the
