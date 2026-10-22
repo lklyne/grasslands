@@ -193,11 +193,10 @@ impl Workspace {
         };
         let changed = self.selected != tab;
         self.selected = tab;
-        let shown = matches!(tab, MainTab::Herdr | MainTab::Setup);
         self.terminal_area.update(cx, |area, cx| {
-            area.set_show_run(tab == MainTab::Setup, window, cx);
-            area.set_visible(shown && !self.dragging, window, cx);
+            area.set_show_run(tab == MainTab::Setup, window, cx)
         });
+        self.sync_native_views(window, cx);
         self.main_panel.update(cx, |_, cx| cx.notify());
         if changed {
             match tab {
@@ -213,6 +212,19 @@ impl Workspace {
             }
         }
         cx.notify();
+    }
+
+    /// Shows the native views of the selected tab, the terminals' or the
+    /// editor's pages, and hides the rest; none show during a panel drag.
+    fn sync_native_views(&self, window: &mut Window, cx: &mut Context<Self>) {
+        let (tab, dragging) = (self.selected, self.dragging);
+        self.terminal_area.update(cx, |area, cx| {
+            let shown = matches!(tab, MainTab::Herdr | MainTab::Setup);
+            area.set_visible(shown && !dragging, window, cx);
+        });
+        self.editor.update(cx, |editor, cx| {
+            editor.set_shown(tab == MainTab::Files && !dragging, window, cx)
+        });
     }
 
     /// The Changes tab's titlebar index, after the file tabs.
@@ -389,16 +401,19 @@ impl Render for Workspace {
         let dragging = active && !keep;
         if dragging != self.dragging {
             self.dragging = dragging;
-            let visible = matches!(self.selected, MainTab::Herdr | MainTab::Setup) && !dragging;
-            let area = self.terminal_area.clone();
+            let this = cx.entity().downgrade();
             window.defer(cx, move |window, cx| {
-                area.update(cx, |area, cx| area.set_visible(visible, window, cx));
+                let _ = this.update(cx, |this, cx| this.sync_native_views(window, cx));
             });
         }
         v_flex()
             .id("workspace")
             .key_context(CONTEXT)
             .track_focus(&self.focus)
+            // A click anywhere GPUI draws is outside the pages.
+            .capture_any_mouse_down(cx.listener(|this, _, _, cx| {
+                this.editor.read(cx).release_pages();
+            }))
             .on_action(cx.listener(Self::open_file))
             .on_action(cx.listener(Self::open_file_at))
             .on_action(cx.listener(Self::open_changes))

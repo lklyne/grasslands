@@ -6,7 +6,8 @@
 //! is a path on one machine. Local files are watched and remote ones polled
 //! while the window is active; a file that changes on disk reloads unless it
 //! has unsaved edits, in which case the user picks between their edits and
-//! the disk contents.
+//! the disk contents. An HTML file shows as a web page, with its source a
+//! toggle away (decision 0025).
 
 mod buffer;
 mod language;
@@ -22,14 +23,16 @@ use std::collections::{HashMap, HashSet};
 use std::io;
 use std::path::{Path, PathBuf};
 
-use gpui_kit::component::button::{Button, ButtonVariants as _};
+use gpui_kit::component::button::{Button, ButtonGroup, ButtonVariants as _};
 use gpui_kit::component::input::{Editor as CodeEditor, EditorState, InputEvent, Position};
 use gpui_kit::component::notification::Notification;
-use gpui_kit::component::{ActiveTheme as _, Sizable as _, WindowExt as _, h_flex, v_flex};
+use gpui_kit::component::{
+    ActiveTheme as _, Selectable as _, Sizable as _, WindowExt as _, h_flex, v_flex,
+};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
-use self::buffer::{Buffer, DiskChange, Prompt};
+use self::buffer::{Buffer, DiskChange, Page, Prompt};
 use self::poll::{Check, Stamp};
 use self::watcher::FileWatcher;
 use crate::fs::{Caps, Fs};
@@ -169,7 +172,13 @@ pub struct Editor {
     /// A poll of remote files is running.
     polling: bool,
     watcher: Option<FileWatcher>,
-    _subscriptions: [Subscription; 2],
+    /// The workspace is showing the editor (`set_shown`). Pages are native
+    /// views, so they must be hidden explicitly when it isn't.
+    shown: bool,
+    /// Holds keyboard focus while a page is shown, so the editor's key
+    /// bindings still apply.
+    focus: FocusHandle,
+    _subscriptions: [Subscription; 3],
     _disk_changes: Task<()>,
     _poll: Option<Task<()>>,
 }
@@ -183,18 +192,24 @@ impl Editor {
                 // Also sent after every `MachineSelected`.
                 AppEvent::ActiveRootChanged(_) => {
                     this.visible = GroupKey::of(state.read(cx), cx);
+                    this.sync_pages(window);
                     cx.notify();
                 }
                 AppEvent::MachineConnected(_) => {
                     this.poll_remote(window.is_window_active(), window, cx)
                 }
                 AppEvent::FileMoved { machine, from, to } => {
-                    this.follow_move(machine, from, to, cx)
+                    this.follow_move(machine, from, to, window, cx)
                 }
-                AppEvent::FileRemoved { machine, path } => this.follow_remove(machine, path, cx),
+                AppEvent::FileRemoved { machine, path } => {
+                    this.follow_remove(machine, path, window, cx)
+                }
                 _ => {}
             },
         );
+        let focus = cx.focus_handle();
+        // Focus can leave by keyboard, which no mouse-down sees.
+        let focus_out = cx.on_focus_out(&focus, window, |this, _, _, _| this.release_pages());
         let activation = cx.observe_window_activation(window, |this, window, cx| {
             this.poll_remote(window.is_window_active(), window, cx)
         });
@@ -238,7 +253,9 @@ impl Editor {
             opening: HashSet::new(),
             polling: false,
             watcher,
-            _subscriptions: [events, activation],
+            shown: false,
+            focus,
+            _subscriptions: [events, activation, focus_out],
             _disk_changes: disk_changes,
             _poll: poll,
         }
@@ -277,9 +294,82 @@ impl Editor {
 
     /// Gives keyboard focus to the selected file.
     pub fn focus_active(&self, window: &mut Window, cx: &mut App) {
-        if let Some(buffer) = self.group().and_then(Group::active) {
-            buffer.state.update(cx, |state, cx| state.focus(window, cx));
+        match self.group().and_then(Group::active) {
+            Some(buffer) if buffer.shown_page().is_some() => window.focus(&self.focus, cx),
+            Some(buffer) => buffer.state.update(cx, |state, cx| state.focus(window, cx)),
+            None => {}
         }
+    }
+
+    /// The workspace shows the editor, or stops showing it.
+    pub fn set_shown(&mut self, shown: bool, window: &Window, cx: &mut Context<Self>) {
+        if self.shown != shown {
+            self.shown = shown;
+            self.sync_pages(window);
+            cx.notify();
+        }
+    }
+
+    /// Shows the selected tab's page, if it shows one and the editor is on
+    /// screen, making its web view on first use; hides every other page.
+    /// Called on every change to what's selected or shown, since a native
+    /// view stays on screen until it's hidden.
+    fn sync_pages(&mut self, window: &Window) {
+        let (shown, visible) = (self.shown, &self.visible);
+        for (key, group) in &mut self.groups {
+            let active = group.active;
+            for (index, buffer) in group.buffers.iter_mut().enumerate() {
+                let show =
+                    shown && key == visible && index == active && buffer.shown_page().is_some();
+                if show {
+                    buffer.make_page_view(window);
+                }
+                if let Some(view) = buffer.page.as_ref().and_then(Page::view) {
+                    view.set_visible(show);
+                }
+            }
+        }
+    }
+
+    /// Takes the keyboard back from the shown page; hidden pages already
+    /// gave it back. GPUI only sees clicks outside the page, so the
+    /// workspace calls this on every mouse down, and the editor when it
+    /// loses focus.
+    pub fn release_pages(&self) {
+        if let Some(view) = self
+            .group()
+            .and_then(Group::active)
+            .and_then(|buffer| buffer.page.as_ref()?.view())
+        {
+            view.release_keyboard();
+        }
+    }
+
+    /// What a local page at `path` in `group` may read: the worktree it's
+    /// in, so links between its files work, or else only itself.
+    fn page_access(group: &GroupKey, path: &Path) -> PathBuf {
+        group
+            .root
+            .as_deref()
+            .and_then(|root| root.canonicalize().ok())
+            .filter(|root| path.starts_with(root))
+            .unwrap_or_else(|| path.to_path_buf())
+    }
+
+    /// Switches the selected HTML tab between its page and its source.
+    fn show_page(&mut self, shown: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(page) = self
+            .active_buffer_mut()
+            .and_then(|buffer| buffer.page.as_mut())
+            .filter(|page| page.shown != shown)
+        else {
+            return;
+        };
+        page.shown = shown;
+        crate::sounds::play(cues::Cue::Select, crate::sounds::subtle());
+        self.sync_pages(window);
+        self.focus_active(window, cx);
+        cx.notify();
     }
 
     fn group(&self) -> Option<&Group> {
@@ -526,8 +616,10 @@ impl Editor {
                 this.on_buffer_edited(&state, cx);
             }
         });
+        let html = scrollback.is_none() && language::for_path(&path) == "html";
         let mut buffer = Buffer::new((machine, path), file, state, changes, window, cx);
         buffer.scrollback = scrollback;
+        buffer.page = html.then(|| Page::new(Self::page_access(&group, &buffer.path)));
         if buffer.is_watched()
             && let Some(watcher) = &mut self.watcher
         {
@@ -569,11 +661,12 @@ impl Editor {
     /// Selects tab `index` of the visible group and focuses it.
     pub fn activate(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
         let group = self.group_mut();
-        let Some(buffer) = group.buffers.get(index) else {
+        if index >= group.buffers.len() {
             return;
-        };
+        }
         group.active = index;
-        buffer.state.update(cx, |state, cx| state.focus(window, cx));
+        self.sync_pages(window);
+        self.focus_active(window, cx);
         cx.emit(EditorEvent::Activated);
         cx.notify();
     }
@@ -609,7 +702,7 @@ impl Editor {
             }
         }
         for (from, to) in moved {
-            self.follow_move(&MachineId::Local, &from, &to, cx);
+            self.follow_move(&MachineId::Local, &from, &to, window, cx);
         }
         cx.notify();
     }
@@ -703,13 +796,20 @@ impl Editor {
 
     /// Points tabs at or under `from` (a file or folder on `machine`) at
     /// their new place.
-    fn follow_move(&mut self, machine: &MachineId, from: &Path, to: &Path, cx: &mut Context<Self>) {
+    fn follow_move(
+        &mut self,
+        machine: &MachineId,
+        from: &Path,
+        to: &Path,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) {
         let watcher = &mut self.watcher;
-        for buffer in self
+        for (key, buffer) in self
             .groups
-            .values_mut()
-            .flat_map(|group| group.buffers.iter_mut())
-            .filter(|buffer| &buffer.machine == machine)
+            .iter_mut()
+            .flat_map(|(key, group)| group.buffers.iter_mut().map(move |buffer| (key, buffer)))
+            .filter(|(_, buffer)| &buffer.machine == machine)
         {
             let Ok(rest) = buffer.path.strip_prefix(from) else {
                 continue;
@@ -728,14 +828,30 @@ impl Editor {
             }
             buffer.path = new;
             buffer.refresh_file_id();
+            // A rename can make the file HTML or stop it being HTML, and a
+            // move changes what the page may read.
+            let html = buffer.is_file() && language::for_path(&buffer.path) == "html";
+            let access = Self::page_access(key, &buffer.path);
+            match &mut buffer.page {
+                Some(page) if html => page.access = access,
+                _ => buffer.page = html.then(|| Page::new(access)),
+            }
+            buffer.load_page();
         }
+        self.sync_pages(window);
         cx.notify();
     }
 
     /// The user removed `path` (a file or folder on `machine`) from the tree:
     /// clean tabs at or under it close; tabs with unsaved edits stay, marked
     /// deleted.
-    fn follow_remove(&mut self, machine: &MachineId, path: &Path, cx: &mut Context<Self>) {
+    fn follow_remove(
+        &mut self,
+        machine: &MachineId,
+        path: &Path,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) {
         for group in self.groups.values_mut() {
             let active = group.active().map(|buffer| buffer.state.clone());
             let watcher = &mut self.watcher;
@@ -759,6 +875,7 @@ impl Editor {
                 .unwrap_or(group.active)
                 .min(group.buffers.len().saturating_sub(1));
         }
+        self.sync_pages(window);
         cx.notify();
     }
 
@@ -947,6 +1064,57 @@ impl Editor {
         cx.notify();
     }
 
+    /// Above an HTML tab: Preview / Source, and the page's actions.
+    fn render_page_bar(&self, buffer: &Buffer, page: &Page, cx: &mut Context<Self>) -> AnyElement {
+        let path = buffer.path.clone();
+        h_flex()
+            .flex_shrink_0()
+            .px_2()
+            .py_1()
+            .gap_1()
+            .items_center()
+            .border_b_1()
+            .border_color(cx.theme().border)
+            .child(
+                ButtonGroup::new("page-mode")
+                    .outline()
+                    .xsmall()
+                    .child(Button::new("page").label("Preview").selected(page.shown))
+                    .child(Button::new("source").label("Source").selected(!page.shown))
+                    .on_click(cx.listener(|this, clicked: &Vec<usize>, window, cx| {
+                        this.show_page(clicked.first() == Some(&0), window, cx);
+                    })),
+            )
+            .child(div().flex_1())
+            .when(page.view().is_some() && page.shown, |this| {
+                this.child(
+                    Button::new("reload-page")
+                        .ghost()
+                        .xsmall()
+                        .label("Reload")
+                        .on_click(cx.listener(|this, _, _, _| {
+                            crate::sounds::play(cues::Cue::Tap, crate::sounds::subtle());
+                            if let Some(buffer) = this.group().and_then(Group::active) {
+                                buffer.load_page();
+                            }
+                        })),
+                )
+            })
+            .when(buffer.machine.is_local(), |this| {
+                this.child(
+                    Button::new("open-in-browser")
+                        .ghost()
+                        .xsmall()
+                        .label("Open in Browser")
+                        .on_click(move |_, _, cx| {
+                            crate::sounds::play(cues::Cue::Tap, crate::sounds::subtle());
+                            cx.open_with_system(&path);
+                        }),
+                )
+            })
+            .into_any_element()
+    }
+
     fn render_prompt(&self, prompt: &Prompt, cx: &mut Context<Self>) -> impl IntoElement {
         let (message, buttons): (&str, &[(Answer, &str)]) = match prompt {
             Prompt::Conflict { .. } => (
@@ -1016,7 +1184,10 @@ fn remove_tab(group: &mut Group, index: usize) -> Buffer {
 fn notify_error(message: String, window: &mut Window, cx: &mut App) {
     tracing::error!("editor: {message}");
     crate::sounds::play(cues::Cue::Error, crate::sounds::subtle());
-    window.push_notification(Notification::error(message), cx);
+    // In the overlay, so a shown page doesn't cover it.
+    crate::chrome::floating_in(window.window_handle(), cx, move |window, cx| {
+        window.push_notification(Notification::error(message), cx)
+    });
 }
 
 impl Render for Editor {
@@ -1032,15 +1203,24 @@ impl Render for Editor {
         let Some(buffer) = self.group().and_then(Group::active) else {
             return root;
         };
-        root.when_some(buffer.prompt.as_ref(), |this, prompt| {
-            this.child(self.render_prompt(prompt, cx))
-        })
-        .child(
-            div().flex_1().min_h_0().child(
-                CodeEditor::new(&buffer.state)
-                    .bordered(false)
-                    .h(relative(1.)),
-            ),
-        )
+        let body = match buffer.shown_page() {
+            Some(page) => div()
+                .size_full()
+                .children(page.view().cloned().map(|view| {
+                    canvas(move |bounds, _, _| view.set_frame(bounds), |_, _, _, _| {}).size_full()
+                }))
+                .into_any_element(),
+            None => CodeEditor::new(&buffer.state)
+                .bordered(false)
+                .h(relative(1.))
+                .into_any_element(),
+        };
+        let toolbar = buffer.page.as_ref().map(|page| self.render_page_bar(buffer, page, cx));
+        root.track_focus(&self.focus)
+            .when_some(buffer.prompt.as_ref(), |this, prompt| {
+                this.child(self.render_prompt(prompt, cx))
+            })
+            .children(toolbar)
+            .child(div().flex_1().min_h_0().child(body))
     }
 }
