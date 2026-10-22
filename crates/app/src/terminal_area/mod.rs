@@ -482,6 +482,15 @@ impl TerminalArea {
         self.visible
     }
 
+    /// The width in cells of `pane_id`'s terminal on `machine`, when this
+    /// window has it attached.
+    pub fn pane_columns(&self, machine: &MachineId, pane_id: &PaneId, cx: &mut App) -> Option<u16> {
+        let session = self.state.read(cx).machine(machine, cx)?;
+        let terminal_id = session.snapshot().pane(pane_id)?.terminal_id.clone();
+        let terminal = self.terminals.view_on(machine, &terminal_id)?.terminal.clone();
+        Some(terminal.update(cx, |terminal, _| terminal.columns())).filter(|&cols| cols > 0)
+    }
+
     /// Ask herdr to focus `pane_id`, and move keyboard focus to its terminal
     /// now; herdr's `pane.focused` then moves the focus ring.
     pub fn focus_pane(

@@ -165,6 +165,11 @@ impl Terminals {
         self.views.get(&terminal_key(&self.selected, terminal_id))
     }
 
+    /// `machine`'s view of `terminal_id`, selected or not.
+    pub fn view_on(&self, machine: &MachineId, terminal_id: &TerminalId) -> Option<&TerminalView> {
+        self.views.get(&terminal_key(machine, terminal_id))
+    }
+
     /// Whether `machine` has a view (or a failure) for `terminal_id`.
     pub fn has(&self, machine: &MachineId, terminal_id: &TerminalId) -> bool {
         let key = terminal_key(machine, terminal_id);

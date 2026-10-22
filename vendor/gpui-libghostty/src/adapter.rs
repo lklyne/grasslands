@@ -134,6 +134,11 @@ macro_rules! bind_gpui {
                     self.surface.set_hidden_rendering(rendered);
                 }
 
+                /// The terminal's width in cells.
+                pub fn columns(&mut self) -> u16 {
+                    self.surface.columns()
+                }
+
                 /// The text selected in Ghostty, if any.
                 pub fn selection_text(&mut self) -> Option<String> {
                     self.surface.selection_text()
@@ -275,8 +280,20 @@ macro_rules! bind_gpui {
                 ) {
                     let x = f64::from(f32::from(position.x - self.bounds.origin.x));
                     let y = f64::from(f32::from(position.y - self.bounds.origin.y));
-                    self.surface
-                        .mouse_position(x, y, modifiers(input_modifiers));
+                    let mods = self.pointer_mods(input_modifiers);
+                    self.surface.mouse_position(x, y, mods);
+                }
+
+                /// The modifiers Ghostty gets with a pointer event. While the
+                /// program has the mouse, Ghostty looks for links under the
+                /// pointer only with shift held, so cmd adds shift: cmd-hover
+                /// underlines a link and cmd-click opens it.
+                fn pointer_mods(&mut self, value: gpui::Modifiers) -> Modifiers {
+                    let mut mods = modifiers(value);
+                    if value.platform && !value.shift && self.surface.mouse_captured() {
+                        mods.insert(Modifiers::SHIFT);
+                    }
+                    mods
                 }
 
                 fn mouse_down(
@@ -291,11 +308,9 @@ macro_rules! bind_gpui {
                         return;
                     }
                     self.mouse_position(event.position, event.modifiers);
-                    self.surface.mouse_button(
-                        MouseState::Press,
-                        mouse_button(event.button),
-                        modifiers(event.modifiers),
-                    );
+                    let mods = self.pointer_mods(event.modifiers);
+                    self.surface
+                        .mouse_button(MouseState::Press, mouse_button(event.button), mods);
                 }
 
                 /// Starts a left gesture under the drag policy; false leaves the
@@ -404,14 +419,17 @@ macro_rules! bind_gpui {
                         }
                     }
                     self.mouse_position(event.position, event.modifiers);
-                    self.surface.mouse_button(
-                        MouseState::Release,
-                        mouse_button(event.button),
-                        modifiers(event.modifiers),
-                    );
+                    let mods = self.pointer_mods(event.modifiers);
+                    self.surface
+                        .mouse_button(MouseState::Release, mouse_button(event.button), mods);
                 }
 
                 fn scroll(&mut self, event: &ScrollWheelEvent) {
+                    // With reporting off mid-selection, Ghostty would turn the
+                    // wheel into arrow keys on the attach's alternate screen.
+                    if matches!(self.left_drag, LeftDrag::Selecting) {
+                        return;
+                    }
                     self.mouse_position(event.position, event.modifiers);
                     let (x, y, precision) = match event.delta {
                         ScrollDelta::Pixels(delta) => (
@@ -468,7 +486,14 @@ macro_rules! bind_gpui {
                         .on_mouse_up_out(
                             gpui::MouseButton::Left,
                             cx.listener(|terminal, event: &MouseUpEvent, _, _| {
-                                terminal.finish_left_drag(event.position)
+                                // Every terminal hears a release anywhere in the
+                                // window; only one mid-gesture acts on it.
+                                if matches!(
+                                    terminal.left_drag,
+                                    LeftDrag::Selecting | LeftDrag::PassThrough
+                                ) {
+                                    terminal.finish_left_drag(event.position)
+                                }
                             }),
                         );
                     for button in [

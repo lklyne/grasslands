@@ -30,7 +30,13 @@ Vendored from crates.io and applied through `[patch.crates-io]`. See
   for the gesture and selects; a plain click and an option-drag (option
   stripped) go to the program; shift and cmd keep Ghostty's handling. The
   shims add `mouse_captured`, `toggle_mouse_reporting` (a binding action)
-  and `selection_text` (for the live `selection` scenario).
+  and `selection_text` (for the live `selection` scenario). The wheel is
+  ignored mid-selection (Ghostty would send arrow keys with reporting off).
+- Cmd adds shift to pointer events while the program has the mouse: Ghostty
+  only looks for links under the pointer then with shift held, so cmd-hover
+  and cmd-click on links (OSC 8 included) did nothing in herdr panes.
+- `Terminal::columns()`: the grid width, so the app can read a pane's whole
+  scrollback from herdr at the width its attach set.
   See `docs/decisions/0010-single-window-terminals.md`.
 
 `vendor/ghostty` is untouched, so the cached native Ghostty build is shared

@@ -354,35 +354,31 @@ impl Client {
 
     /// All of a pane's text, oldest scrollback line first. `pane.read` stops
     /// at 1000 lines, so this reads the whole range through
-    /// `pane.selection.read`, falling back to `pane.read` when herdr can't.
-    pub fn pane_scrollback(&self, pane_id: &PaneId) -> Result<String> {
+    /// `pane.selection.read`, falling back to `pane.read` when that fails.
+    /// `columns` is the pane's terminal width when the caller has it
+    /// attached; herdr's own layout can differ from the size an attach set.
+    pub fn pane_scrollback(&self, pane_id: &PaneId, columns: Option<u16>) -> Result<String> {
         let rows = self
             .pane_get(pane_id)?
             .scroll
             .map(|s| s.max_offset_from_bottom + s.viewport_rows)
             .unwrap_or_default();
-        let width = self
-            .send::<method::PaneLayoutGet>(&pane_target(pane_id))?
-            .panes
-            .into_iter()
-            .find(|p| &p.pane_id == pane_id)
-            .map(|p| p.rect.width);
-        if let Some(last_row) = u32::try_from(rows).ok().and_then(|r| r.checked_sub(1))
-            && let Some(guess) = width.and_then(|w| w.checked_sub(1))
-        {
-            let read = |col| {
-                let end = PaneTextPoint { row: last_row, col };
-                self.pane_selection(pane_id, PaneTextPoint { row: 0, col: 0 }, end)
+        if let Some(last_row) = u32::try_from(rows).ok().and_then(|r| r.checked_sub(1)) {
+            let last_col = match columns.and_then(|c| c.checked_sub(1)) {
+                Some(col) => Some(col),
+                None => self.pane_last_col(pane_id),
             };
-            if let Some(text) = read(guess)? {
-                return Ok(text);
+            let start = PaneTextPoint { row: 0, col: 0 };
+            match last_col.map(|col| {
+                let end = PaneTextPoint { row: last_row, col };
+                self.pane_selection(pane_id, start, end)
+            }) {
+                Some(Ok(Some(text))) => return Ok(text),
+                Some(Err(err)) => log::warn!("pane {pane_id}: selection read failed: {err}"),
+                Some(Ok(None)) | None => {
+                    log::warn!("pane {pane_id}: no selection over {rows} rows")
+                }
             }
-            if let Some(col) = self.pane_last_col(pane_id, guess)?
-                && let Some(text) = read(col)?
-            {
-                return Ok(text);
-            }
-            log::warn!("pane {pane_id}: no selection over {rows} rows; reading the last 1000 lines");
         }
         self.send::<method::PaneRead>(&PaneReadParams {
             pane_id: pane_id.clone(),
@@ -392,25 +388,38 @@ impl Client {
         .map(|read| read.text)
     }
 
-    /// The pane's last column, below `over`. `pane.layout` gives herdr's own
-    /// layout, which an attach client can have resized the terminal away
-    /// from, so this finds the widest column a one-row selection accepts.
-    fn pane_last_col(&self, pane_id: &PaneId, mut over: u16) -> Result<Option<u16>> {
+    /// The pane's last column without an attached terminal to ask: herdr's
+    /// layout width when a one-row selection accepts it, else the widest
+    /// column one does. A wider attach than the layout goes unnoticed.
+    fn pane_last_col(&self, pane_id: &PaneId) -> Option<u16> {
+        let width = self
+            .send::<method::PaneLayoutGet>(&pane_target(pane_id))
+            .ok()?
+            .panes
+            .into_iter()
+            .find(|p| &p.pane_id == pane_id)?
+            .rect
+            .width;
         let fits = |col| {
             let end = PaneTextPoint { row: 0, col };
-            Ok::<_, Error>(self.pane_selection(pane_id, PaneTextPoint { row: 0, col: 0 }, end)?.is_some())
+            self.pane_selection(pane_id, PaneTextPoint { row: 0, col: 0 }, end)
+                .is_ok_and(|text| text.is_some())
         };
+        let mut over = width.checked_sub(1)?;
+        if fits(over) {
+            return Some(over);
+        }
         let (mut low, mut fit) = (0, None);
         while low < over {
             let mid = low + (over - low) / 2;
-            if fits(mid)? {
+            if fits(mid) {
                 fit = Some(mid);
                 low = mid + 1;
             } else {
                 over = mid;
             }
         }
-        Ok(fit)
+        fit
     }
 
     /// The text between two cells; `None` when herdr has no selection there

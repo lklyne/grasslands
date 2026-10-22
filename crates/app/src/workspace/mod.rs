@@ -291,8 +291,11 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         crate::sounds::play(cues::Cue::Open, crate::sounds::subtle());
+        let columns = self.terminal_area.update(cx, |area, cx| {
+            area.pane_columns(&action.machine, &action.pane_id, cx)
+        });
         self.editor.update(cx, |editor, cx| {
-            editor.open_scrollback(&action.machine, &action.pane_id, window, cx)
+            editor.open_scrollback(&action.machine, &action.pane_id, columns, window, cx)
         });
     }
 

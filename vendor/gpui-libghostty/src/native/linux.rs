@@ -105,6 +105,7 @@ unsafe extern "C" {
     fn gpui_ghostty_surface_linux_mouse_captured(surface: *mut RawSurface) -> bool;
     fn gpui_ghostty_surface_linux_toggle_mouse_reporting(surface: *mut RawSurface);
     fn gpui_ghostty_surface_linux_selection_text(surface: *mut RawSurface) -> *mut c_char;
+    fn gpui_ghostty_surface_linux_columns(surface: *mut RawSurface) -> u16;
     fn gpui_ghostty_surface_linux_free_string(value: *mut c_char);
 }
 
@@ -339,6 +340,10 @@ impl NativeSurface {
 
     pub fn toggle_mouse_reporting(&mut self) {
         unsafe { gpui_ghostty_surface_linux_toggle_mouse_reporting(self.raw.as_ptr()) }
+    }
+
+    pub fn columns(&mut self) -> u16 {
+        unsafe { gpui_ghostty_surface_linux_columns(self.raw.as_ptr()) }
     }
 
     pub fn selection_text(&mut self) -> Option<String> {

@@ -296,6 +296,7 @@ mod platform {
         fn gpui_ghostty_surface_mouse_captured(surface: *mut RawSurface) -> bool;
         fn gpui_ghostty_surface_toggle_mouse_reporting(surface: *mut RawSurface);
         fn gpui_ghostty_surface_selection_text(surface: *mut RawSurface) -> *mut c_char;
+        fn gpui_ghostty_surface_columns(surface: *mut RawSurface) -> u16;
         fn gpui_ghostty_surface_free_string(value: *mut c_char);
     }
 
@@ -537,6 +538,12 @@ mod platform {
             unsafe { gpui_ghostty_surface_toggle_mouse_reporting(self.raw.as_ptr()) }
         }
 
+        /// The grid's width in cells.
+        pub fn columns(&mut self) -> u16 {
+            // SAFETY: The surface is live for the duration of the call.
+            unsafe { gpui_ghostty_surface_columns(self.raw.as_ptr()) }
+        }
+
         /// The selected text, if there is a selection.
         pub fn selection_text(&mut self) -> Option<String> {
             // SAFETY: The shim returns a NUL-terminated copy it allocated, or
@@ -686,6 +693,9 @@ impl NativeSurface {
     pub fn toggle_mouse_reporting(&mut self) {}
     pub fn selection_text(&mut self) -> Option<String> {
         None
+    }
+    pub fn columns(&mut self) -> u16 {
+        0
     }
     pub(crate) fn take_clipboard_read(&mut self) -> Option<ClipboardRead> {
         None

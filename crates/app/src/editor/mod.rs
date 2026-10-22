@@ -429,10 +429,12 @@ impl Editor {
 
     /// Opens `pane_id`'s scrollback (on `machine`) as a read-only tab with
     /// the cursor at the end, or re-reads and shows the one already open.
+    /// `columns` is the width of the pane's terminal here, if it's attached.
     pub fn open_scrollback(
         &mut self,
         machine: &MachineId,
         pane_id: &PaneId,
+        columns: Option<u16>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -446,17 +448,22 @@ impl Editor {
             })
             .unwrap_or_else(|| pane_id.to_string());
         // The pane id keeps two panes with one name apart; titles show it
-        // only then.
-        let path = PathBuf::from(pane_id.as_str()).join(format!("{name} scrollback"));
+        // only then. Titles are often paths, so their slashes are swapped
+        // for a look-alike that doesn't split the tab's path.
+        let title = format!("{} scrollback", name.replace('/', "\u{2215}"));
+        let path = PathBuf::from(pane_id.as_str()).join(title);
         let read = {
             let pane_id = pane_id.clone();
-            state.call(machine, cx, move |client| client.pane_scrollback(&pane_id))
+            state.call(machine, cx, move |client| client.pane_scrollback(&pane_id, columns))
         };
-        let (machine, pane_id, group) = (machine.clone(), pane_id.clone(), self.visible.clone());
+        let (machine, pane_id) = (machine.clone(), pane_id.clone());
         cx.spawn_in(window, async move |this, cx| {
             let read = read.await;
             let _ = this.update_in(cx, |this, window, cx| match read {
                 Ok(text) => {
+                    // The group shown now: the worktree may have changed
+                    // while herdr read.
+                    let group = this.visible.clone();
                     this.show_scrollback(group, (machine, path), pane_id, text, window, cx)
                 }
                 Err(error) => {

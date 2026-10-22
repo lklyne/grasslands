@@ -509,6 +509,11 @@ bool gpui_ghostty_surface_mouse_captured(gpui_ghostty_surface *state) {
     return state != NULL && state->surface != NULL && ghostty_surface_mouse_captured(state->surface);
 }
 
+uint16_t gpui_ghostty_surface_columns(gpui_ghostty_surface *state) {
+    if (state == NULL || state->surface == NULL) return 0;
+    return ghostty_surface_size(state->surface).columns;
+}
+
 char *gpui_ghostty_surface_selection_text(gpui_ghostty_surface *state) {
     if (state == NULL || state->surface == NULL) return NULL;
     ghostty_text_s text = {0};
