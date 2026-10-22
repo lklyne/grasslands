@@ -124,6 +124,20 @@ Two findings apply to both designs; neither comes from this change:
   check uses shift. If the human expects plain-drag selection, that's a
   herdr setting or an adapter policy (e.g. always add shift for selection
   drags), not a layering question.
+
+  Resolved with an adapter policy (vendor `PATCHES.md`). Attach also takes
+  the mouse to scroll herdr's scrollback with the wheel, and only sends
+  rendered frames, so Ghostty can't own selection outright. When the
+  program has the mouse, a plain left press is held back. If it drags past
+  3px, or it's a double-click, mouse reporting is switched off for the
+  gesture and Ghostty selects natively. A plain click still reaches the
+  program, option-drag goes to the program without the option, and
+  shift-drag and cmd-click are unchanged. Limits: selection covers the
+  visible screen only (herdr owns the scrollback), and while a pane is
+  streaming at the bottom, herdr rewrites rows in place, so the text under
+  a selection can change. Scrolled up, herdr freezes the view. The full fix
+  is selection owned by the app through `pane.selection.read`, whose rows
+  count from the oldest scrollback line.
 - **IME (marked text) isn't wired anywhere today.** Neither gpui-libghostty
   nor the app registers a GPUI input handler for the terminal, so there is no
   preedit. In the single-window design GPUI's view is the first responder
@@ -274,8 +288,7 @@ Then:
 5. Press cmd-3 for the dialog. Type, click into the input, click the × and
    the scrim. None of these should beep or leave the dialog unable to type.
 6. Shift+drag to select text, cmd-c, then cmd-v into the other terminal.
-   Also try a plain drag (expected: no selection, since herdr has mouse
-   reporting on).
+   Also try a plain drag (expected: selects, by the adapter's drag policy).
 7. Scroll with the trackpad over each terminal.
 8. Press cmd-4 for a toast and click it.
 9. Switch to another app and back. The terminal you were in should still

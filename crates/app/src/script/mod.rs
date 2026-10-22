@@ -33,6 +33,7 @@ mod machine_ui;
 mod machines;
 mod remote;
 mod remote_files;
+mod selection;
 mod settings;
 mod setup;
 pub mod steps;
@@ -54,6 +55,7 @@ pub const SCENARIOS: &[(&str, &str)] = &[
     ("settings", ""),
     ("herdr-prefs", "HERDR_CONFIG_PATH at a scratch config.toml"),
     ("drags", ""),
+    ("selection", ""),
     ("setup", "RT_SETUP_EXPECT, RT_SETUP_FIX"),
     ("machine-ui", ""),
     ("machines", "GRASSLANDS_DEV_MACHINES=dockerbox"),
@@ -107,6 +109,7 @@ fn start_scenario(scenario: String, window: AnyWindowHandle, cx: &mut App) {
                     "settings" => run.settings(cx).await,
                     "herdr-prefs" => run.herdr_prefs(cx).await,
                     "drags" => run.drags(cx).await,
+                    "selection" => run.selection(cx).await,
                     "setup" => run.setup(cx).await,
                     "machine-ui" => run.machine_ui(cx).await,
                     "machines" => run.machines(cx).await,

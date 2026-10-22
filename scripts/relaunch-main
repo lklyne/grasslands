@@ -44,8 +44,10 @@ for pid in $pids; do
   kill -0 "$pid" 2>/dev/null && { echo "relaunch-main: $pid did not exit" >&2; exit 1; }
 done
 
-# herdr's default session: no dev session or socket override.
+# herdr's default session: no dev session or socket override. The main
+# instance is the user's real app, so it may add machines too.
 cd "$root"
 env -u HERDR_SESSION -u HERDR_SOCKET_PATH -u XDG_CONFIG_HOME RT_ALLOW_LIVE_HERDR=1 \
+  RT_ALLOW_MACHINE_EDITS=1 \
   nohup "$bin" >"$root/target/main-app.log" 2>&1 </dev/null &
 echo "relaunch-main: started $! (log: target/main-app.log)"

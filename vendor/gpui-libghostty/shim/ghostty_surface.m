@@ -112,6 +112,16 @@ static void runtime_wakeup(void *userdata) {
 // app. Text without a scheme is a file path, as Ghostty's macOS app treats it.
 static bool open_url(ghostty_action_open_url_s open) {
     if (open.url == NULL || open.len == 0) return false;
+    // Tests set GPUI_GHOSTTY_OPEN_URL_LOG to record links instead of opening them.
+    const char *log_path = getenv("GPUI_GHOSTTY_OPEN_URL_LOG");
+    if (log_path != NULL) {
+        FILE *log = fopen(log_path, "a");
+        if (log == NULL) return false;
+        fwrite(open.url, 1, open.len, log);
+        fputc('\n', log);
+        fclose(log);
+        return true;
+    }
     NSString *text = [[NSString alloc] initWithBytes:open.url
                                               length:open.len
                                             encoding:NSUTF8StringEncoding];
@@ -502,6 +512,39 @@ void gpui_ghostty_surface_mouse_button(
             (ghostty_input_mouse_button_e)button,
             (ghostty_input_mods_e)modifiers
         );
+    }
+}
+
+bool gpui_ghostty_surface_mouse_captured(gpui_ghostty_surface *state) {
+    return state != NULL && state->surface != NULL && ghostty_surface_mouse_captured(state->surface);
+}
+
+uint16_t gpui_ghostty_surface_columns(gpui_ghostty_surface *state) {
+    if (state == NULL || state->surface == NULL) return 0;
+    return ghostty_surface_size(state->surface).columns;
+}
+
+char *gpui_ghostty_surface_selection_text(gpui_ghostty_surface *state) {
+    if (state == NULL || state->surface == NULL) return NULL;
+    ghostty_text_s text = {0};
+    if (!ghostty_surface_read_selection(state->surface, &text)) return NULL;
+    char *copy = malloc(text.text_len + 1);
+    if (copy != NULL) {
+        memcpy(copy, text.text, text.text_len);
+        copy[text.text_len] = '\0';
+    }
+    ghostty_surface_free_text(state->surface, &text);
+    return copy;
+}
+
+void gpui_ghostty_surface_free_string(char *value) {
+    free(value);
+}
+
+void gpui_ghostty_surface_toggle_mouse_reporting(gpui_ghostty_surface *state) {
+    static const char action[] = "toggle_mouse_reporting";
+    if (state != NULL && state->surface != NULL) {
+        ghostty_surface_binding_action(state->surface, action, sizeof(action) - 1);
     }
 }
 

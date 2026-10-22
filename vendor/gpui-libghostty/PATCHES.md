@@ -25,6 +25,21 @@ Vendored from crates.io and applied through `[patch.crates-io]`. See
 - `send_key` drops control-character text (GPUI sends "\n" for enter), as
   Ghostty's macOS app does. Otherwise shift was marked consumed and
   shift-enter reached the program as a plain enter.
+- Left-drag policy for programs that have the mouse (herdr's attach always
+  does): a plain drag or double-click turns Ghostty's `mouse-reporting` off
+  for the gesture and selects; a plain click and an option-drag (option
+  stripped) go to the program; shift and cmd keep Ghostty's handling. The
+  shims add `mouse_captured`, `toggle_mouse_reporting` (a binding action)
+  and `selection_text` (for the live `selection` scenario). The wheel is
+  ignored mid-selection (Ghostty would send arrow keys with reporting off).
+- Cmd adds shift to pointer events while the program has the mouse: Ghostty
+  only looks for links under the pointer then with shift held, so cmd-hover
+  and cmd-click on links (OSC 8 included) did nothing in herdr panes.
+- The macOS shim's `open_url` writes the link to `$GPUI_GHOSTTY_OPEN_URL_LOG`
+  instead of opening it when that's set, for the live `selection` scenario.
+- `Terminal::columns()`: the grid width, so the app can read a pane's whole
+  scrollback from herdr at the width its attach set.
+  See `docs/decisions/0010-single-window-terminals.md`.
 
 `vendor/ghostty` is untouched, so the cached native Ghostty build is shared
 with the unpatched crate.

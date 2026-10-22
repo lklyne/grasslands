@@ -165,6 +165,8 @@ pub enum ReadSource {
     Visible,
     /// The last lines of scrollback.
     Recent,
+    /// The last lines of scrollback, with soft wraps joined.
+    RecentUnwrapped,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -179,6 +181,40 @@ pub struct PaneReadParams {
 #[derive(Debug, Clone, Deserialize)]
 pub struct PaneText {
     pub text: String,
+}
+
+/// A cell in a pane's text: `row` counts from the oldest scrollback line.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct PaneTextPoint {
+    pub row: u32,
+    pub col: u16,
+}
+
+/// `pane.selection.read`: the text between two cells. `col` must be inside
+/// the pane's width, or herdr answers `selection_unavailable`.
+#[derive(Debug, Clone, Serialize)]
+pub struct PaneSelectionReadParams {
+    pub pane_id: PaneId,
+    pub anchor: PaneTextPoint,
+    pub cursor: PaneTextPoint,
+}
+
+/// `pane.layout`'s answer, cut to each pane's size.
+#[derive(Debug, Clone, Deserialize)]
+pub struct PaneLayout {
+    pub panes: Vec<PaneRect>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct PaneRect {
+    pub pane_id: PaneId,
+    pub rect: CellRect,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize)]
+pub struct CellRect {
+    pub width: u16,
+    pub height: u16,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -322,6 +358,8 @@ methods! {
     PaneSendInput = "pane.send_input" (PaneSendInputParams) -> "ok": IgnoredAny;
     PaneReportAgent = "pane.report_agent" (PaneReportAgentParams) -> "ok": IgnoredAny;
     PaneRead = "pane.read" (PaneReadParams) -> "pane_read".read: PaneText;
+    PaneSelectionRead = "pane.selection.read" (PaneSelectionReadParams) -> "pane_selection": PaneText;
+    PaneLayoutGet = "pane.layout" (PaneTarget) -> "pane_layout".layout: PaneLayout;
 
     TabCreate = "tab.create" (NewTab) -> "tab_created": TabCreated;
     TabList = "tab.list" (InWorkspace) -> "tab_list".tabs: Vec<TabInfo>;

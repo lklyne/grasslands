@@ -10,7 +10,9 @@ use gpui_kit::*;
 
 use super::worktrees::{self, WorktreeCommand};
 use super::{Chrome, HerdrCommand, MenuCommand, MenuTarget, pane_context, update_later};
-use crate::actions::{CheckForUpdates, FocusPane, OpenChanges, OpenSettings, Quit, ToggleTheme};
+use crate::actions::{
+    CheckForUpdates, FocusPane, OpenChanges, OpenScrollback, OpenSettings, Quit, ToggleTheme,
+};
 use crate::herdr::{PluginActionInfo, PluginInvocationContext, SplitDirection, WorkspaceInfo};
 use crate::state::AppState;
 use crate::worktree::Placement;
@@ -124,6 +126,13 @@ fn groups(
                     machine: machine(),
                     pane_id: pane_id(),
                 }),
+            ),
+            (
+                "Pane: Open Scrollback".into(),
+                MenuCommand::Action(Rc::new(OpenScrollback {
+                    machine: machine(),
+                    pane_id: pane_id(),
+                })),
             ),
             herdr(
                 "Pane: Close",
