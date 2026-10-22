@@ -88,13 +88,34 @@ impl WebView {
 
     pub fn set_visible(&self, visible: bool) {
         if self.view.isHidden() == visible {
+            if !visible {
+                self.release_keyboard();
+            }
             self.view.setHidden(!visible);
+        }
+    }
+
+    /// Hands the keyboard back to GPUI's view if the page has it. A page
+    /// becomes first responder when clicked and keeps it, hidden or not. It
+    /// then passes the keys it doesn't use up to GPUI's view, and GPUI
+    /// handles each of them a second time, so typing doubles.
+    pub fn release_keyboard(&self) {
+        let Some(window) = self.parent.window() else {
+            return;
+        };
+        let holds = window
+            .firstResponder()
+            .and_then(|responder| responder.downcast::<NSView>().ok())
+            .is_some_and(|view| view.isDescendantOf(&self.view));
+        if holds {
+            window.makeFirstResponder(Some(&self.parent));
         }
     }
 }
 
 impl Drop for WebView {
     fn drop(&mut self) {
+        self.release_keyboard();
         self.view.removeFromSuperview();
     }
 }

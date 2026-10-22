@@ -404,6 +404,10 @@ impl Render for Workspace {
             .id("workspace")
             .key_context(CONTEXT)
             .track_focus(&self.focus)
+            // A click anywhere GPUI draws is outside the pages.
+            .capture_any_mouse_down(cx.listener(|this, _, _, cx| {
+                this.editor.read(cx).release_pages();
+            }))
             .on_action(cx.listener(Self::open_file))
             .on_action(cx.listener(Self::open_file_at))
             .on_action(cx.listener(Self::open_changes))

@@ -319,6 +319,16 @@ impl Editor {
         }
     }
 
+    /// Takes the keyboard back from any page. GPUI only sees clicks outside
+    /// the pages, so the workspace calls this on every mouse down.
+    pub fn release_pages(&self) {
+        self.groups
+            .values()
+            .flat_map(|group| &group.buffers)
+            .filter_map(|buffer| buffer.page.as_ref())
+            .for_each(|page| page.view.release_keyboard());
+    }
+
     /// Switches the selected HTML tab between its page and its source.
     fn show_page(&mut self, shown: bool, window: &mut Window, cx: &mut Context<Self>) {
         let Some(page) = self
