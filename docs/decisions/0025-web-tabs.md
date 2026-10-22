@@ -45,8 +45,12 @@ only pays off if we ship on Windows or Linux.
   load the file again rather than reloading the current URL, so a page that
   followed a link comes back to the file.
 - **Navigation.** A navigation delegate keeps the page on `file:`, `about:`,
-  `data:` and `blob:` URLs and lets frames load freely; any other link, or a
-  new window, opens in the default browser.
+  `data:` and `blob:` URLs and lets frames load freely. A clicked link to
+  anything else opens in the default browser; a redirect or script that
+  navigates away is dropped (logged at debug), so a page can't launch apps on
+  its own. A clicked `target=_blank` link to a file loads in the page, but
+  only if the file is inside the page's read access, since the app's own
+  load isn't held to the page's limits.
 - **Floating UI.** Chrome's menus, palette and dialogs already draw in the
   overlay window above native views (0008), and the editor's error
   notifications go there too (`chrome::floating_in`), so pages can't cover
