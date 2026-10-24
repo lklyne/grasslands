@@ -64,7 +64,9 @@ pub fn preview(buffer: &Buffer, editor: WeakEntity<Editor>, cx: &App) -> AnyElem
     {
         view = view.markdown_mdx();
     }
-    view.size_full().px_6().into_any_element()
+    // The view scrolls a list it lays out itself, so this pads the viewport
+    // rather than the content: the text scrolls under a fixed margin.
+    view.size_full().px_6().py_6().into_any_element()
 }
 
 /// The file a link or image `url` in a document in `folder` points at, or
