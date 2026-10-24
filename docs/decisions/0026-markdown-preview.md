@@ -24,6 +24,12 @@ no `image_source`, and with no style of its own it renders the same.
   defaults to the preview. The preview renders the editor state's text each
   frame, so it follows unsaved edits; the view reparses only when the text
   changes.
+- **Layout.** A centered column of at most 816px, with 64px above and
+  below, in a GPUI Kit scroll area that spans the tab. The text view's own
+  scrolling is a virtualized list that can only pad its viewport, so the
+  margins wouldn't scroll away and the scrollbar would sit at the column's
+  edge. The price is laying out the whole document; revisit if long files
+  get slow.
 - The frontmatter plugin shows YAML frontmatter as a description list.
 - **Links.** A relative, absolute or `file:` link opens in the editor on the
   buffer's machine; `#anchors` do nothing; anything else opens in the

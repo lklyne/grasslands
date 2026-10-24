@@ -4,6 +4,7 @@
 use std::path::{Path, PathBuf};
 
 use gpui_kit::base::text::TextView;
+use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::component::text::FrontmatterPlugin;
 use gpui_kit::*;
 
@@ -37,8 +38,8 @@ pub fn preview(buffer: &Buffer, editor: WeakEntity<Editor>, cx: &App) -> AnyElem
         .unwrap_or_default();
     let machine = buffer.machine.clone();
     let links = folder.clone();
-    let mut view = TextView::markdown(("markdown", buffer.state.entity_id()), text)
-        .scrollable(true)
+    let id = buffer.state.entity_id();
+    let mut view = TextView::markdown(("markdown", id), text)
         .plugin(FrontmatterPlugin)
         .on_link_click(move |url, _, window, cx| {
             crate::sounds::play(cues::Cue::Tap, crate::sounds::subtle());
@@ -68,10 +69,19 @@ pub fn preview(buffer: &Buffer, editor: WeakEntity<Editor>, cx: &App) -> AnyElem
     {
         view = view.markdown_mdx();
     }
-    // The view scrolls a list it lays out itself, so this pads the viewport
-    // rather than the content: the text scrolls under a fixed margin.
-    let column = view.h_full().w_full().max_w(MAX_WIDTH).px_6().py_16();
-    div().size_full().flex().justify_center().child(column).into_any_element()
+    // Our scroll area rather than the view's own, which pads only its
+    // viewport: here the margins scroll away with the text and the scrollbar
+    // stays at the tab's edge. The cost is laying out the whole document.
+    let column = view.w_full().max_w(MAX_WIDTH).px_6().py_16();
+    div()
+        .size_full()
+        .flex()
+        .flex_col()
+        .items_center()
+        .child(column)
+        .overflow_y_scrollbar()
+        .id(("markdown-scroll", id))
+        .into_any_element()
 }
 
 /// The file a link or image `url` in a document in `folder` points at, or
