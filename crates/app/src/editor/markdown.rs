@@ -10,6 +10,10 @@ use gpui_kit::*;
 use super::Editor;
 use super::buffer::Buffer;
 
+/// The preview's column, side padding included: about 90 characters of body
+/// text, centered in a wider tab.
+const MAX_WIDTH: Pixels = px(816.);
+
 /// Rides along with a Markdown file's buffer.
 pub struct Markdown {
     /// The tab shows the rendered text, not the source.
@@ -66,7 +70,8 @@ pub fn preview(buffer: &Buffer, editor: WeakEntity<Editor>, cx: &App) -> AnyElem
     }
     // The view scrolls a list it lays out itself, so this pads the viewport
     // rather than the content: the text scrolls under a fixed margin.
-    view.size_full().px_6().py_6().into_any_element()
+    let column = view.h_full().w_full().max_w(MAX_WIDTH).px_6().py_16();
+    div().size_full().flex().justify_center().child(column).into_any_element()
 }
 
 /// The file a link or image `url` in a document in `folder` points at, or
