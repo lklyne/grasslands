@@ -9,6 +9,7 @@ use gpui_kit::component::input::EditorState;
 use gpui_kit::*;
 
 use super::language;
+use super::markdown::Markdown;
 use super::poll::Stamp;
 use crate::fs::Caps;
 use crate::herdr::PaneId;
@@ -92,6 +93,8 @@ pub struct Buffer {
     pub scrollback: Option<PaneId>,
     /// Set for an HTML file, when the window can show web views.
     pub page: Option<Page>,
+    /// Set for a Markdown file.
+    pub markdown: Option<Markdown>,
     _changes: Subscription,
 }
 
@@ -127,6 +130,7 @@ impl Buffer {
             generation: 0,
             scrollback: None,
             page: None,
+            markdown: None,
             _changes: changes,
         }
     }
@@ -153,6 +157,28 @@ impl Buffer {
     /// The page, while the tab shows it rather than the source.
     pub fn shown_page(&self) -> Option<&Page> {
         self.page.as_ref().filter(|page| page.shown)
+    }
+
+    /// The rendered Markdown, while the tab shows it rather than the source.
+    pub fn shown_markdown(&self) -> Option<&Markdown> {
+        self.markdown.as_ref().filter(|markdown| markdown.shown)
+    }
+
+    /// Whether the tab shows its page or rendered Markdown rather than the
+    /// source; `None` for a file that has neither.
+    pub fn preview_shown(&self) -> Option<bool> {
+        let page = self.page.as_ref().map(|page| page.shown);
+        page.or_else(|| self.markdown.as_ref().map(|markdown| markdown.shown))
+    }
+
+    /// Shows the page or rendered Markdown, or the source.
+    pub fn set_preview_shown(&mut self, shown: bool) {
+        if let Some(page) = &mut self.page {
+            page.shown = shown;
+        }
+        if let Some(markdown) = &mut self.markdown {
+            markdown.shown = shown;
+        }
     }
 
     /// Makes the page's web view and loads the file, if it has none yet.

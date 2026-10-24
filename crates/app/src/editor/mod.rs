@@ -6,11 +6,12 @@
 //! is a path on one machine. Local files are watched and remote ones polled
 //! while the window is active; a file that changes on disk reloads unless it
 //! has unsaved edits, in which case the user picks between their edits and
-//! the disk contents. An HTML file shows as a web page, with its source a
-//! toggle away (decision 0025).
+//! the disk contents. An HTML file shows as a web page (decision 0025) and a
+//! Markdown file as rendered text (0026), each with its source a toggle away.
 
 mod buffer;
 mod language;
+mod markdown;
 mod poll;
 mod scrollback;
 mod titles;
@@ -33,6 +34,7 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use self::buffer::{Buffer, DiskChange, Page, Prompt};
+use self::markdown::Markdown;
 use self::poll::{Check, Stamp};
 use self::watcher::FileWatcher;
 use crate::fs::{Caps, Fs};
@@ -295,7 +297,7 @@ impl Editor {
     /// Gives keyboard focus to the selected file.
     pub fn focus_active(&self, window: &mut Window, cx: &mut App) {
         match self.group().and_then(Group::active) {
-            Some(buffer) if buffer.shown_page().is_some() => window.focus(&self.focus, cx),
+            Some(buffer) if buffer.preview_shown() == Some(true) => window.focus(&self.focus, cx),
             Some(buffer) => buffer.state.update(cx, |state, cx| state.focus(window, cx)),
             None => {}
         }
@@ -356,16 +358,16 @@ impl Editor {
             .unwrap_or_else(|| path.to_path_buf())
     }
 
-    /// Switches the selected HTML tab between its page and its source.
-    fn show_page(&mut self, shown: bool, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(page) = self
+    /// Switches the selected HTML or Markdown tab between its preview and
+    /// its source.
+    fn show_preview(&mut self, shown: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(buffer) = self
             .active_buffer_mut()
-            .and_then(|buffer| buffer.page.as_mut())
-            .filter(|page| page.shown != shown)
+            .filter(|buffer| buffer.preview_shown().is_some_and(|was| was != shown))
         else {
             return;
         };
-        page.shown = shown;
+        buffer.set_preview_shown(shown);
         crate::sounds::play(cues::Cue::Select, crate::sounds::subtle());
         self.sync_pages(window);
         self.focus_active(window, cx);
@@ -544,7 +546,9 @@ impl Editor {
         let path = PathBuf::from(pane_id.as_str()).join(title);
         let read = {
             let pane_id = pane_id.clone();
-            state.call(machine, cx, move |client| client.pane_scrollback(&pane_id, columns))
+            state.call(machine, cx, move |client| {
+                client.pane_scrollback(&pane_id, columns)
+            })
         };
         let (machine, pane_id) = (machine.clone(), pane_id.clone());
         cx.spawn_in(window, async move |this, cx| {
@@ -556,9 +560,11 @@ impl Editor {
                     let group = this.visible.clone();
                     this.show_scrollback(group, (machine, path), pane_id, text, window, cx)
                 }
-                Err(error) => {
-                    notify_error(format!("Cannot read {name}'s scrollback: {error}"), window, cx)
-                }
+                Err(error) => notify_error(
+                    format!("Cannot read {name}'s scrollback: {error}"),
+                    window,
+                    cx,
+                ),
             });
         })
         .detach();
@@ -588,7 +594,15 @@ impl Editor {
             return;
         }
         let file = (text, None);
-        self.add_buffer(group, (machine, path), file, Some(end), Some(pane_id), window, cx);
+        self.add_buffer(
+            group,
+            (machine, path),
+            file,
+            Some(end),
+            Some(pane_id),
+            window,
+            cx,
+        );
     }
 
     /// Adds a tab to `group`, and selects it if that group is still shown.
@@ -616,10 +630,12 @@ impl Editor {
                 this.on_buffer_edited(&state, cx);
             }
         });
-        let html = scrollback.is_none() && language::for_path(&path) == "html";
+        let language = scrollback.is_none().then(|| language::for_path(&path));
+        let html = language == Some("html");
         let mut buffer = Buffer::new((machine, path), file, state, changes, window, cx);
         buffer.scrollback = scrollback;
         buffer.page = html.then(|| Page::new(Self::page_access(&group, &buffer.path)));
+        buffer.markdown = (language == Some("markdown")).then(Markdown::new);
         if buffer.is_watched()
             && let Some(watcher) = &mut self.watcher
         {
@@ -828,9 +844,13 @@ impl Editor {
             }
             buffer.path = new;
             buffer.refresh_file_id();
-            // A rename can make the file HTML or stop it being HTML, and a
-            // move changes what the page may read.
-            let html = buffer.is_file() && language::for_path(&buffer.path) == "html";
+            // A rename can make the file HTML or Markdown or stop it being
+            // either, and a move changes what the page may read.
+            let language = buffer.is_file().then(|| language::for_path(&buffer.path));
+            let html = language == Some("html");
+            if (language == Some("markdown")) != buffer.markdown.is_some() {
+                buffer.markdown = (language == Some("markdown")).then(Markdown::new);
+            }
             let access = Self::page_access(key, &buffer.path);
             match &mut buffer.page {
                 Some(page) if html => page.access = access,
@@ -1064,9 +1084,15 @@ impl Editor {
         cx.notify();
     }
 
-    /// Above an HTML tab: Preview / Source, and the page's actions.
-    fn render_page_bar(&self, buffer: &Buffer, page: &Page, cx: &mut Context<Self>) -> AnyElement {
+    /// Above an HTML or Markdown tab: Preview / Source, and a page's actions.
+    fn render_preview_bar(
+        &self,
+        buffer: &Buffer,
+        shown: bool,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let path = buffer.path.clone();
+        let page = buffer.page.as_ref();
         h_flex()
             .flex_shrink_0()
             .px_2()
@@ -1079,28 +1105,31 @@ impl Editor {
                 ButtonGroup::new("page-mode")
                     .outline()
                     .xsmall()
-                    .child(Button::new("page").label("Preview").selected(page.shown))
-                    .child(Button::new("source").label("Source").selected(!page.shown))
+                    .child(Button::new("page").label("Preview").selected(shown))
+                    .child(Button::new("source").label("Source").selected(!shown))
                     .on_click(cx.listener(|this, clicked: &Vec<usize>, window, cx| {
-                        this.show_page(clicked.first() == Some(&0), window, cx);
+                        this.show_preview(clicked.first() == Some(&0), window, cx);
                     })),
             )
             .child(div().flex_1())
-            .when(page.view().is_some() && page.shown, |this| {
-                this.child(
-                    Button::new("reload-page")
-                        .ghost()
-                        .xsmall()
-                        .label("Reload")
-                        .on_click(cx.listener(|this, _, _, _| {
-                            crate::sounds::play(cues::Cue::Tap, crate::sounds::subtle());
-                            if let Some(buffer) = this.group().and_then(Group::active) {
-                                buffer.load_page();
-                            }
-                        })),
-                )
-            })
-            .when(buffer.machine.is_local(), |this| {
+            .when(
+                page.is_some_and(|page| page.view().is_some()) && shown,
+                |this| {
+                    this.child(
+                        Button::new("reload-page")
+                            .ghost()
+                            .xsmall()
+                            .label("Reload")
+                            .on_click(cx.listener(|this, _, _, _| {
+                                crate::sounds::play(cues::Cue::Tap, crate::sounds::subtle());
+                                if let Some(buffer) = this.group().and_then(Group::active) {
+                                    buffer.load_page();
+                                }
+                            })),
+                    )
+                },
+            )
+            .when(page.is_some() && buffer.machine.is_local(), |this| {
                 this.child(
                     Button::new("open-in-browser")
                         .ghost()
@@ -1192,6 +1221,7 @@ fn notify_error(message: String, window: &mut Window, cx: &mut App) {
 
 impl Render for Editor {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let editor = cx.entity().downgrade();
         let root = v_flex()
             .id("editor")
             .key_context(CONTEXT)
@@ -1203,19 +1233,24 @@ impl Render for Editor {
         let Some(buffer) = self.group().and_then(Group::active) else {
             return root;
         };
-        let body = match buffer.shown_page() {
-            Some(page) => div()
+        let body = if let Some(page) = buffer.shown_page() {
+            div()
                 .size_full()
                 .children(page.view().cloned().map(|view| {
                     canvas(move |bounds, _, _| view.set_frame(bounds), |_, _, _, _| {}).size_full()
                 }))
-                .into_any_element(),
-            None => CodeEditor::new(&buffer.state)
+                .into_any_element()
+        } else if buffer.shown_markdown().is_some() {
+            markdown::preview(buffer, editor, cx)
+        } else {
+            CodeEditor::new(&buffer.state)
                 .bordered(false)
                 .h(relative(1.))
-                .into_any_element(),
+                .into_any_element()
         };
-        let toolbar = buffer.page.as_ref().map(|page| self.render_page_bar(buffer, page, cx));
+        let toolbar = buffer
+            .preview_shown()
+            .map(|shown| self.render_preview_bar(buffer, shown, cx));
         root.track_focus(&self.focus)
             .when_some(buffer.prompt.as_ref(), |this, prompt| {
                 this.child(self.render_prompt(prompt, cx))

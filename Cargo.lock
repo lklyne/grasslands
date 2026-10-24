@@ -231,6 +231,7 @@ dependencies = [
  "objc2-app-kit 0.3.2",
  "objc2-foundation 0.3.2",
  "objc2-web-kit",
+ "percent-encoding",
  "raw-window-handle",
  "serde_json",
  "tracing",
