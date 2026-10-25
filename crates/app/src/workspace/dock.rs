@@ -21,6 +21,8 @@ const LAYOUT_VERSION: usize = 2;
 /// A drag emits a layout change on every step; save once it settles.
 pub(super) const SAVE_DEBOUNCE: Duration = Duration::from_millis(500);
 const SIDEBAR_WIDTH: Pixels = px(260.);
+/// The docks every layout has.
+const SIDES: [DockPlacement; 2] = [DockPlacement::Left, DockPlacement::Right];
 
 /// The main area as a dock panel: whatever the workspace shows there, with
 /// no title bar of its own.
@@ -135,6 +137,11 @@ impl Docks {
                 .is_some_and(|state| {
                     area.load(state, window, cx).is_ok()
                         && panels.iter().all(|&id| area.panel(id).is_some())
+                        // The Kit keeps a dock's last panel from being dragged
+                        // out, but older layouts lost theirs. Without a dock
+                        // a side has no drop target and its titlebar toggle
+                        // nothing to toggle, so start over from the default.
+                        && SIDES.iter().all(|&side| !area.is_empty(side, cx))
                 });
             if !restored {
                 let [main, spaces, agents, files] = handles;

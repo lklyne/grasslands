@@ -1,4 +1,5 @@
-//! The window's dock: a rearranged layout is saved and comes back.
+//! The window's dock: a rearranged layout is saved and comes back, unless
+//! it lost a side dock.
 
 use std::path::Path;
 use std::time::Duration;
@@ -32,12 +33,16 @@ fn home(
 ) -> Option<DockPlacement> {
     docks.read_with(cx, |docks, cx| {
         let area = docks.area.read(cx);
-        [DockPlacement::Center, DockPlacement::Left]
-            .into_iter()
-            .find(|&p| {
-                area.layout(p)
-                    .is_some_and(|t| t.find_panel_node(panel).is_some())
-            })
+        [
+            DockPlacement::Center,
+            DockPlacement::Left,
+            DockPlacement::Right,
+        ]
+        .into_iter()
+        .find(|&p| {
+            area.layout(p)
+                .is_some_and(|t| t.find_panel_node(panel).is_some())
+        })
     })
 }
 
@@ -76,4 +81,44 @@ fn agents_dropped_beside_the_main_area_stay_there_after_a_restart(cx: &mut TestA
     let placed = home(&second, agents, vcx);
     let _ = std::fs::remove_file(&file);
     assert_eq!(placed, Some(DockPlacement::Center));
+}
+
+#[gpui::test]
+fn a_layout_without_a_right_dock_restarts_from_the_default(cx: &mut TestAppContext) {
+    cx.update(gpui_kit::init);
+    let file =
+        std::env::temp_dir().join(format!("grasslands-dock-right-{}.json", std::process::id()));
+    let _ = std::fs::remove_file(&file);
+    let state = cx.new(|cx| AppState::new(Ok(offline_config()), cx));
+
+    let (first, vcx) = cx.add_window_view(docks(&state, &file));
+    let [main, _, _, files] = first.read_with(vcx, |d, _| d.panels);
+    // What older layouts did: the right dock's only panel beside the main
+    // area, leaving the dock empty.
+    vcx.update(|window, cx| {
+        let area = first.read(cx).area.clone();
+        let node = area
+            .read(cx)
+            .layout(DockPlacement::Center)
+            .and_then(|tree| tree.find_panel_node(main))
+            .expect("the main area is in the center");
+        area.update(cx, |area, cx| {
+            let target = InsertTarget::Split {
+                node,
+                placement: Placement::Right,
+                size: None,
+            };
+            area.move_panel(files, target, window, cx);
+        });
+    });
+    assert_eq!(home(&first, files, vcx), Some(DockPlacement::Center));
+    vcx.executor()
+        .advance_clock(SAVE_DEBOUNCE + Duration::from_millis(100));
+    vcx.run_until_parked();
+
+    let (second, vcx) = cx.add_window_view(docks(&state, &file));
+    let [_, _, _, files] = second.read_with(vcx, |d, _| d.panels);
+    let placed = home(&second, files, vcx);
+    let _ = std::fs::remove_file(&file);
+    assert_eq!(placed, Some(DockPlacement::Right));
 }
