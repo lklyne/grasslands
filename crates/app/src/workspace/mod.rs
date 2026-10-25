@@ -13,6 +13,7 @@ mod titlebar;
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use gpui_kit::component::dock::DockPlacement;
 use gpui_kit::component::{ActiveTheme as _, v_flex};
 use gpui_kit::*;
 
@@ -21,19 +22,28 @@ use self::main_area::MainArea;
 use self::titlebar::DrawnTabs;
 pub use self::titlebar::window_options;
 use crate::actions::{
-    CommandPalette, FocusPane, OpenChanges, OpenContextMenu, OpenFile, OpenFileAt,
-    OpenScrollback,
+    CommandPalette, FocusPane, OpenChanges, OpenContextMenu, OpenFile, OpenFileAt, OpenScrollback,
 };
 use crate::changes::Changes;
 use crate::chrome::Chrome;
 use crate::editor::{Editor, EditorEvent};
 use crate::overlay;
 use crate::sidebar::SidebarPanels;
+use crate::sidebar::workspaces::WorkspaceList;
 use crate::state::{AppEvent, AppState};
 use crate::terminal_area::TerminalArea;
 use crate::window_registry;
 
-actions!(workspace, [NextMainTab, PreviousMainTab, ShowHerdr]);
+actions!(
+    workspace,
+    [
+        NextMainTab,
+        PreviousMainTab,
+        ShowHerdr,
+        ToggleLeftDock,
+        ToggleRightDock
+    ]
+);
 
 const CONTEXT: &str = "Workspace";
 
@@ -46,6 +56,8 @@ pub fn init(cx: &mut App) {
         KeyBinding::new("cmd-shift-]", NextMainTab, Some(CONTEXT)),
         KeyBinding::new("cmd-shift-[", PreviousMainTab, Some(CONTEXT)),
         KeyBinding::new("cmd-1", ShowHerdr, Some(CONTEXT)),
+        KeyBinding::new("cmd-b", ToggleLeftDock, Some(CONTEXT)),
+        KeyBinding::new("cmd-r", ToggleRightDock, Some(CONTEXT)),
     ]);
 }
 
@@ -82,6 +94,8 @@ pub fn get(window: &Window, cx: &App) -> Option<Entity<Workspace>> {
 pub struct Workspace {
     pub state: Entity<AppState>,
     docks: Entity<Docks>,
+    /// The spaces panel, for the titlebar's branch.
+    spaces: Entity<WorkspaceList>,
     main_panel: Entity<MainPanel>,
     /// A panel drag is under way, so the terminals are hidden to show where
     /// it will land (native views would cover the drop indicator). Drags
@@ -108,7 +122,7 @@ impl Workspace {
         let focus = cx.focus_handle();
         window.focus(&focus, cx);
         let editor = cx.new(|cx| Editor::new(state.clone(), window, cx));
-        let subscriptions = vec![
+        let mut subscriptions = vec![
             cx.subscribe_in(&editor, window, |this, _, event, window, cx| match event {
                 EditorEvent::Activated => this.select(MainTab::Files, window, cx),
             }),
@@ -145,10 +159,14 @@ impl Workspace {
             panel
         });
         let sidebar = SidebarPanels::new(state.clone(), window, cx);
+        let spaces = sidebar.spaces.clone();
+        // The titlebar shows the branch the spaces panel reads.
+        subscriptions.push(cx.observe(&spaces, |_, _, cx| cx.notify()));
         let docks =
             cx.new(|cx| Docks::new(main_panel.clone(), sidebar, dock::layout_path(), window, cx));
         Self {
             docks,
+            spaces,
             main_panel,
             dragging: false,
             drag_seen: false,
@@ -176,6 +194,17 @@ impl Workspace {
     /// The Changes tab, while it is open.
     pub fn changes(&self) -> Option<&Entity<Changes>> {
         self.changes.as_ref()
+    }
+
+    /// Whether the dock at `placement` is on screen (script hooks).
+    pub fn dock_open(&self, placement: DockPlacement, cx: &App) -> bool {
+        self.docks.read(cx).is_open(placement, cx)
+    }
+
+    /// Whether the titlebar offers a toggle for the dock at `placement`
+    /// (script hooks).
+    pub fn has_dock_toggle(&self, placement: DockPlacement, cx: &App) -> bool {
+        self.docks.read(cx).has_panels(placement, cx)
     }
 
     pub fn selected(&self) -> MainTab {
@@ -427,6 +456,12 @@ impl Render for Workspace {
             )
             .on_action(cx.listener(|this, _: &ShowHerdr, window, cx| {
                 this.select(MainTab::Herdr, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &ToggleLeftDock, window, cx| {
+                this.toggle_dock(DockPlacement::Left, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &ToggleRightDock, window, cx| {
+                this.toggle_dock(DockPlacement::Right, window, cx)
             }))
             .size_full()
             .bg(cx.theme().background)

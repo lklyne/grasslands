@@ -11,6 +11,7 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
+use gpui_kit::component::dock::DockPlacement;
 use gpui_kit::component::{ActiveTheme as _, WindowExt as _};
 use gpui_kit::*;
 
@@ -20,9 +21,34 @@ use crate::editor::Answer;
 use crate::herdr::{PaneId, SplitDirection, SplitTree, protocol};
 use crate::overlay;
 use crate::terminal_area::hooks::Hooks;
-use crate::workspace::{MainTab, Workspace};
+use crate::workspace::{MainTab, ToggleLeftDock, ToggleRightDock, Workspace};
 
 impl Run {
+    /// Each side dock's toggle closes it and opens it again.
+    async fn check_dock_toggles(&mut self, cx: &mut Cx) -> anyhow::Result<()> {
+        for placement in [DockPlacement::Left, DockPlacement::Right] {
+            let action = || -> Box<dyn Action> {
+                match placement {
+                    DockPlacement::Left => Box::new(ToggleLeftDock),
+                    _ => Box::new(ToggleRightDock),
+                }
+            };
+            let open = |run: &Self, cx: &mut Cx| {
+                run.workspace(cx, move |ws, _, cx| ws.dock_open(placement, cx))
+            };
+            let toggle = self.workspace(cx, move |ws, _, cx| ws.has_dock_toggle(placement, cx))?;
+            self.check(toggle, &format!("titlebar offers a {placement:?} toggle"));
+            self.check(open(self, cx)?, &format!("{placement:?} dock starts open"));
+            self.dispatch(cx, action());
+            Self::settle(cx).await;
+            self.check(!open(self, cx)?, &format!("{placement:?} toggle closes it"));
+            self.dispatch(cx, action());
+            Self::settle(cx).await;
+            self.check(open(self, cx)?, &format!("{placement:?} toggle reopens it"));
+        }
+        Ok(())
+    }
+
     pub(super) async fn titlebar(&mut self, cx: &mut Cx) -> anyhow::Result<()> {
         eprintln!("script: titlebar");
         let connected = self
@@ -36,6 +62,7 @@ impl Run {
         }
         let starts_on_herdr = self.workspace(cx, |ws, _, _| ws.selected() == MainTab::Herdr)?;
         self.check(starts_on_herdr, "the herdr tab is selected at start");
+        self.check_dock_toggles(cx).await?;
 
         // A workspace of our own with two terminals.
         let task = self.read(cx, |area, cx| {

@@ -164,6 +164,39 @@ impl Docks {
         }
     }
 
+    /// Whether the dock at `placement` holds any panel. A layout can lack
+    /// one: panels dragged into the center take their dock with them.
+    pub fn has_panels(&self, placement: DockPlacement, cx: &App) -> bool {
+        let area = self.area.read(cx);
+        area.has_dock(placement) && !area.is_empty(placement, cx)
+    }
+
+    pub fn is_open(&self, placement: DockPlacement, cx: &App) -> bool {
+        self.area.read(cx).is_dock_open(placement)
+    }
+
+    /// Collapses or expands a side dock, with the toggle cue.
+    pub fn toggle(
+        &mut self,
+        placement: DockPlacement,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let opening = !self.is_open(placement, cx);
+        self.area
+            .update(cx, |area, cx| area.toggle_dock(placement, window, cx));
+        let direction = if opening {
+            cues::Direction::Forward
+        } else {
+            cues::Direction::Back
+        };
+        crate::sounds::play(
+            cues::Cue::Toggle,
+            cues::PlayOptions::default().direction(direction),
+        );
+        cx.notify();
+    }
+
     /// Saves the layout once changes stop for [`SAVE_DEBOUNCE`]; replacing the
     /// task cancels the previous one.
     fn schedule_save(&mut self, area: Entity<DockArea>, cx: &mut Context<Self>) {
