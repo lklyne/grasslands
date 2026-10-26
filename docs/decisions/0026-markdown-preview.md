@@ -21,19 +21,26 @@ no `image_source`, and with no style of its own it renders the same.
 ## How it works
 
 - `editor::markdown::Markdown` rides along with the buffer like `Page`, and
-  defaults to the preview. The preview renders the editor state's text each
-  frame, so it follows unsaved edits; the view reparses only when the text
-  changes.
+  defaults to the preview. It owns the parsed text (`TextViewState`) and
+  the scroll position, so both survive switching tabs or to the source:
+  element state, which `TextView::markdown` and `overflow_y_scrollbar` use,
+  is dropped the first frame the preview isn't drawn. Each render hands the
+  state the editor's text, so it follows unsaved edits and reloads; the
+  state reparses only when the text changes.
+- A file opened at a line (a search hit) shows its source, at that line. A
+  file renamed to Markdown keeps showing its source.
 - **Layout.** A centered column of at most 816px, with 64px above and
   below, in a GPUI Kit scroll area that spans the tab. The text view's own
   scrolling is a virtualized list that can only pad its viewport, so the
   margins wouldn't scroll away and the scrollbar would sit at the column's
   edge. The price is laying out the whole document; revisit if long files
   get slow.
-- The frontmatter plugin shows YAML frontmatter as a description list.
+- YAML frontmatter is parsed (`MarkdownExtensions::frontmatter`, off by
+  default) and the frontmatter plugin shows it as a description list.
 - **Links.** A relative, absolute or `file:` link opens in the editor on the
-  buffer's machine; `#anchors` do nothing; anything else opens in the
-  default browser.
+  buffer's machine, its `..` folded away so a remote file matches its open
+  tab; `#anchors` and empty links do nothing; anything else opens in the
+  default browser. A right-click follows nothing.
 - **Images.** In a local file, image paths load from disk relative to the
   file; URLs load as usual.
 

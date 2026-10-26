@@ -635,7 +635,11 @@ impl Editor {
         let mut buffer = Buffer::new((machine, path), file, state, changes, window, cx);
         buffer.scrollback = scrollback;
         buffer.page = html.then(|| Page::new(Self::page_access(&group, &buffer.path)));
-        buffer.markdown = (language == Some("markdown")).then(Markdown::new);
+        // Opened at a line (a search hit), a Markdown file shows its source.
+        buffer.markdown = (language == Some("markdown")).then(|| {
+            let text = buffer.state.read(cx).value();
+            Markdown::new(&text, line.is_none(), cx)
+        });
         if buffer.is_watched()
             && let Some(watcher) = &mut self.watcher
         {
@@ -664,10 +668,22 @@ impl Editor {
         }
     }
 
+    /// Puts the cursor on `line`, switching a preview to its source so the
+    /// line shows.
     fn go_to_line(&mut self, line: Option<u32>, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(line) = line
-            && let Some(buffer) = self.group().and_then(Group::active)
+        let Some(line) = line else {
+            return;
+        };
+        if let Some(buffer) = self
+            .active_buffer_mut()
+            .filter(|buffer| buffer.preview_shown() == Some(true))
         {
+            buffer.set_preview_shown(false);
+            self.sync_pages(window);
+            self.focus_active(window, cx);
+            cx.notify();
+        }
+        if let Some(buffer) = self.group().and_then(Group::active) {
             buffer.state.update(cx, |state, cx| {
                 state.set_cursor_position(Position::new(line, 0), window, cx)
             });
@@ -848,8 +864,13 @@ impl Editor {
             // either, and a move changes what the page may read.
             let language = buffer.is_file().then(|| language::for_path(&buffer.path));
             let html = language == Some("html");
+            // A file renamed to Markdown keeps showing its source, and the
+            // focus that's in it.
             if (language == Some("markdown")) != buffer.markdown.is_some() {
-                buffer.markdown = (language == Some("markdown")).then(Markdown::new);
+                buffer.markdown = (language == Some("markdown")).then(|| {
+                    let text = buffer.state.read(cx).value();
+                    Markdown::new(&text, false, cx)
+                });
             }
             let access = Self::page_access(key, &buffer.path);
             match &mut buffer.page {
@@ -1240,8 +1261,8 @@ impl Render for Editor {
                     canvas(move |bounds, _, _| view.set_frame(bounds), |_, _, _, _| {}).size_full()
                 }))
                 .into_any_element()
-        } else if buffer.shown_markdown().is_some() {
-            markdown::preview(buffer, editor, cx)
+        } else if let Some(markdown) = buffer.shown_markdown() {
+            markdown::preview(buffer, markdown, editor, cx)
         } else {
             CodeEditor::new(&buffer.state)
                 .bordered(false)
