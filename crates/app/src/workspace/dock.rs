@@ -171,8 +171,7 @@ impl Docks {
         }
     }
 
-    /// Whether the dock at `placement` holds any panel. A layout can lack
-    /// one: panels dragged into the center take their dock with them.
+    /// Whether the dock at `placement` holds any panel.
     pub fn has_panels(&self, placement: DockPlacement, cx: &App) -> bool {
         let area = self.area.read(cx);
         area.has_dock(placement) && !area.is_empty(placement, cx)
@@ -189,6 +188,9 @@ impl Docks {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if !self.has_panels(placement, cx) {
+            return;
+        }
         let opening = !self.is_open(placement, cx);
         self.area
             .update(cx, |area, cx| area.toggle_dock(placement, window, cx));
