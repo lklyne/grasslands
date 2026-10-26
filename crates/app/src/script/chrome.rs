@@ -133,6 +133,17 @@ impl Run {
 
         // Right-click the first pane's header: the pane menu, in the overlay.
         let header = point(body.origin.x + px(60.), body.origin.y - HEADER_HEIGHT / 2.);
+        self.native_right_click(cx, header).await;
+        let open = self.until_chrome(cx, |menu, _| menu == Some(true)).await;
+        self.check(
+            open,
+            "an AppKit right-click on a pane header opens the pane menu",
+        );
+        if open {
+            self.key(cx, "escape");
+            self.until_chrome(cx, |menu, _| menu.is_none()).await;
+            Self::sleep(cx, 300).await;
+        }
         self.right_click(cx, header);
         let open = self.until_chrome(cx, |menu, _| menu == Some(true)).await;
         self.check(
@@ -321,6 +332,39 @@ impl Run {
         })?;
         task.await?;
         Ok(())
+    }
+
+    /// A right-click handed to the main `NSWindow` as AppKit's event loop
+    /// hands it, so native views over GPUI's get their say. Logs which view
+    /// AppKit hit-tests there and whether the overlay takes clicks.
+    async fn native_right_click(&mut self, cx: &mut Cx, position: Point<Pixels>) {
+        let (x, y) = (f64::from(position.x), f64::from(position.y));
+        let Some(main) = cx
+            .update(|window, _| overlay::ns_window(window))
+            .ok()
+            .flatten()
+        else {
+            self.check(false, "the main window's AppKit side is reachable");
+            return;
+        };
+        let hit = overlay::hit_view_class(&main, x, y);
+        eprintln!("script: AppKit hit-tests {hit} at the pane header");
+        let overlay_ns = Self::overlay_handle(cx).and_then(|handle| {
+            cx.update_window(handle, |_, window, _| overlay::ns_window(window))
+                .ok()
+                .flatten()
+        });
+        if let Some(overlay) = overlay_ns {
+            eprintln!(
+                "script: overlay ignores mouse: {}",
+                overlay::ignores_mouse(&overlay)
+            );
+        }
+        self.check(
+            overlay::send_right_click(&main, x, y),
+            "AppKit right-click event built",
+        );
+        Self::settle(cx).await;
     }
 
     fn right_click(&self, cx: &mut Cx, position: Point<Pixels>) {

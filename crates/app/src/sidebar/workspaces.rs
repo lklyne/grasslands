@@ -588,7 +588,8 @@ impl WorkspaceList {
             .copied()
     }
 
-    /// The branch `workspace_id`'s row shows, for script hooks.
+    /// The branch `workspace_id`'s row shows, for the titlebar and script
+    /// hooks.
     pub fn branch_of(
         &self,
         machine: &MachineId,

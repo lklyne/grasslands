@@ -104,6 +104,80 @@ pub fn send_key_down(window: &NSWindow, characters: &str, key_code: u16, command
     true
 }
 
+/// Hands `window` a right-click at `position` (GPUI window coordinates) the
+/// way AppKit's event loop does (`-[NSWindow sendEvent:]`): hit-tested
+/// through the window's views to the one under the point. In-process, like
+/// [`send_key_down`]; it checks the path real clicks take past native
+/// subviews, which GPUI-level dispatch skips.
+///
+/// GPUI handles it synchronously, so call this outside any GPUI update.
+pub fn send_right_click(window: &NSWindow, x: f64, y: f64) -> bool {
+    let Some(content) = window.contentView() else {
+        return false;
+    };
+    let location = NSPoint::new(x, content.bounds().size.height - y);
+    for kind in [NSEventType::RightMouseDown, NSEventType::RightMouseUp] {
+        let event = NSEvent::mouseEventWithType_location_modifierFlags_timestamp_windowNumber_context_eventNumber_clickCount_pressure(
+            kind,
+            location,
+            NSEventModifierFlags::empty(),
+            0.0,
+            window.windowNumber(),
+            None,
+            0,
+            1,
+            1.0,
+        );
+        let Some(event) = event.and_then(|event| right_button(&event)) else {
+            return false;
+        };
+        window.sendEvent(&event);
+    }
+    true
+}
+
+/// `event` with button number 1, as a real right-click reports it: NSEvent's
+/// own constructor always sets 0, which GPUI reads as the left button.
+fn right_button(event: &NSEvent) -> Option<Retained<NSEvent>> {
+    #[repr(C)]
+    struct CGEvent([u8; 0]);
+    // SAFETY: CoreGraphics' opaque `struct __CGEvent`.
+    unsafe impl objc2::encode::RefEncode for CGEvent {
+        const ENCODING_REF: objc2::encode::Encoding =
+            objc2::encode::Encoding::Pointer(&objc2::encode::Encoding::Struct("__CGEvent", &[]));
+    }
+    #[link(name = "CoreGraphics", kind = "framework")]
+    unsafe extern "C" {
+        fn CGEventSetIntegerValueField(event: *mut CGEvent, field: u32, value: i64);
+    }
+    const BUTTON_NUMBER: u32 = 3; // kCGMouseEventButtonNumber
+    // SAFETY: `CGEvent` returns a CGEventRef owned by `event`, live for this
+    // call; the copy `eventWithCGEvent:` makes is a new autoreleased NSEvent.
+    unsafe {
+        let cg: *mut CGEvent = objc2::msg_send![event, CGEvent];
+        if cg.is_null() {
+            return None;
+        }
+        CGEventSetIntegerValueField(cg, BUTTON_NUMBER, 1);
+        objc2::msg_send![NSEvent::class(), eventWithCGEvent: cg]
+    }
+}
+
+/// The class of the view AppKit hit-tests at `position` (GPUI window
+/// coordinates) in `window`, or `nil`.
+pub fn hit_view_class(window: &NSWindow, x: f64, y: f64) -> String {
+    let Some(content) = window.contentView() else {
+        return "nil".to_owned();
+    };
+    let location = NSPoint::new(x, content.bounds().size.height - y);
+    // The content view sits at the frame view's origin, so `location` is
+    // in its superview's coordinates too, as `hitTest:` wants.
+    content.hitTest(location).map_or_else(
+        || "nil".to_owned(),
+        |view| view.class().name().to_string_lossy().into_owned(),
+    )
+}
+
 /// The characters and US-layout virtual key code AppKit reports for the
 /// GPUI key name `key`: lowercase letters, space and the editing keys.
 pub fn key_code(key: &str) -> Option<(String, u16)> {

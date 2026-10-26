@@ -1,0 +1,110 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>2 · One “New Workspace” popup</title><style>:root {
+  --bg: #1e2030;
+  --panel: #24273a;
+  --line: #363a4f;
+  --accent: #363a50;
+  --fg: #cad3f5;
+  --dim: rgba(202, 211, 245, 0.72);
+  --muted: #8087a2;
+  --magenta: #f5bde6;
+  --green: #a6da95;
+  --yellow: #eed49f;
+  --teal: #8bd5ca;
+  --popover: #24273a;
+  --term: #181926;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; background: var(--bg); color: var(--fg);
+  font: 14px/1.4 -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif; }
+body { padding: 20px; }
+h1 { font-size: 16px; font-weight: 600; margin: 0 0 4px; }
+p.lede { margin: 0 0 16px; color: var(--muted); max-width: 640px; }
+.frame { position: relative; display: flex; width: 680px; height: 440px;
+  border: 1px solid var(--line); border-radius: 10px; overflow: hidden; background: var(--bg); }
+.sidebar { width: 300px; border-right: 1px solid var(--line); flex-shrink: 0; }
+.term { flex: 1; background: var(--term); padding: 14px; color: var(--muted);
+  font: 12px/1.6 "SF Mono", ui-monospace, monospace; }
+.title { display: flex; align-items: center; height: 36px; padding: 0 10px;
+  border-bottom: 1px solid var(--line); }
+.title .name { flex: 1; }
+.btn { display: inline-flex; align-items: center; justify-content: center; min-width: 22px;
+  height: 22px; padding: 0 5px; border-radius: 5px; color: var(--dim); font-size: 13px; }
+.btn.on { background: var(--accent); color: var(--fg); }
+.btn.dim { opacity: .4; }
+.rows { padding: 6px 4px; font-size: 13px; }
+.row { display: flex; align-items: center; gap: 6px; height: 24px; padding: 0 8px 0 6px;
+  border-radius: 5px; white-space: nowrap; }
+.row.sel { background: var(--accent); }
+.row.hover { background: rgba(54, 58, 80, .6); }
+.row.inert { opacity: .45; }
+.row .chev { width: 12px; color: var(--muted); font-size: 10px; text-align: center; flex-shrink: 0; }
+.row .ind { width: 16px; }
+.dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
+.dot.g { background: var(--green); } .dot.t { background: var(--teal); }
+.dot.o { border: 1.5px solid var(--green); background: none; }
+.dot.x { background: var(--muted); }
+.label { color: var(--dim); } .sel .label { color: var(--fg); }
+.branch { color: var(--muted); } .sel .branch { color: var(--magenta); }
+.count { margin-left: auto; color: var(--green); }
+.tail { margin-left: auto; display: flex; gap: 2px; }
+.hdr .label { color: var(--fg); }
+.menu { position: absolute; background: var(--popover); border: 1px solid var(--line);
+  border-radius: 8px; padding: 4px; min-width: 200px; font-size: 13px;
+  box-shadow: 0 8px 24px rgba(0,0,0,.35); z-index: 2; }
+.menu .it { display: flex; align-items: center; gap: 8px; height: 28px; padding: 0 10px; border-radius: 5px; }
+.menu .it.hi { background: var(--accent); }
+.menu .it .k { margin-left: auto; color: var(--muted); font-size: 12px; }
+.menu .sep { height: 1px; background: var(--line); margin: 4px 0; }
+.menu .lbl { padding: 6px 10px 2px; color: var(--muted); font-size: 12px; }
+.scrim { position: absolute; inset: 0; background: rgba(0,0,0,.35); z-index: 1; }
+.dialog { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); z-index: 2;
+  width: 440px; background: var(--popover); border: 1px solid var(--line); border-radius: 10px;
+  padding: 16px; box-shadow: 0 12px 32px rgba(0,0,0,.4); font-size: 13px; }
+.dialog h2 { margin: 0 0 12px; font-size: 14px; font-weight: 600; }
+.field { display: grid; grid-template-columns: 76px 1fr; align-items: center; gap: 8px; margin-bottom: 10px; }
+.field > span { color: var(--muted); }
+.input { height: 28px; border: 1px solid var(--line); border-radius: 6px; padding: 0 8px;
+  display: flex; align-items: center; background: var(--bg); }
+.input.focus { border-color: #8aadf4; }
+.input .ph { color: var(--muted); }
+.seg { display: inline-flex; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
+.seg span { padding: 4px 10px; color: var(--dim); }
+.seg span.on { background: var(--accent); color: var(--fg); }
+.chips { display: flex; gap: 6px; flex-wrap: wrap; }
+.chip { padding: 2px 8px; border: 1px solid var(--line); border-radius: 99px; color: var(--dim); font-size: 12px; }
+.chip.on { border-color: #8aadf4; color: var(--fg); }
+.foot { display: flex; justify-content: flex-end; gap: 8px; margin-top: 14px; }
+.b { height: 28px; padding: 0 12px; border-radius: 6px; border: 1px solid var(--line);
+  display: inline-flex; align-items: center; }
+.b.primary { background: #8aadf4; color: #181926; border-color: #8aadf4; font-weight: 500; }
+.picker { position: absolute; left: 50%; top: 52px; transform: translateX(-50%); z-index: 2; width: 480px;
+  background: var(--popover); border: 1px solid var(--line); border-radius: 10px;
+  box-shadow: 0 12px 32px rgba(0,0,0,.4); font-size: 13px; overflow: hidden; }
+.picker .q { height: 38px; display: flex; align-items: center; padding: 0 12px; border-bottom: 1px solid var(--line); }
+.picker .q .caret { width: 1px; height: 16px; background: var(--fg); margin-left: 1px; }
+.picker .grp { padding: 8px 12px 2px; color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .04em; }
+.picker .it { display: flex; align-items: center; gap: 8px; height: 30px; padding: 0 12px; }
+.picker .it.hi { background: var(--accent); }
+.picker .it .m { color: var(--muted); }
+.picker .it .k { margin-left: auto; color: var(--muted); font-size: 12px; }
+.picker .hint { display: flex; gap: 14px; padding: 6px 12px; border-top: 1px solid var(--line); color: var(--muted); font-size: 11px; }
+.note { position: absolute; z-index: 3; background: #FFE18E; color: #2a2a2a; font-size: 12px;
+  padding: 6px 8px; border-radius: 6px; max-width: 190px; line-height: 1.35; }
+.note::before { content: ""; position: absolute; width: 8px; height: 8px; background: #FFE18E; transform: rotate(45deg); }
+.note.l::before { left: -4px; top: 10px; } .note.t::before { top: -4px; left: 14px; }
+.note.r::before { right: -4px; top: 10px; }
+.pros { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; width: 680px; margin-top: 14px; font-size: 13px; }
+.pros h3 { margin: 0 0 4px; font-size: 12px; color: var(--muted); font-weight: 600; text-transform: uppercase; letter-spacing: .04em; }
+.pros ul { margin: 0; padding-left: 16px; color: var(--dim); }
+</style></head>
+<body><h1>2 · One “New Workspace” popup</h1><p class="lede">+ opens a dialog: machine, then what to start from (a folder, a new worktree, or an existing one). Replaces New Workspace, New Worktree… and Open Worktree…</p>
+<div class="frame"><div class="sidebar"><div class="title"><span class="name">Workspaces</span><span class="btn on">+</span><span class="btn">···</span></div><div class="rows"><div class="row hdr "><span class="chev">⌄</span><span class="dot g"></span><span class="label">Local</span></div><div class="row sel"><span class="chev">⌄</span><span class="dot t"></span><span class="label">grasslands</span><span class="branch">remote-machines</span><span class="count">↑70</span></div><div class="row "><span class="chev"></span><span class="ind"></span><span class="dot o"></span><span class="label">website</span></div><div class="row "><span class="chev">⌄</span><span class="dot o"></span><span class="label">telescope</span><span class="branch">main</span></div><div class="row "><span class="chev"></span><span class="ind"></span><span class="dot o"></span><span class="label">#390 connect tool</span></div><div class="row "><span class="chev"></span><span class="dot o"></span><span class="label">specular-web</span><span class="branch">feat/export-squircle</span></div><div class="row "><span class="chev"></span><span class="dot o"></span><span class="label">lyle-klyne</span><span class="branch">main</span></div><div class="row "><span class="chev"></span><span class="dot o"></span><span class="label">Understory</span><span class="branch">auth-rev7</span></div><div class="row hdr "><span class="chev">⌄</span><span class="dot x"></span><span class="label">dockerbox</span><span class="branch">Disabled</span></div><div class="row hdr "><span class="chev">⌄</span><span class="dot g"></span><span class="label">buildbox</span></div><div class="row "><span class="chev"></span><span class="dot o"></span><span class="label">api</span><span class="branch">main</span></div></div></div><div class="term">~/Developer/grasslands →<br><br>(terminal)</div><div class="scrim"></div><div class="dialog"><h2>New Workspace</h2>
+<div class="field"><span>Machine</span><div class="input">Local<span style="margin-left:auto;color:var(--muted)">▾</span></div></div>
+<div class="field"><span>Start from</span><div class="seg"><span class="on">Folder</span><span>New worktree</span><span>Existing worktree</span></div></div>
+<div class="field"><span>Folder</span><div class="input focus">~/Developer/grasslands</div></div>
+<div class="field"><span></span><div class="chips"><span class="chip on">Current</span><span class="chip">Home</span><span class="chip">telescope</span><span class="chip">Browse…</span></div></div>
+<div class="field"><span>Name</span><div class="input"><span class="ph">Optional</span></div></div>
+<div class="foot"><span class="b">Cancel</span><span class="b primary">Create</span></div></div><div class="note r" style="left:12px;top:150px">“New worktree” swaps the Folder row for Branch + Start from</div></div>
+<div class="pros"><div><h3>Good</h3><ul><li>Every creation choice in one place</li><li>Room for recent folders and worktree options</li></ul></div><div><h3>Costs</h3><ul><li>Every new workspace becomes a dialog</li><li>Most new UI to build and keep in sync with herdr</li></ul></div></div>
+</body></html>

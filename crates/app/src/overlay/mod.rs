@@ -37,9 +37,11 @@ use gpui_kit::*;
 
 use crate::window_registry;
 
-pub use native::{gpui_view, make_first_responder, ns_window};
 #[cfg(debug_assertions)]
 pub use native::{app_is_active, subviews as native_subviews};
+pub use native::{gpui_view, make_first_responder, ns_window};
+#[cfg(debug_assertions)]
+pub use native::{hit_view_class, ignores_mouse, send_right_click};
 
 /// How a layer treats the mouse.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

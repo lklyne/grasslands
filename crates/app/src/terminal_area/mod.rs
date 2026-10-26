@@ -487,7 +487,11 @@ impl TerminalArea {
     pub fn pane_columns(&self, machine: &MachineId, pane_id: &PaneId, cx: &mut App) -> Option<u16> {
         let session = self.state.read(cx).machine(machine, cx)?;
         let terminal_id = session.snapshot().pane(pane_id)?.terminal_id.clone();
-        let terminal = self.terminals.view_on(machine, &terminal_id)?.terminal.clone();
+        let terminal = self
+            .terminals
+            .view_on(machine, &terminal_id)?
+            .terminal
+            .clone();
         Some(terminal.update(cx, |terminal, _| terminal.columns())).filter(|&cols| cols > 0)
     }
 
